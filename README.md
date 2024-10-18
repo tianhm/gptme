@@ -62,7 +62,6 @@ An unconstrained local alternative to ChatGPT's "Code Interpreter".<br/>Not limi
 - 🚀 [Getting Started](#-getting-started)
 - 🛠 [Usage](#-usage)
 - 📊 [Stats](#-stats)
-- 💻 [Development](#-development)
 - 🔗 [Links](#-links)
 
 ## 🎥 Demos
@@ -152,7 +151,7 @@ You can find more [Demos][docs-demos] and [Examples][docs-examples] in the [docu
 - 💻 Code execution
   - Executes code in your local environment with the [shell][docs-tools-shell] and [python][docs-tools-python] tools.
 - 🧩 Read, write, and change files
-  - Makes incremental changes with the [patch][docs-tools-patch] tool. 
+  - Makes incremental changes with the [patch][docs-tools-patch] tool.
 - 🌐 Search and browse the web.
   - Can use a browser via Playwright with the [browser][docs-tools-browser] tool.
 - 👀 Vision

@@ -40,7 +40,7 @@ export OPENROUTER_API_KEY="your-api-key"
 
 ## Local/Ollama
 
-There are several ways to run local LLM models in a way that exposes a OpenAI API-compatible server. 
+There are several ways to run local LLM models in a way that exposes a OpenAI API-compatible server.
 
 Here's we will cover how to achieve that with `ollama`.
 
@@ -49,5 +49,5 @@ You first need to install `ollama`, then you can run it with:
 ```sh
 ollama pull llama3.2:1b
 ollama serve
-OPENAI_API_BASE="http://127.0.0.1:11434/v1" gptme 'hello' -m local/llama3.2:1b
+OPENAI_BASE_URL="http://127.0.0.1:11434/v1" gptme 'hello' -m local/llama3.2:1b
 ```

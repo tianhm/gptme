@@ -15,12 +15,14 @@ from .constants import PROMPT_USER
 from .init import init
 from .interrupt import clear_interruptible, set_interruptible
 from .llm import reply
-from .logmanager import LogManager
+from .logmanager import Log, LogManager, prepare_messages
 from .message import Message
 from .models import get_model
 from .tools import ToolUse, execute_msg, has_tool
+from .tools.base import ConfirmFunc
 from .tools.browser import read_url
 from .util import (
+    ask_execute,
     console,
     path_with_tilde,
     print_bell,
@@ -59,9 +61,7 @@ def chat(
         stream = False
 
     console.log(f"Using logdir {path_with_tilde(logdir)}")
-    log = LogManager.load(
-        logdir, initial_msgs=initial_msgs, show_hidden=show_hidden, create=True
-    )
+    manager = LogManager.load(logdir, initial_msgs=initial_msgs, create=True)
 
     # change to workspace directory
     # use if exists, create if @log, or use given path
@@ -82,14 +82,19 @@ def chat(
     # check if message is already in log, such as upon resume
     if (
         workspace_prompt
-        and workspace_prompt not in [m.content for m in log]
-        and "user" not in [m.role for m in log]
+        and workspace_prompt not in [m.content for m in manager.log]
+        and "user" not in [m.role for m in manager.log]
     ):
-        log.append(Message("system", workspace_prompt, hide=True, quiet=True))
+        manager.append(Message("system", workspace_prompt, hide=True, quiet=True))
 
     # print log
-    log.print()
+    manager.log.print(show_hidden=show_hidden)
     console.print("--- ^^^ past messages ^^^ ---")
+
+    def confirm_func(msg) -> bool:
+        if no_confirm:
+            return True
+        return ask_execute(msg)
 
     # main loop
     while True:
@@ -99,34 +104,39 @@ def chat(
                 msg = prompt_msgs.pop(0)
                 if not msg.content.startswith("/"):
                     msg = _include_paths(msg)
-                log.append(msg)
+                manager.append(msg)
                 # if prompt is a user-command, execute it
-                if execute_cmd(msg, log):
+                if execute_cmd(msg, manager, confirm_func):
                     continue
 
                 # Generate and execute response for this prompt
                 while True:
-                    set_interruptible()
                     try:
-                        response_msgs = list(step(log, no_confirm, stream=stream))
+                        set_interruptible()
+                        response_msgs = list(step(manager.log, stream, confirm_func))
                     except KeyboardInterrupt:
                         console.log("Interrupted. Stopping current execution.")
-                        log.append(Message("system", "Interrupted"))
+                        manager.append(Message("system", "Interrupted"))
                         break
                     finally:
                         clear_interruptible()
 
                     for response_msg in response_msgs:
-                        log.append(response_msg)
+                        manager.append(response_msg)
                         # run any user-commands, if msg is from user
                         if response_msg.role == "user" and execute_cmd(
-                            response_msg, log
+                            response_msg, manager, confirm_func
                         ):
                             break
 
                     # Check if there are any runnable tools left
                     last_content = next(
-                        (m.content for m in reversed(log) if m.role == "assistant"), ""
+                        (
+                            m.content
+                            for m in reversed(manager.log)
+                            if m.role == "assistant"
+                        ),
+                        "",
                     )
                     if not any(
                         tooluse.is_runnable
@@ -148,19 +158,22 @@ def chat(
 
         # ask for input if no prompt, generate reply, and run tools
         clear_interruptible()  # Ensure we're not interruptible during user input
-        for msg in step(log, no_confirm, stream=stream):  # pragma: no cover
-            log.append(msg)
+        for msg in step(manager.log, stream, confirm_func):  # pragma: no cover
+            manager.append(msg)
             # run any user-commands, if msg is from user
-            if msg.role == "user" and execute_cmd(msg, log):
+            if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
                 break
 
 
 def step(
-    log: LogManager,
-    no_confirm: bool,
-    stream: bool = True,
+    log: Log | list[Message],
+    stream: bool,
+    confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Runs a single pass of the chat."""
+    if isinstance(log, list):
+        log = Log(log)
+
     # If last message was a response, ask for input.
     # If last message was from the user (such as from crash/edited log),
     # then skip asking for input and generate response
@@ -173,18 +186,17 @@ def step(
         or not any(role == "user" for role in [m.role for m in log])
     ):  # pragma: no cover
         inquiry = prompt_user()
-        if not inquiry:
-            # Empty command, ask for input again
-            return
         msg = Message("user", inquiry, quiet=True)
         msg = _include_paths(msg)
         yield msg
+        log = log.append(msg)
 
     # generate response and run tools
-    set_interruptible()
     try:
+        set_interruptible()
+
         # performs reduction/context trimming, if necessary
-        msgs = log.prepare_messages()
+        msgs = prepare_messages(log.messages)
 
         for m in msgs:
             logger.debug(f"Prepared message: {m}")
@@ -195,7 +207,7 @@ def step(
         # log response and run tools
         if msg_response:
             yield msg_response.replace(quiet=True)
-            yield from execute_msg(msg_response, ask=not no_confirm)
+            yield from execute_msg(msg_response, confirm)
     except KeyboardInterrupt:
         clear_interruptible()
         yield Message("system", "Interrupted")
@@ -207,12 +219,13 @@ def prompt_user(value=None) -> str:  # pragma: no cover
     print_bell()
     # Flush stdin to clear any buffered input before prompting
     termios.tcflush(sys.stdin, termios.TCIFLUSH)
-    set_interruptible()
-    try:
-        response = prompt_input(PROMPT_USER, value)
-    except KeyboardInterrupt:
-        print("\nInterrupted. Press Ctrl-D to exit.")
-        return ""
+    response = ""
+    while not response:
+        try:
+            set_interruptible()
+            response = prompt_input(PROMPT_USER, value)
+        except KeyboardInterrupt:
+            print("\nInterrupted. Press Ctrl-D to exit.")
     clear_interruptible()
     if response:
         readline.add_history(response)
