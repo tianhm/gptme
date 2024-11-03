@@ -112,9 +112,10 @@ export default function Index() {
       return response as ConversationResponse;
     },
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
-    staleTime: 0, // Always fetch fresh data when selecting a conversation
+    staleTime: 1000, // Keep data fresh for 1 second to prevent excessive refetching
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
+    retry: false, // Disable retries on failure
   });
 
   // Send message mutation
@@ -122,7 +123,6 @@ export default function Index() {
     mutationFn: (message: string) => 
       api.sendMessage(selectedConversation, { role: 'user', content: message }),
     onSuccess: () => {
-      // Invalidate and refetch the conversation query after sending a message
       queryClient.invalidateQueries({ queryKey: ['conversation', selectedConversation] });
     },
   });
@@ -135,10 +135,24 @@ export default function Index() {
   };
 
   const handleSelectConversation = (id: string) => {
+    if (id === selectedConversation) {
+      return; // Don't switch if it's the same conversation
+    }
+    
     setSelectedConversation(id);
-    // Invalidate the query cache for the new conversation
+    
     if (!id.startsWith('demo-')) {
-      queryClient.invalidateQueries({ queryKey: ['conversation', id] });
+      // Prefetch the conversation data
+      queryClient.prefetchQuery({
+        queryKey: ['conversation', id],
+        queryFn: async () => {
+          const response = await api.getConversation(id);
+          if (!response || typeof response !== 'object' || !('log' in response) || !('logfile' in response)) {
+            throw new Error('Invalid conversation data received');
+          }
+          return response as ConversationResponse;
+        },
+      });
     }
   };
 
