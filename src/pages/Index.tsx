@@ -114,11 +114,13 @@ export default function Index() {
   // Get current messages based on selected conversation
   const currentMessages = selectedConversation?.startsWith('demo-')
     ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
-    : apiMessages.map((msg: any, index: number) => ({
-        id: msg.id || `${selectedConversation}-${index}`,
-        isBot: msg.role === 'assistant',
-        content: msg.content,
-      }));
+    : Array.isArray(apiMessages) 
+      ? apiMessages.map((msg: any, index: number) => ({
+          id: msg.id || `${selectedConversation}-${index}`,
+          isBot: msg.role === 'assistant',
+          content: msg.content,
+        }))
+      : [];
 
   return (
     <div className="h-screen flex flex-col">
