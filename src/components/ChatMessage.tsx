@@ -13,36 +13,47 @@ export default function ChatMessage({ isBot, content }: Props) {
   const [parsedContent, setParsedContent] = useState("");
 
   useEffect(() => {
+    // Configure marked
+    marked.setOptions({
+      gfm: true,
+      breaks: true,
+      headerIds: false,
+      mangle: false,
+      sanitize: false,
+      silent: true
+    });
+
     marked.use(
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
           if (lang && hljs.getLanguage(lang)) {
-            return hljs.highlight(code, { language: lang }).value;
+            try {
+              return hljs.highlight(code, { language: lang }).value;
+            } catch (err) {
+              console.error('Failed to highlight:', err);
+              return code;
+            }
           }
           return code;
         }
       })
     );
 
-    marked.setOptions({
-      gfm: true,
-      breaks: true
-    });
-
     const processContent = async () => {
       try {
-        let result = await Promise.resolve(marked.parse(content));
+        // Parse markdown to HTML
+        let result = await marked.parse(content, { async: true });
 
-        // Modify the code block wrapping
+        // Wrap code blocks in details/summary
         result = result.replace(
           /<pre><code class="[^"]*language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
-          function (match, lang, code) {
-            return `<details>
+          (_, lang, code) => `
+            <details>
               <summary>${lang}</summary>
               <pre><code class="language-${lang}">${code}</code></pre>
-            </details>`;
-          }
+            </details>
+          `
         );
 
         setParsedContent(result);
