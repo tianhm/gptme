@@ -41,9 +41,18 @@ export default function ChatMessage({ isBot, content }: Props) {
       breaks: true
     });
 
-    // Process the content synchronously
-    const processed = marked.parse(content);
-    setParsedContent(processed);
+    // Process the content and handle both sync/async cases
+    const processContent = async () => {
+      try {
+        const result = await Promise.resolve(marked.parse(content));
+        setParsedContent(result);
+      } catch (error) {
+        console.error('Error parsing markdown:', error);
+        setParsedContent(content); // Fallback to raw content if parsing fails
+      }
+    };
+
+    processContent();
   }, [content]);
 
   return (
