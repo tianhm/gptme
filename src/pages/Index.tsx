@@ -7,7 +7,6 @@ import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import { useApi } from "@/contexts/ApiContext";
 
-// Types based on the API response
 interface Message {
   role: string;
   content: string;
@@ -106,15 +105,15 @@ export default function Index() {
         return { log: [], logfile: '' };
       }
       const response = await api.getConversation(selectedConversation);
-      if (!response || typeof response !== 'object' || !('log' in response)) {
+      if (!response || typeof response !== 'object' || !('log' in response) || !('logfile' in response)) {
         throw new Error('Invalid conversation data received');
       }
       return response as ConversationResponse;
     },
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
-    staleTime: 5000, // Consider data fresh for 5 seconds
-    gcTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
-    refetchOnWindowFocus: false, // Don't refetch when window regains focus
+    staleTime: 5000,
+    gcTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   // Send message mutation
