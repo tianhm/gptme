@@ -104,7 +104,7 @@ export default function Index() {
   const allConversations = [
     ...demoConversations,
     ...apiConversations.map((conv: any) => ({
-      id: conv.path,
+      id: conv.name, // Use name instead of path for the ID
       name: conv.name,
       lastUpdated: new Date(conv.modified * 1000).toLocaleString(),
       messageCount: conv.messages,
