@@ -12,13 +12,11 @@ export default function ChatMessage({ isBot, content }: Props) {
   const [parsedContent, setParsedContent] = useState("");
 
   useEffect(() => {
-    // Configure marked with syntax highlighting
     marked.use(
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
-          if (!lang) return code;
-          return `<pre><code class="language-${lang}">${code}</code></pre>`;
+          return code;
         }
       })
     );
@@ -28,47 +26,23 @@ export default function ChatMessage({ isBot, content }: Props) {
       breaks: true
     });
 
-    // Process the content and handle both sync/async cases
     const processContent = async () => {
       try {
-        // First unescape any HTML entities in the markdown
         let processedContent = content.replace(/&([^;]+);/g, (match, entity) => {
           const textarea = document.createElement("textarea");
           textarea.innerHTML = match;
           return textarea.value;
         });
 
-        // Parse the markdown
         let result = await Promise.resolve(marked.parse(processedContent));
 
-        // Wrap code blocks in details elements with proper language summary
         result = result.replace(
           /<pre><code class="language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
-          function (match, fullLang, code) {
-            // Special case for terminal-commands
-            if (fullLang === "terminal-commands") {
-              return `<pre><code class="language-bash">${code}</code></pre>`;
-            }
-
-            // For filename.extension format (e.g., example.py), use the full string as summary
-            // and extract the actual language for syntax highlighting
-            const lastDotIndex = fullLang.lastIndexOf('.');
-            if (lastDotIndex !== -1) {
-              const filename = fullLang;
-              const language = fullLang.substring(lastDotIndex + 1);
-              return `<details>
-                <summary>${filename}</summary>
-                <div>
-                  <pre><code class="language-${language}">${code}</code></pre>
-                </div>
-              </details>`;
-            }
-
-            // Default case: use the language as both summary and syntax highlighter
+          function (match, lang, code) {
             return `<details>
-              <summary>${fullLang}</summary>
+              <summary>${lang}</summary>
               <div>
-                <pre><code class="language-${fullLang}">${code}</code></pre>
+                <pre><code class="language-${lang}">${code}</code></pre>
               </div>
             </details>`;
           }

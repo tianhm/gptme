@@ -62,11 +62,11 @@
 }
 
 .chat-message pre {
-  @apply my-4 p-4 bg-muted rounded-lg overflow-x-auto;
+  @apply my-2 bg-black text-white rounded-lg overflow-x-auto;
 }
 
 .chat-message details {
-  @apply my-4 border rounded-lg overflow-hidden;
+  @apply my-2 rounded-lg overflow-hidden;
 }
 
 .chat-message details summary {
@@ -74,5 +74,34 @@
 }
 
 .chat-message details > div {
-  @apply p-4;
+  @apply p-0;
+}
+
+.chat-message code {
+  @apply p-4 block;
+}
+
+/* Add syntax highlighting colors */
+.hljs {
+  @apply text-white;
+}
+
+.hljs-keyword {
+  @apply text-purple-400;
+}
+
+.hljs-string {
+  @apply text-green-400;
+}
+
+.hljs-comment {
+  @apply text-gray-500;
+}
+
+.hljs-function {
+  @apply text-blue-400;
+}
+
+.hljs-number {
+  @apply text-orange-400;
 }
