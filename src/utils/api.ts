@@ -15,7 +15,7 @@ interface Conversation {
 }
 
 export class ApiClient {
-  private baseUrl: string;
+  public baseUrl: string;
   public isConnected: boolean = false;
 
   constructor(baseUrl: string = DEFAULT_API_URL) {
