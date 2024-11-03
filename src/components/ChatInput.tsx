@@ -2,6 +2,7 @@ import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useState } from "react";
+import { useApi } from "@/contexts/ApiContext";
 
 interface Props {
   onSend: (message: string) => void;
@@ -9,6 +10,7 @@ interface Props {
 
 export default function ChatInput({ onSend }: Props) {
   const [message, setMessage] = useState("");
+  const api = useApi();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,10 +34,15 @@ export default function ChatInput({ onSend }: Props) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Send a message..."
+          placeholder={api.isConnected ? "Send a message..." : "Connect to gptme to send messages"}
           className="min-h-[60px]"
+          disabled={!api.isConnected}
         />
-        <Button type="submit" className="bg-gptme-600 hover:bg-gptme-700">
+        <Button 
+          type="submit" 
+          className="bg-gptme-600 hover:bg-gptme-700"
+          disabled={!api.isConnected}
+        >
           <Send className="w-4 h-4" />
         </Button>
       </div>

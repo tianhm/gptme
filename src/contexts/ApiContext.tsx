@@ -1,7 +1,9 @@
-import { createContext, useContext, ReactNode } from 'react';
+import { createContext, useContext, ReactNode, useState, useCallback } from 'react';
 import { createApiClient } from '../utils/api';
 
-const ApiContext = createContext<ReturnType<typeof createApiClient> | null>(null);
+const ApiContext = createContext<ReturnType<typeof createApiClient> & {
+  setBaseUrl: (url: string) => void;
+} | null>(null);
 
 export const ApiProvider = ({ 
   children, 
@@ -10,8 +12,18 @@ export const ApiProvider = ({
   children: ReactNode;
   baseUrl?: string;
 }) => {
-  const client = createApiClient(baseUrl);
-  return <ApiContext.Provider value={client}>{children}</ApiContext.Provider>;
+  const [client, setClient] = useState(() => createApiClient(baseUrl));
+
+  const setBaseUrl = useCallback((url: string) => {
+    client.setBaseUrl(url);
+    setClient(client);
+  }, [client]);
+
+  return (
+    <ApiContext.Provider value={{ ...client, setBaseUrl }}>
+      {children}
+    </ApiContext.Provider>
+  );
 };
 
 export const useApi = () => {

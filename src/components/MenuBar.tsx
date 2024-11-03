@@ -1,5 +1,6 @@
 import { Terminal } from "lucide-react";
 import ThemeToggle from "./ThemeToggle";
+import ConnectionButton from "./ConnectionButton";
 
 export default function MenuBar() {
   return (
@@ -8,7 +9,10 @@ export default function MenuBar() {
         <Terminal className="w-6 h-6 text-gptme-600" />
         <span className="font-semibold text-lg">gptme</span>
       </div>
-      <ThemeToggle />
+      <div className="flex items-center space-x-2">
+        <ConnectionButton />
+        <ThemeToggle />
+      </div>
     </div>
   );
 }

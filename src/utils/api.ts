@@ -16,9 +16,25 @@ interface Conversation {
 
 class ApiClient {
   private baseUrl: string;
+  public isConnected: boolean = false;
 
   constructor(baseUrl: string = DEFAULT_API_URL) {
     this.baseUrl = baseUrl;
+    this.checkConnection();
+  }
+
+  setBaseUrl(url: string) {
+    this.baseUrl = url;
+    this.checkConnection();
+  }
+
+  private async checkConnection() {
+    try {
+      const response = await fetch(`${this.baseUrl}/api`);
+      this.isConnected = response.ok;
+    } catch {
+      this.isConnected = false;
+    }
   }
 
   async getConversations(limit: number = 100) {
