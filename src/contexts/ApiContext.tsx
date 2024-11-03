@@ -20,7 +20,10 @@ export const ApiProvider = ({
   }, []);
 
   return (
-    <ApiContext.Provider value={{ ...client, setBaseUrl }}>
+    <ApiContext.Provider value={{ 
+      ...client,
+      setBaseUrl,
+    }}>
       {children}
     </ApiContext.Provider>
   );

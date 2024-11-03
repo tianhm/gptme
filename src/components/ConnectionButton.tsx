@@ -20,15 +20,8 @@ export default function ConnectionButton() {
 
   const handleConnect = async () => {
     try {
-      const response = await fetch(`${url}/api`, {
-        mode: 'cors',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      if (response.ok) {
+      await api.checkConnection();
+      if (api.isConnected) {
         api.setBaseUrl(url);
         toast({
           title: "Connected",
@@ -80,4 +73,4 @@ export default function ConnectionButton() {
       </DialogContent>
     </Dialog>
   );
-}
+};

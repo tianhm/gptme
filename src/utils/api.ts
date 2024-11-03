@@ -23,11 +23,6 @@ export class ApiClient {
     this.checkConnection();
   }
 
-  setBaseUrl(url: string) {
-    this.baseUrl = url;
-    this.checkConnection();
-  }
-
   async checkConnection() {
     try {
       const response = await fetch(`${this.baseUrl}/api`, {
