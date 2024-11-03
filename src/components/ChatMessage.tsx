@@ -17,6 +17,11 @@ export default function ChatMessage({ isBot, content }: Props) {
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
+          // Handle terminal commands specially
+          if (lang === "terminal-commands") {
+            return `<pre><code class="language-bash">${code}</code></pre>`;
+          }
+          
           // Extract filename if present (e.g., ```example.py)
           const [language, ...filenameParts] = lang.split('.');
           const filename = filenameParts.join('.');
