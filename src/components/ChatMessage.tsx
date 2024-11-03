@@ -2,6 +2,7 @@ import { Bot, User } from "lucide-react";
 import { marked } from "marked";
 import { markedHighlight } from "marked-highlight";
 import { useEffect, useState } from "react";
+import hljs from 'highlight.js';
 
 interface Props {
   isBot: boolean;
@@ -16,6 +17,9 @@ export default function ChatMessage({ isBot, content }: Props) {
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
+          if (lang && hljs.getLanguage(lang)) {
+            return hljs.highlight(code, { language: lang }).value;
+          }
           return code;
         }
       })
@@ -36,14 +40,13 @@ export default function ChatMessage({ isBot, content }: Props) {
 
         let result = await Promise.resolve(marked.parse(processedContent));
 
+        // Modify the code block wrapping
         result = result.replace(
-          /<pre><code class="language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
+          /<pre><code class="[^"]*language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
           function (match, lang, code) {
             return `<details>
               <summary>${lang}</summary>
-              <div>
-                <pre><code class="language-${lang}">${code}</code></pre>
-              </div>
+              <pre><code class="language-${lang}">${code}</code></pre>
             </details>`;
           }
         );

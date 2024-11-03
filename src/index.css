@@ -73,15 +73,11 @@
   @apply px-4 py-2 bg-muted cursor-pointer hover:bg-accent transition-colors;
 }
 
-.chat-message details > div {
-  @apply p-0;
-}
-
 .chat-message code {
   @apply p-4 block;
 }
 
-/* Add syntax highlighting colors */
+/* Syntax highlighting colors */
 .hljs {
   @apply text-white;
 }
