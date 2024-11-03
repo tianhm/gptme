@@ -6,9 +6,10 @@ import { useApi } from "@/contexts/ApiContext";
 
 interface Props {
   onSend: (message: string) => void;
+  isReadOnly?: boolean;
 }
 
-export default function ChatInput({ onSend }: Props) {
+export default function ChatInput({ onSend, isReadOnly }: Props) {
   const [message, setMessage] = useState("");
   const api = useApi();
 
@@ -27,6 +28,12 @@ export default function ChatInput({ onSend }: Props) {
     }
   };
 
+  const placeholder = isReadOnly 
+    ? "This is a demo conversation (read-only)" 
+    : api.isConnected 
+      ? "Send a message..." 
+      : "Connect to gptme to send messages";
+
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t">
       <div className="max-w-3xl mx-auto flex space-x-4">
@@ -34,14 +41,14 @@ export default function ChatInput({ onSend }: Props) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={api.isConnected ? "Send a message..." : "Connect to gptme to send messages"}
+          placeholder={placeholder}
           className="min-h-[60px]"
-          disabled={!api.isConnected}
+          disabled={!api.isConnected || isReadOnly}
         />
         <Button 
           type="submit" 
           className="bg-gptme-600 hover:bg-gptme-700"
-          disabled={!api.isConnected}
+          disabled={!api.isConnected || isReadOnly}
         >
           <Send className="w-4 h-4" />
         </Button>
