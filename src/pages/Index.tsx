@@ -5,11 +5,12 @@ import RightSidebar from "@/components/RightSidebar";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 
-const initialMessages = [
-  {
-    id: "1",
-    isBot: true,
-    content: `Hello! I'm gptme, your terminal assistant. I can help you with:
+const conversationMessages = {
+  "1": [
+    {
+      id: "1",
+      isBot: true,
+      content: `Hello! I'm gptme, your terminal assistant. I can help you with:
 
 \`\`\`bash.terminal-commands
 ls -la
@@ -24,8 +25,23 @@ def hello():
 \`\`\`
 
 How can I assist you today?`,
-  },
-];
+    },
+  ],
+  "2": [
+    {
+      id: "1",
+      isBot: true,
+      content: "Welcome to the Debug Session! How can I help you debug your code today?",
+    },
+  ],
+  "3": [
+    {
+      id: "1",
+      isBot: true,
+      content: "Let's work on file operations. What would you like to do with your files?",
+    },
+  ],
+};
 
 const conversations = [
   {
@@ -51,15 +67,20 @@ const conversations = [
 export default function Index() {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
-  const [messages, setMessages] = useState(initialMessages);
-  const [selectedConversation, setSelectedConversation] = useState<string | null>("1");
+  const [selectedConversation, setSelectedConversation] = useState<string>("1");
+  const [messagesByConversation, setMessagesByConversation] = useState(conversationMessages);
 
   const handleSend = (message: string) => {
-    setMessages([
-      ...messages,
-      { id: Date.now().toString(), isBot: false, content: message },
-    ]);
+    setMessagesByConversation((prev) => ({
+      ...prev,
+      [selectedConversation]: [
+        ...(prev[selectedConversation] || []),
+        { id: Date.now().toString(), isBot: false, content: message },
+      ],
+    }));
   };
+
+  const currentMessages = messagesByConversation[selectedConversation] || [];
 
   return (
     <div className="h-screen flex flex-col">
@@ -74,7 +95,7 @@ export default function Index() {
         />
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
-            {messages.map((msg) => (
+            {currentMessages.map((msg) => (
               <ChatMessage key={msg.id} isBot={msg.isBot} content={msg.content} />
             ))}
           </div>
