@@ -14,7 +14,7 @@ interface Conversation {
   messages: Message[];
 }
 
-class ApiClient {
+export class ApiClient {
   private baseUrl: string;
   public isConnected: boolean = false;
 
@@ -28,9 +28,15 @@ class ApiClient {
     this.checkConnection();
   }
 
-  private async checkConnection() {
+  async checkConnection() {
     try {
-      const response = await fetch(`${this.baseUrl}/api`);
+      const response = await fetch(`${this.baseUrl}/api`, {
+        mode: 'cors',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+      });
       this.isConnected = response.ok;
     } catch {
       this.isConnected = false;

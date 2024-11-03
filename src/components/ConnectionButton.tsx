@@ -20,7 +20,14 @@ export default function ConnectionButton() {
 
   const handleConnect = async () => {
     try {
-      const response = await fetch(`${url}/api`);
+      const response = await fetch(`${url}/api`, {
+        mode: 'cors',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+      });
+      
       if (response.ok) {
         api.setBaseUrl(url);
         toast({
@@ -35,7 +42,7 @@ export default function ConnectionButton() {
       toast({
         variant: "destructive",
         title: "Connection failed",
-        description: "Could not connect to gptme instance",
+        description: "Could not connect to gptme instance. Make sure CORS is enabled on the server.",
       });
     }
   };
