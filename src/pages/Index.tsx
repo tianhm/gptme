@@ -12,7 +12,7 @@ const conversationMessages = {
       isBot: true,
       content: `Hello! I'm gptme, your terminal assistant. I can help you with:
 
-\`\`\`bash.terminal-commands
+\`\`\`bash
 ls -la
 git status
 npm install
