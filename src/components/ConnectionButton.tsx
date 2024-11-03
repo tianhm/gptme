@@ -20,7 +20,10 @@ export default function ConnectionButton() {
 
   const handleConnect = async () => {
     try {
-      await api.checkConnection();
+      console.log('Attempting to connect to:', url);
+      const result = await api.checkConnection();
+      console.log('Connection check result:', result);
+      
       if (api.isConnected) {
         api.setBaseUrl(url);
         toast({
@@ -29,13 +32,21 @@ export default function ConnectionButton() {
         });
         setOpen(false);
       } else {
-        throw new Error("Failed to connect");
+        console.error('Connection failed despite successful request');
+        throw new Error("Failed to connect - API responded but connection check failed");
       }
     } catch (error) {
+      console.error('Connection error details:', {
+        error,
+        message: error instanceof Error ? error.message : 'Unknown error',
+        url,
+        isConnected: api.isConnected
+      });
+      
       toast({
         variant: "destructive",
         title: "Connection failed",
-        description: "Could not connect to gptme instance. Make sure CORS is enabled on the server.",
+        description: `Could not connect to gptme instance at ${url}. Error: ${error instanceof Error ? error.message : 'Unknown error'}. Make sure CORS is enabled on the server.`,
       });
     }
   };
@@ -73,4 +84,4 @@ export default function ConnectionButton() {
       </DialogContent>
     </Dialog>
   );
-};
+}
