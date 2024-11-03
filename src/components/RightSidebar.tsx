@@ -8,11 +8,11 @@ interface Props {
 
 export default function RightSidebar({ isOpen, onToggle }: Props) {
   return (
-    <div className="relative">
+    <div className="relative h-full">
       <div
         className={`border-l transition-all duration-300 ${
           isOpen ? "w-80" : "w-0"
-        } overflow-hidden`}
+        } overflow-hidden h-full`}
       >
         <div className="h-12 border-b flex items-center justify-between px-4">
           <h2 className="font-semibold">Details</h2>
