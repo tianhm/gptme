@@ -95,19 +95,25 @@ export default function Index() {
     queryFn: () => api.getConversations(),
     enabled: api.isConnected,
     staleTime: 30000, // Consider data fresh for 30 seconds
-    cacheTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
+    gcTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
   });
 
   // Fetch messages for selected conversation with proper typing and caching
   const { data: conversationData } = useQuery<ConversationResponse>({
     queryKey: ['conversation', selectedConversation],
     queryFn: async () => {
+      if (selectedConversation.startsWith('demo-')) {
+        return null;
+      }
       const response = await api.getConversation(selectedConversation);
-      return response as ConversationResponse;
+      if (!response || !Array.isArray(response.log)) {
+        throw new Error('Invalid conversation data received');
+      }
+      return response;
     },
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
     staleTime: 5000, // Consider data fresh for 5 seconds
-    cacheTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
+    gcTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
     refetchOnWindowFocus: false, // Don't refetch when window regains focus
   });
 
