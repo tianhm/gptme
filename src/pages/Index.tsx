@@ -81,7 +81,7 @@ export default function Index() {
   });
 
   // Fetch messages for selected conversation
-  const { data: apiMessages = [] } = useQuery({
+  const { data: conversationData } = useQuery({
     queryKey: ['conversation', selectedConversation],
     queryFn: () => api.getConversation(selectedConversation),
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
@@ -104,7 +104,7 @@ export default function Index() {
   const allConversations = [
     ...demoConversations,
     ...apiConversations.map((conv: any) => ({
-      id: conv.name, // Use name instead of path for the ID
+      id: conv.name,
       name: conv.name,
       lastUpdated: new Date(conv.modified * 1000).toLocaleString(),
       messageCount: conv.messages,
@@ -114,9 +114,9 @@ export default function Index() {
   // Get current messages based on selected conversation
   const currentMessages = selectedConversation?.startsWith('demo-')
     ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
-    : Array.isArray(apiMessages) 
-      ? apiMessages.map((msg: any, index: number) => ({
-          id: msg.id || `${selectedConversation}-${index}`,
+    : conversationData?.log 
+      ? conversationData.log.map((msg: any, index: number) => ({
+          id: `${selectedConversation}-${index}`,
           isBot: msg.role === 'assistant',
           content: msg.content,
         }))
