@@ -20,11 +20,16 @@ export default function ConnectionButton() {
 
   const handleConnect = async () => {
     try {
-      console.log('Attempting to connect to:', url);
+      console.log('ConnectionButton: Starting connection attempt');
+      console.log('ConnectionButton: Current connection state:', {
+        isConnected: api.isConnected,
+        currentUrl: api.baseUrl,
+        newUrl: url
+      });
+
       const result = await api.checkConnection();
-      console.log('Connection check result:', result);
       
-      if (api.isConnected) {
+      if (result) {
         api.setBaseUrl(url);
         toast({
           title: "Connected",
@@ -32,21 +37,31 @@ export default function ConnectionButton() {
         });
         setOpen(false);
       } else {
-        console.error('Connection failed despite successful request');
-        throw new Error("Failed to connect - API responded but connection check failed");
+        console.error('ConnectionButton: Connection check returned false');
+        throw new Error("Connection check failed - server may not be responding correctly");
       }
     } catch (error) {
-      console.error('Connection error details:', {
+      console.error('ConnectionButton: Connection error:', {
         error,
         message: error instanceof Error ? error.message : 'Unknown error',
         url,
-        isConnected: api.isConnected
+        isConnected: api.isConnected,
+        stack: error instanceof Error ? error.stack : undefined
       });
+      
+      let errorMessage = "Could not connect to gptme instance.";
+      if (error instanceof Error) {
+        if (error.message.includes('NetworkError') || error.message.includes('CORS')) {
+          errorMessage += " CORS issue detected - ensure the server has CORS enabled and is accepting requests from " + window.location.origin;
+        } else {
+          errorMessage += " Error: " + error.message;
+        }
+      }
       
       toast({
         variant: "destructive",
         title: "Connection failed",
-        description: `Could not connect to gptme instance at ${url}. Error: ${error instanceof Error ? error.message : 'Unknown error'}. Make sure CORS is enabled on the server.`,
+        description: errorMessage,
       });
     }
   };

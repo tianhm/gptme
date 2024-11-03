@@ -25,16 +25,37 @@ export class ApiClient {
 
   async checkConnection() {
     try {
+      console.log('ApiClient: Checking connection to:', this.baseUrl);
       const response = await fetch(`${this.baseUrl}/api`, {
         mode: 'cors',
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
+        credentials: 'include', // Add this to handle credentials if needed
       });
-      this.isConnected = response.ok;
-      return this.isConnected;
-    } catch {
+      
+      console.log('ApiClient: Connection response:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        cors: {
+          mode: response.type,
+          credentials: response.credentials,
+        }
+      });
+
+      if (response.ok) {
+        this.isConnected = true;
+        console.log('ApiClient: Connection successful');
+        return true;
+      } else {
+        this.isConnected = false;
+        console.error('ApiClient: Connection failed with status:', response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error('ApiClient: Connection error:', error);
       this.isConnected = false;
       return false;
     }
