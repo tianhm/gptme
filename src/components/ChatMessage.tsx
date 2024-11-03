@@ -41,8 +41,8 @@ export default function ChatMessage({ isBot, content }: Props) {
       breaks: true
     });
 
-    // Process the content
-    const processed = marked(content);
+    // Process the content synchronously
+    const processed = marked.parse(content);
     setParsedContent(processed);
   }, [content]);
 
