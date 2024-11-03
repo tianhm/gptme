@@ -1,9 +1,11 @@
 import { createContext, useContext, ReactNode, useState, useCallback, useEffect } from 'react';
 import { createApiClient, ApiClient } from '../utils/api';
 
-const ApiContext = createContext<ApiClient & {
-  setBaseUrl: (url: string) => void;
-} | null>(null);
+interface ApiContextType extends ApiClient {
+  setBaseUrl: (url: string) => Promise<void>;
+}
+
+const ApiContext = createContext<ApiContextType | null>(null);
 
 export const ApiProvider = ({ 
   children, 
@@ -28,12 +30,6 @@ export const ApiProvider = ({
   return (
     <ApiContext.Provider value={{
       ...client,
-      checkConnection: client.checkConnection.bind(client),
-      getConversations: client.getConversations.bind(client),
-      getConversation: client.getConversation.bind(client),
-      createConversation: client.createConversation.bind(client),
-      sendMessage: client.sendMessage.bind(client),
-      generateResponse: client.generateResponse.bind(client),
       setBaseUrl,
     }}>
       {children}
