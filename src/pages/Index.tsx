@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import MenuBar from "@/components/MenuBar";
 import LeftSidebar from "@/components/LeftSidebar";
 import RightSidebar from "@/components/RightSidebar";
@@ -10,7 +10,7 @@ import { useApi } from "@/contexts/ApiContext";
 interface Message {
   role: string;
   content: string;
-  timestamp: string;
+  timestamp?: string;
   files?: string[];
   pinned?: boolean;
   hide?: boolean;
@@ -87,18 +87,19 @@ export default function Index() {
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<string>("demo-1");
   const api = useApi();
+  const queryClient = useQueryClient();
 
   // Fetch conversations from API with proper caching
   const { data: apiConversations = [] } = useQuery({
     queryKey: ['conversations'],
     queryFn: () => api.getConversations(),
     enabled: api.isConnected,
-    staleTime: 30000, // Consider data fresh for 30 seconds
-    gcTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
+    staleTime: 30000,
+    gcTime: 5 * 60 * 1000,
   });
 
   // Fetch messages for selected conversation with proper typing and caching
-  const { data: conversationData } = useQuery<ConversationResponse>({
+  const { data: conversationData } = useQuery({
     queryKey: ['conversation', selectedConversation],
     queryFn: async () => {
       if (selectedConversation.startsWith('demo-')) {
@@ -111,7 +112,7 @@ export default function Index() {
       return response as ConversationResponse;
     },
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
-    staleTime: 5000,
+    staleTime: 0, // Always fetch fresh data when selecting a conversation
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -120,6 +121,10 @@ export default function Index() {
   const { mutate: sendMessage } = useMutation({
     mutationFn: (message: string) => 
       api.sendMessage(selectedConversation, { role: 'user', content: message }),
+    onSuccess: () => {
+      // Invalidate and refetch the conversation query after sending a message
+      queryClient.invalidateQueries({ queryKey: ['conversation', selectedConversation] });
+    },
   });
 
   const handleSend = (message: string) => {
@@ -127,6 +132,14 @@ export default function Index() {
       return;
     }
     sendMessage(message);
+  };
+
+  const handleSelectConversation = (id: string) => {
+    setSelectedConversation(id);
+    // Invalidate the query cache for the new conversation
+    if (!id.startsWith('demo-')) {
+      queryClient.invalidateQueries({ queryKey: ['conversation', id] });
+    }
   };
 
   // Combine demo and API conversations
@@ -160,7 +173,7 @@ export default function Index() {
           onToggle={() => setLeftSidebarOpen(!leftSidebarOpen)}
           conversations={allConversations}
           selectedConversationId={selectedConversation}
-          onSelectConversation={setSelectedConversation}
+          onSelectConversation={handleSelectConversation}
         />
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
