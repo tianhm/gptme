@@ -17,7 +17,9 @@ export default function ChatMessage({ isBot, content }: Props) {
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
-          // Handle terminal commands specially
+          if (!lang) return code;
+          
+          // Handle terminal commands
           if (lang === "terminal-commands") {
             return `<pre><code class="language-bash">${code}</code></pre>`;
           }
@@ -43,7 +45,9 @@ export default function ChatMessage({ isBot, content }: Props) {
 
     marked.setOptions({
       gfm: true,
-      breaks: true
+      breaks: true,
+      mangle: false,
+      headerIds: false
     });
 
     // Process the content and handle both sync/async cases
