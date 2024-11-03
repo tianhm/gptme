@@ -31,6 +31,15 @@ export const ApiProvider = ({
     <ApiContext.Provider value={{
       ...client,
       setBaseUrl,
+      baseUrl: client.baseUrl,
+      _isConnected: client._isConnected,
+      isConnected: client.isConnected,
+      checkConnection: client.checkConnection.bind(client),
+      getConversations: client.getConversations.bind(client),
+      getConversation: client.getConversation.bind(client),
+      createConversation: client.createConversation.bind(client),
+      sendMessage: client.sendMessage.bind(client),
+      generateResponse: client.generateResponse.bind(client),
     }}>
       {children}
     </ApiContext.Provider>
