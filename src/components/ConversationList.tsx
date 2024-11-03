@@ -7,34 +7,22 @@ interface Conversation {
   messageCount: number;
 }
 
-const conversations: Conversation[] = [
-  {
-    id: "1",
-    name: "Project Setup",
-    lastUpdated: "2 hours ago",
-    messageCount: 12,
-  },
-  {
-    id: "2",
-    name: "Debug Session",
-    lastUpdated: "Yesterday",
-    messageCount: 8,
-  },
-  {
-    id: "3",
-    name: "File Operations",
-    lastUpdated: "3 days ago",
-    messageCount: 15,
-  },
-];
+interface Props {
+  conversations: Conversation[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}
 
-export default function ConversationList() {
+export default function ConversationList({ conversations, selectedId, onSelect }: Props) {
   return (
     <div className="space-y-2 p-4">
       {conversations.map((conv) => (
         <div
           key={conv.id}
-          className="p-3 rounded-lg hover:bg-accent cursor-pointer transition-colors"
+          className={`p-3 rounded-lg hover:bg-accent cursor-pointer transition-colors ${
+            selectedId === conv.id ? "bg-accent" : ""
+          }`}
+          onClick={() => onSelect(conv.id)}
         >
           <div className="font-medium mb-1">{conv.name}</div>
           <div className="flex items-center text-sm text-muted-foreground space-x-4">
