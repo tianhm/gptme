@@ -33,8 +33,10 @@ export class ApiClient {
         },
       });
       this.isConnected = response.ok;
+      return this.isConnected;
     } catch {
       this.isConnected = false;
+      return false;
     }
   }
 
