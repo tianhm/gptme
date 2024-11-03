@@ -103,13 +103,13 @@ export default function Index() {
     queryKey: ['conversation', selectedConversation],
     queryFn: async () => {
       if (selectedConversation.startsWith('demo-')) {
-        return null;
+        return { log: [], logfile: '' };
       }
       const response = await api.getConversation(selectedConversation);
-      if (!response || !Array.isArray(response.log)) {
+      if (!response || typeof response !== 'object' || !('log' in response)) {
         throw new Error('Invalid conversation data received');
       }
-      return response;
+      return response as ConversationResponse;
     },
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
     staleTime: 5000, // Consider data fresh for 5 seconds
