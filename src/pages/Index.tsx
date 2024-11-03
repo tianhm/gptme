@@ -11,31 +11,17 @@ const initialMessages = [
     isBot: true,
     content: `Hello! I'm gptme, your terminal assistant. I can help you with:
 
-<details>
-<summary>Terminal Commands</summary>
-<div>
-
-\`\`\`bash
+\`\`\`bash.terminal-commands
 ls -la
 git status
 npm install
 \`\`\`
 
-</div>
-</details>
-
-<details>
-<summary>File Operations</summary>
-<div>
-
-\`\`\`python
+\`\`\`example.py
 # example.py
 def hello():
     print("Hello, World!")
 \`\`\`
-
-</div>
-</details>
 
 How can I assist you today?`,
   },

@@ -1,5 +1,6 @@
 import { Bot, User } from "lucide-react";
 import { marked } from "marked";
+import { markedHighlight } from "marked-highlight";
 import { useEffect, useState } from "react";
 
 interface Props {
@@ -11,14 +12,38 @@ export default function ChatMessage({ isBot, content }: Props) {
   const [parsedContent, setParsedContent] = useState("");
 
   useEffect(() => {
-    // Configure marked to sanitize HTML and enable GFM (GitHub Flavored Markdown)
+    // Configure marked with syntax highlighting and custom renderer
+    marked.use(
+      markedHighlight({
+        langPrefix: 'hljs language-',
+        highlight(code, lang) {
+          // Extract filename if present (e.g., ```example.py)
+          const [language, ...filenameParts] = lang.split('.');
+          const filename = filenameParts.join('.');
+          
+          // If we have a filename, wrap the code in a details element
+          if (filename) {
+            return `<details>
+              <summary>${filename}</summary>
+              <div>
+                <pre><code class="language-${language}">${code}</code></pre>
+              </div>
+            </details>`;
+          }
+          
+          return `<pre><code class="language-${lang}">${code}</code></pre>`;
+        }
+      })
+    );
+
     marked.setOptions({
       gfm: true,
-      breaks: true,
-      sanitize: false, // We need this false to allow HTML tags like <details>
+      breaks: true
     });
 
-    setParsedContent(marked(content));
+    // Process the content
+    const processed = marked(content);
+    setParsedContent(processed);
   }, [content]);
 
   return (
