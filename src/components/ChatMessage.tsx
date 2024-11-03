@@ -44,22 +44,31 @@ export default function ChatMessage({ isBot, content }: Props) {
         // Wrap code blocks in details elements with proper language summary
         result = result.replace(
           /<pre><code class="language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
-          function (match, lang, code) {
-            // Extract filename if present (e.g., example.py -> py)
-            const [language, ...filenameParts] = lang.split('.');
-            const filename = filenameParts.join('.');
-            
+          function (match, fullLang, code) {
             // Special case for terminal-commands
-            if (language === "terminal-commands") {
+            if (fullLang === "terminal-commands") {
               return `<pre><code class="language-bash">${code}</code></pre>`;
             }
 
-            // If we have a filename, use it in the summary
-            const summary = filename || language;
+            // For filename.extension format (e.g., example.py), use the full string as summary
+            // and extract the actual language for syntax highlighting
+            const lastDotIndex = fullLang.lastIndexOf('.');
+            if (lastDotIndex !== -1) {
+              const filename = fullLang;
+              const language = fullLang.substring(lastDotIndex + 1);
+              return `<details>
+                <summary>${filename}</summary>
+                <div>
+                  <pre><code class="language-${language}">${code}</code></pre>
+                </div>
+              </details>`;
+            }
+
+            // Default case: use the language as both summary and syntax highlighter
             return `<details>
-              <summary>${summary}</summary>
+              <summary>${fullLang}</summary>
               <div>
-                <pre><code class="language-${language}">${code}</code></pre>
+                <pre><code class="language-${fullLang}">${code}</code></pre>
               </div>
             </details>`;
           }
