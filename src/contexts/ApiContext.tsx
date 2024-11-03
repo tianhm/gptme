@@ -1,4 +1,4 @@
-import { createContext, useContext, ReactNode, useState, useCallback } from 'react';
+import { createContext, useContext, ReactNode, useState, useCallback, useEffect } from 'react';
 import { createApiClient, ApiClient } from '../utils/api';
 
 const ApiContext = createContext<ApiClient & {
@@ -14,10 +14,16 @@ export const ApiProvider = ({
 }) => {
   const [client, setClient] = useState<ApiClient>(() => createApiClient(baseUrl));
 
-  const setBaseUrl = useCallback((url: string) => {
+  const setBaseUrl = useCallback(async (url: string) => {
     const newClient = createApiClient(url);
+    await newClient.checkConnection();
     setClient(newClient);
   }, []);
+
+  // Initial connection check
+  useEffect(() => {
+    client.checkConnection();
+  }, [client]);
 
   return (
     <ApiContext.Provider value={{

@@ -16,11 +16,15 @@ interface Conversation {
 
 export class ApiClient {
   public baseUrl: string;
-  public isConnected: boolean = false;
+  private _isConnected: boolean = false;
 
   constructor(baseUrl: string = DEFAULT_API_URL) {
     this.baseUrl = baseUrl;
     this.checkConnection();
+  }
+
+  get isConnected() {
+    return this._isConnected;
   }
 
   async checkConnection() {
@@ -42,32 +46,43 @@ export class ApiClient {
       });
 
       if (response.ok) {
-        this.isConnected = true;
+        this._isConnected = true;
         console.log('ApiClient: Connection successful');
         return true;
       } else {
-        this.isConnected = false;
+        this._isConnected = false;
         console.error('ApiClient: Connection failed with status:', response.status);
         return false;
       }
     } catch (error) {
       console.error('ApiClient: Connection error:', error);
-      this.isConnected = false;
+      this._isConnected = false;
       return false;
     }
   }
 
   async getConversations(limit: number = 100) {
+    if (!this._isConnected) {
+      console.warn('ApiClient: Not connected, cannot fetch conversations');
+      return [];
+    }
     const response = await axios.get(`${this.baseUrl}/api/conversations?limit=${limit}`);
     return response.data;
   }
 
   async getConversation(logfile: string) {
+    if (!this._isConnected) {
+      console.warn('ApiClient: Not connected, cannot fetch conversation');
+      return [];
+    }
     const response = await axios.get(`${this.baseUrl}/api/conversations/${logfile}`);
     return response.data;
   }
 
   async createConversation(logfile: string, messages: Message[]) {
+    if (!this._isConnected) {
+      throw new Error('Not connected to API');
+    }
     const response = await axios.put(`${this.baseUrl}/api/conversations/${logfile}`, {
       messages,
     });
@@ -75,6 +90,9 @@ export class ApiClient {
   }
 
   async sendMessage(logfile: string, message: Message, branch: string = 'main') {
+    if (!this._isConnected) {
+      throw new Error('Not connected to API');
+    }
     const response = await axios.post(`${this.baseUrl}/api/conversations/${logfile}`, {
       ...message,
       branch,
@@ -83,6 +101,9 @@ export class ApiClient {
   }
 
   async generateResponse(logfile: string, model?: string, branch: string = 'main') {
+    if (!this._isConnected) {
+      throw new Error('Not connected to API');
+    }
     const response = await axios.post(`${this.baseUrl}/api/conversations/${logfile}/generate`, {
       model,
       branch,
