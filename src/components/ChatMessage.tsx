@@ -17,11 +17,10 @@ export default function ChatMessage({ isBot, content }: Props) {
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
-          const decodedCode = decodeHTMLEntities(code);
           if (lang && hljs.getLanguage(lang)) {
-            return hljs.highlight(decodedCode, { language: lang }).value;
+            return hljs.highlight(code, { language: lang }).value;
           }
-          return decodedCode;
+          return code;
         }
       })
     );
@@ -31,16 +30,9 @@ export default function ChatMessage({ isBot, content }: Props) {
       breaks: true
     });
 
-    const decodeHTMLEntities = (text: string) => {
-      const textarea = document.createElement('textarea');
-      textarea.innerHTML = text;
-      return textarea.value;
-    };
-
     const processContent = async () => {
       try {
-        const decodedContent = decodeHTMLEntities(content);
-        let result = await Promise.resolve(marked.parse(decodedContent));
+        let result = await Promise.resolve(marked.parse(content));
 
         // Modify the code block wrapping
         result = result.replace(
