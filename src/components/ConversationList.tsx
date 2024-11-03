@@ -14,6 +14,10 @@ interface Props {
 }
 
 export default function ConversationList({ conversations, selectedId, onSelect }: Props) {
+  if (!conversations) {
+    return null; // Or a loading state/placeholder
+  }
+
   return (
     <div className="space-y-2 p-4">
       {conversations.map((conv) => (
