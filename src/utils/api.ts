@@ -32,17 +32,13 @@ export class ApiClient {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
-        credentials: 'include', // Add this to handle credentials if needed
       });
       
       console.log('ApiClient: Connection response:', {
         status: response.status,
         statusText: response.statusText,
         headers: Object.fromEntries(response.headers.entries()),
-        cors: {
-          mode: response.type,
-          credentials: response.credentials,
-        }
+        type: response.type,
       });
 
       if (response.ok) {
