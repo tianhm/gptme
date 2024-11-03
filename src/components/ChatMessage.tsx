@@ -12,32 +12,12 @@ export default function ChatMessage({ isBot, content }: Props) {
   const [parsedContent, setParsedContent] = useState("");
 
   useEffect(() => {
-    // Configure marked with syntax highlighting and custom renderer
+    // Configure marked with syntax highlighting
     marked.use(
       markedHighlight({
         langPrefix: 'hljs language-',
         highlight(code, lang) {
           if (!lang) return code;
-          
-          // Handle terminal commands
-          if (lang === "terminal-commands") {
-            return `<pre><code class="language-bash">${code}</code></pre>`;
-          }
-          
-          // Extract filename if present (e.g., ```example.py)
-          const [language, ...filenameParts] = lang.split('.');
-          const filename = filenameParts.join('.');
-          
-          // If we have a filename, wrap the code in a details element
-          if (filename) {
-            return `<details>
-              <summary>${filename}</summary>
-              <div>
-                <pre><code class="language-${language}">${code}</code></pre>
-              </div>
-            </details>`;
-          }
-          
           return `<pre><code class="language-${lang}">${code}</code></pre>`;
         }
       })
@@ -45,19 +25,50 @@ export default function ChatMessage({ isBot, content }: Props) {
 
     marked.setOptions({
       gfm: true,
-      breaks: true,
-      mangle: false,
-      headerIds: false
+      breaks: true
     });
 
     // Process the content and handle both sync/async cases
     const processContent = async () => {
       try {
-        const result = await Promise.resolve(marked.parse(content));
+        // First unescape any HTML entities in the markdown
+        let processedContent = content.replace(/&([^;]+);/g, (match, entity) => {
+          const textarea = document.createElement("textarea");
+          textarea.innerHTML = match;
+          return textarea.value;
+        });
+
+        // Parse the markdown
+        let result = await Promise.resolve(marked.parse(processedContent));
+
+        // Wrap code blocks in details elements with proper language summary
+        result = result.replace(
+          /<pre><code class="language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
+          function (match, lang, code) {
+            // Extract filename if present (e.g., example.py -> py)
+            const [language, ...filenameParts] = lang.split('.');
+            const filename = filenameParts.join('.');
+            
+            // Special case for terminal-commands
+            if (language === "terminal-commands") {
+              return `<pre><code class="language-bash">${code}</code></pre>`;
+            }
+
+            // If we have a filename, use it in the summary
+            const summary = filename || language;
+            return `<details>
+              <summary>${summary}</summary>
+              <div>
+                <pre><code class="language-${language}">${code}</code></pre>
+              </div>
+            </details>`;
+          }
+        );
+
         setParsedContent(result);
       } catch (error) {
         console.error('Error parsing markdown:', error);
-        setParsedContent(content); // Fallback to raw content if parsing fails
+        setParsedContent(content);
       }
     };
 
