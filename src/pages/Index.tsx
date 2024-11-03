@@ -89,18 +89,26 @@ export default function Index() {
   const [selectedConversation, setSelectedConversation] = useState<string>("demo-1");
   const api = useApi();
 
-  // Fetch conversations from API
+  // Fetch conversations from API with proper caching
   const { data: apiConversations = [] } = useQuery({
     queryKey: ['conversations'],
     queryFn: () => api.getConversations(),
     enabled: api.isConnected,
+    staleTime: 30000, // Consider data fresh for 30 seconds
+    cacheTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
   });
 
-  // Fetch messages for selected conversation
+  // Fetch messages for selected conversation with proper typing and caching
   const { data: conversationData } = useQuery<ConversationResponse>({
     queryKey: ['conversation', selectedConversation],
-    queryFn: () => api.getConversation(selectedConversation),
+    queryFn: async () => {
+      const response = await api.getConversation(selectedConversation);
+      return response as ConversationResponse;
+    },
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
+    staleTime: 5000, // Consider data fresh for 5 seconds
+    cacheTime: 5 * 60 * 1000, // Keep unused data in cache for 5 minutes
+    refetchOnWindowFocus: false, // Don't refetch when window regains focus
   });
 
   // Send message mutation
