@@ -84,7 +84,7 @@ export default function Index() {
   const { data: apiMessages = [] } = useQuery({
     queryKey: ['conversation', selectedConversation],
     queryFn: () => api.getConversation(selectedConversation),
-    enabled: api.isConnected && !selectedConversation?.startsWith('demo-'),
+    enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
   });
 
   // Send message mutation
@@ -95,7 +95,7 @@ export default function Index() {
 
   const handleSend = (message: string) => {
     if (!selectedConversation || selectedConversation.startsWith('demo-')) {
-      return; // Don't allow sending messages in demo conversations or when no conversation is selected
+      return;
     }
     sendMessage(message);
   };
@@ -104,18 +104,18 @@ export default function Index() {
   const allConversations = [
     ...demoConversations,
     ...apiConversations.map((conv: any) => ({
-      id: conv.id,
-      name: conv.name || `Conversation ${conv.id}`,
-      lastUpdated: new Date(conv.lastUpdated || Date.now()).toLocaleString(),
-      messageCount: conv.messages?.length || 0,
+      id: conv.path,
+      name: conv.name,
+      lastUpdated: new Date(conv.modified * 1000).toLocaleString(),
+      messageCount: conv.messages,
     }))
   ];
 
   // Get current messages based on selected conversation
   const currentMessages = selectedConversation?.startsWith('demo-')
     ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
-    : apiMessages.map((msg: any) => ({
-        id: msg.id || Date.now().toString(),
+    : apiMessages.map((msg: any, index: number) => ({
+        id: msg.id || `${selectedConversation}-${index}`,
         isBot: msg.role === 'assistant',
         content: msg.content,
       }));
@@ -134,7 +134,11 @@ export default function Index() {
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
             {currentMessages.map((msg) => (
-              <ChatMessage key={msg.id} isBot={msg.isBot} content={msg.content} />
+              <ChatMessage 
+                key={msg.id} 
+                isBot={msg.isBot} 
+                content={msg.content} 
+              />
             ))}
           </div>
           <ChatInput 
