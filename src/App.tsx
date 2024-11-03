@@ -13,19 +13,19 @@ const App = () => {
   const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000';
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <ApiProvider baseUrl={apiUrl}>
+    <ApiProvider baseUrl={apiUrl}>
+      <QueryClientProvider client={queryClient}>
         <TooltipProvider>
-          <Toaster />
-          <Sonner />
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<Index />} />
             </Routes>
+            <Toaster />
+            <Sonner />
           </BrowserRouter>
         </TooltipProvider>
-      </ApiProvider>
-    </QueryClientProvider>
+      </QueryClientProvider>
+    </ApiProvider>
   );
 };
 
