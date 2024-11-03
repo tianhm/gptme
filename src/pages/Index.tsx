@@ -7,6 +7,22 @@ import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import { useApi } from "@/contexts/ApiContext";
 
+// Types based on the API response
+interface Message {
+  role: string;
+  content: string;
+  timestamp: string;
+  files?: string[];
+  pinned?: boolean;
+  hide?: boolean;
+}
+
+interface ConversationResponse {
+  log: Message[];
+  logfile: string;
+  branches?: Record<string, Message[]>;
+}
+
 // Demo conversations (read-only)
 const demoConversations = [
   {
@@ -81,7 +97,7 @@ export default function Index() {
   });
 
   // Fetch messages for selected conversation
-  const { data: conversationData } = useQuery({
+  const { data: conversationData } = useQuery<ConversationResponse>({
     queryKey: ['conversation', selectedConversation],
     queryFn: () => api.getConversation(selectedConversation),
     enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
@@ -115,7 +131,7 @@ export default function Index() {
   const currentMessages = selectedConversation?.startsWith('demo-')
     ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
     : conversationData?.log 
-      ? conversationData.log.map((msg: any, index: number) => ({
+      ? conversationData.log.map((msg: Message, index: number) => ({
           id: `${selectedConversation}-${index}`,
           isBot: msg.role === 'assistant',
           content: msg.content,
