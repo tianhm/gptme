@@ -1,8 +1,16 @@
 import { createContext, useContext, ReactNode, useState, useCallback, useEffect } from 'react';
 import { createApiClient, ApiClient } from '../utils/api';
 
-interface ApiContextType extends ApiClient {
+interface ApiContextType {
+  baseUrl: string;
+  isConnected: boolean;
   setBaseUrl: (url: string) => Promise<void>;
+  checkConnection: () => Promise<boolean>;
+  getConversations: () => Promise<any[]>;
+  getConversation: (logfile: string) => Promise<any[]>;
+  createConversation: (logfile: string, messages: any[]) => Promise<any>;
+  sendMessage: (logfile: string, message: any) => Promise<any>;
+  generateResponse: (logfile: string, model?: string) => Promise<any>;
 }
 
 const ApiContext = createContext<ApiContextType | null>(null);
@@ -22,18 +30,15 @@ export const ApiProvider = ({
     setClient(newClient);
   }, []);
 
-  // Initial connection check
   useEffect(() => {
     client.checkConnection();
   }, [client]);
 
   return (
     <ApiContext.Provider value={{
-      ...client,
-      setBaseUrl,
       baseUrl: client.baseUrl,
-      _isConnected: client._isConnected,
       isConnected: client.isConnected,
+      setBaseUrl,
       checkConnection: client.checkConnection.bind(client),
       getConversations: client.getConversations.bind(client),
       getConversation: client.getConversation.bind(client),

@@ -84,7 +84,7 @@ export default function Index() {
   const { data: apiMessages = [] } = useQuery({
     queryKey: ['conversation', selectedConversation],
     queryFn: () => api.getConversation(selectedConversation),
-    enabled: api.isConnected && !selectedConversation.startsWith('demo-'),
+    enabled: api.isConnected && !selectedConversation?.startsWith('demo-'),
   });
 
   // Send message mutation
@@ -94,8 +94,8 @@ export default function Index() {
   });
 
   const handleSend = (message: string) => {
-    if (selectedConversation.startsWith('demo-')) {
-      return; // Don't allow sending messages in demo conversations
+    if (!selectedConversation || selectedConversation.startsWith('demo-')) {
+      return; // Don't allow sending messages in demo conversations or when no conversation is selected
     }
     sendMessage(message);
   };
@@ -112,7 +112,7 @@ export default function Index() {
   ];
 
   // Get current messages based on selected conversation
-  const currentMessages = selectedConversation.startsWith('demo-')
+  const currentMessages = selectedConversation?.startsWith('demo-')
     ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
     : apiMessages.map((msg: any) => ({
         id: msg.id || Date.now().toString(),
@@ -139,7 +139,7 @@ export default function Index() {
           </div>
           <ChatInput 
             onSend={handleSend} 
-            isReadOnly={selectedConversation.startsWith('demo-')}
+            isReadOnly={!selectedConversation || selectedConversation.startsWith('demo-')}
           />
         </main>
         <RightSidebar
