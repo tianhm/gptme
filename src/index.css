@@ -73,6 +73,14 @@
   @apply px-4 py-2 bg-muted cursor-pointer hover:bg-accent transition-colors;
 }
 
+.chat-message details[open] {
+  @apply border border-border rounded-lg;
+}
+
+.chat-message details[open] > *:not(summary) {
+  @apply px-4 py-2;
+}
+
 .chat-message code {
   @apply p-4 block;
 }
