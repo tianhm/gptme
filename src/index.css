@@ -77,6 +77,14 @@
   @apply p-4 block;
 }
 
+.chat-message ul {
+  @apply list-disc list-inside my-2 space-y-1;
+}
+
+.chat-message ol {
+  @apply list-decimal list-inside my-2 space-y-1;
+}
+
 /* Syntax highlighting colors */
 .hljs {
   @apply text-white;
