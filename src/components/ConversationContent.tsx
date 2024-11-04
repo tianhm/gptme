@@ -28,12 +28,11 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
     useMemo(() => {
       const messages: Message[] = conversationData?.log || [];
       const firstNonSystem = messages.findIndex((msg) => msg.role !== "system");
-      const effectiveFirstNonSystem = firstNonSystem === -1 ? messages.length - 1 : firstNonSystem;
-      const hasInitialSystem = effectiveFirstNonSystem > 0;
+      const hasInitialSystem = firstNonSystem !== -1 && firstNonSystem > 0;
 
       return {
         currentMessages: messages,
-        firstNonSystemIndex: effectiveFirstNonSystem,
+        firstNonSystemIndex: firstNonSystem === -1 ? messages.length : firstNonSystem,
         hasInitialSystem,
       };
     }, [conversationData]);
