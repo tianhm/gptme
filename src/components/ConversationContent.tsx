@@ -24,22 +24,22 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
   }, [conversation.name]);
 
   // Memoize message processing to prevent unnecessary recalculations
-  const { currentMessages, firstNonSystemIndex, hasInitialSystem } =
+  const { currentMessages, firstNonSystemIndex, hasSystemMessages } =
     useMemo(() => {
       const messages: Message[] = conversationData?.log || [];
       const firstNonSystem = messages.findIndex((msg) => msg.role !== "system");
-      const hasInitialSystem = firstNonSystem !== -1 && firstNonSystem > 0;
+      const hasSystemMessages = messages.some((msg) => msg.role === "system");
 
       return {
         currentMessages: messages,
         firstNonSystemIndex: firstNonSystem === -1 ? messages.length : firstNonSystem,
-        hasInitialSystem,
+        hasSystemMessages,
       };
     }, [conversationData]);
 
   return (
     <main className="flex-1 flex flex-col overflow-hidden">
-      {hasInitialSystem && (
+      {hasSystemMessages && (
         <div className="flex items-center gap-2 p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <div className="flex items-center gap-2 flex-1">
             <Checkbox
