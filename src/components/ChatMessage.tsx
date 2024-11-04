@@ -36,7 +36,6 @@ export const ChatMessage: FC<Props> = ({ message }) => {
 
   useEffect(() => {
     const processContent = async () => {
-      console.log(message.content);
       try {
         // Transform thinking tags before markdown parsing
         const processedContent = message.content.replace(
@@ -49,13 +48,11 @@ export const ChatMessage: FC<Props> = ({ message }) => {
         let parsedResult = await marked.parse(processedContent, {
           async: true,
         });
-        console.log(parsedResult);
 
         // Wrap code blocks in details/summary
         parsedResult = parsedResult.replace(
           /<pre><code class="([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
           (_, classes, code) => {
-            console.log(code);
             const langtag = (classes.split(" ")[1] || "Code").replace(
               "language-",
               ""
@@ -69,7 +66,6 @@ export const ChatMessage: FC<Props> = ({ message }) => {
           }
         );
 
-        console.log(parsedResult);
         setParsedContent(parsedResult);
       } catch (error) {
         console.error("Error parsing markdown:", error);
@@ -83,7 +79,7 @@ export const ChatMessage: FC<Props> = ({ message }) => {
   // All messages (including system) are displayed in the same style
   return (
     <div
-      className={`py-8 ${
+      className={`py-4 ${
         message.role === "assistant"
           ? "bg-accent/50"
           : message.role === "system"

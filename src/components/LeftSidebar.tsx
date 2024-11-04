@@ -1,13 +1,7 @@
 import { PanelLeftOpen, PanelLeftClose } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConversationList } from "./ConversationList";
-
-interface Conversation {
-  id: string;
-  name: string;
-  lastUpdated: string;
-  messageCount: number;
-}
+import type { Conversation } from "@/types/conversation";
 
 interface Props {
   isOpen: boolean;
@@ -19,12 +13,12 @@ interface Props {
 
 import type { FC } from "react";
 
-export const LeftSidebar: FC<Props> = ({ 
-  isOpen, 
-  onToggle, 
+export const LeftSidebar: FC<Props> = ({
+  isOpen,
+  onToggle,
   conversations,
   selectedConversationId,
-  onSelectConversation 
+  onSelectConversation,
 }) => {
   return (
     <div className="relative h-full">
@@ -39,8 +33,8 @@ export const LeftSidebar: FC<Props> = ({
             <PanelLeftClose className="h-5 w-5" />
           </Button>
         </div>
-        <ConversationList 
-          conversations={conversations} 
+        <ConversationList
+          conversations={conversations}
           selectedId={selectedConversationId}
           onSelect={onSelectConversation}
         />
@@ -57,4 +51,4 @@ export const LeftSidebar: FC<Props> = ({
       )}
     </div>
   );
-}
+};

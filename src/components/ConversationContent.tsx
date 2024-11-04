@@ -7,47 +7,44 @@ import { useConversation } from "@/hooks/useConversation";
 import { Checkbox } from "./ui/checkbox";
 import { Label } from "./ui/label";
 import { Loader2 } from "lucide-react";
+import { Conversation } from "@/types/conversation";
 
 interface Props {
-  selectedConversation: string;
-  demoMessages: Record<string, Message[]>;
+  conversation: Conversation;
 }
 
-export const ConversationContent: FC<Props> = ({ selectedConversation, demoMessages }) => {
-  const { conversationData, sendMessage, isLoading, isSending } = useConversation(selectedConversation);
+export const ConversationContent: FC<Props> = ({ conversation }) => {
+  const { conversationData, sendMessage, isLoading, isSending } =
+    useConversation(conversation);
   // Reset state when conversation changes
   const [showInitialSystem, setShowInitialSystem] = useState(false);
-  
+
   // Reset checkbox state when conversation changes
   useEffect(() => {
     setShowInitialSystem(false);
-  }, [selectedConversation]);
+  }, [conversation.name]);
 
   // Memoize message processing to prevent unnecessary recalculations
-  const { currentMessages, firstNonSystemIndex, hasInitialSystem } = useMemo(() => {
-    const messages = selectedConversation?.startsWith('demo-')
-      ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
-      : conversationData?.log 
-        ? conversationData.log 
-        : [];
-    
-    const firstNonSystem = messages.findIndex(msg => msg.role !== 'system');
-    const hasInitialSystem = firstNonSystem > 0;
-    
-    return {
-      currentMessages: messages,
-      firstNonSystemIndex: firstNonSystem,
-      hasInitialSystem
-    };
-  }, [selectedConversation, demoMessages, conversationData]);
+  const { currentMessages, firstNonSystemIndex, hasInitialSystem } =
+    useMemo(() => {
+      const messages: Message[] = conversationData?.log || [];
 
+      const firstNonSystem = messages.findIndex((msg) => msg.role !== "system");
+      const hasInitialSystem = firstNonSystem > 0;
+
+      return {
+        currentMessages: messages,
+        firstNonSystemIndex: firstNonSystem,
+        hasInitialSystem,
+      };
+    }, [conversationData]);
 
   return (
     <main className="flex-1 flex flex-col overflow-hidden">
       {hasInitialSystem && (
         <div className="flex items-center gap-2 p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <div className="flex items-center gap-2 flex-1">
-            <Checkbox 
+            <Checkbox
               id="showInitialSystem"
               checked={showInitialSystem}
               onCheckedChange={(checked) => {
@@ -57,9 +54,11 @@ export const ConversationContent: FC<Props> = ({ selectedConversation, demoMessa
               }}
               disabled={isLoading}
             />
-            <Label 
-              htmlFor="showInitialSystem" 
-              className={`text-sm text-muted-foreground hover:text-foreground ${isLoading ? 'opacity-50' : 'cursor-pointer'}`}
+            <Label
+              htmlFor="showInitialSystem"
+              className={`text-sm text-muted-foreground hover:text-foreground ${
+                isLoading ? "opacity-50" : "cursor-pointer"
+              }`}
             >
               Show initial system messages
             </Label>
@@ -76,26 +75,27 @@ export const ConversationContent: FC<Props> = ({ selectedConversation, demoMessa
           </div>
         )}
         {currentMessages.map((msg, index) => {
-          const isInitialSystem = msg.role === 'system' && index < firstNonSystemIndex;
+          const isInitialSystem =
+            msg.role === "system" && index < firstNonSystemIndex;
           // Only hide initial system messages when checkbox is unchecked
           if (isInitialSystem && !showInitialSystem) {
             return null;
           }
-          
+
           return (
-            <ChatMessage 
-              key={index} 
+            <ChatMessage
+              key={index}
               message={msg}
               isInitialSystem={isInitialSystem}
             />
           );
         })}
       </div>
-      <ChatInput 
-        onSend={sendMessage} 
-        isReadOnly={!selectedConversation || selectedConversation.startsWith('demo-')}
+      <ChatInput
+        onSend={sendMessage}
+        isReadOnly={conversation.readonly}
         isSending={isSending}
       />
     </main>
   );
-}
+};
