@@ -28,8 +28,6 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
     useMemo(() => {
       const messages: Message[] = conversationData?.log || [];
       const firstNonSystem = messages.findIndex((msg) => msg.role !== "system");
-      
-      // If all messages are system messages, treat the last one as non-system
       const effectiveFirstNonSystem = firstNonSystem === -1 ? messages.length - 1 : firstNonSystem;
       const hasInitialSystem = effectiveFirstNonSystem > 0;
 
@@ -76,9 +74,8 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
           </div>
         )}
         {currentMessages.map((msg, index) => {
-          const isInitialSystem =
-            msg.role === "system" && index < firstNonSystemIndex;
-          // Only hide initial system messages when checkbox is unchecked
+          // Hide all system messages before the first non-system message by default
+          const isInitialSystem = msg.role === "system" && index < firstNonSystemIndex;
           if (isInitialSystem && !showInitialSystem) {
             return null;
           }
