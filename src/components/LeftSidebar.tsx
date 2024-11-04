@@ -1,6 +1,9 @@
-import { PanelLeftOpen, PanelLeftClose } from "lucide-react";
+import { PanelLeftOpen, PanelLeftClose, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConversationList } from "./ConversationList";
+import { useApi } from "@/contexts/ApiContext";
+import { useToast } from "@/components/ui/use-toast";
+import { useNavigate } from "react-router-dom";
 import type { Conversation } from "@/types/conversation";
 
 interface Props {
@@ -20,6 +23,28 @@ export const LeftSidebar: FC<Props> = ({
   selectedConversationId,
   onSelectConversation,
 }) => {
+  const api = useApi();
+  const { toast } = useToast();
+  const navigate = useNavigate();
+
+  const handleNewConversation = async () => {
+    try {
+      const newId = Date.now().toString();
+      await api.createConversation(newId, []);
+      toast({
+        title: "New conversation created",
+        description: "Starting a fresh conversation",
+      });
+      navigate(`/?conversation=${newId}`);
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to create new conversation",
+      });
+    }
+  };
+
   return (
     <div className="relative h-full">
       <div
@@ -29,9 +54,20 @@ export const LeftSidebar: FC<Props> = ({
       >
         <div className="h-12 border-b flex items-center justify-between px-4">
           <h2 className="font-semibold">Conversations</h2>
-          <Button variant="ghost" size="icon" onClick={onToggle}>
-            <PanelLeftClose className="h-5 w-5" />
-          </Button>
+          <div className="flex items-center space-x-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleNewConversation}
+              disabled={!api.isConnected}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              New
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onToggle}>
+              <PanelLeftClose className="h-5 w-5" />
+            </Button>
+          </div>
         </div>
         <ConversationList
           conversations={conversations}
