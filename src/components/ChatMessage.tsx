@@ -1,16 +1,20 @@
-import { Bot, User } from "lucide-react";
+import { Bot, ChevronRight, User } from "lucide-react";
 import { marked } from "marked";
 import { markedHighlight } from "marked-highlight";
 import { useEffect, useState } from "react";
 import hljs from 'highlight.js';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
 interface Props {
   isBot: boolean;
   content: string;
+  role?: string;
 }
 
-export default function ChatMessage({ isBot, content }: Props) {
+export default function ChatMessage({ isBot, content, role }: Props) {
   const [parsedContent, setParsedContent] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const isSystem = role === 'system';
 
   useEffect(() => {
     // Configure marked with only valid options
@@ -62,6 +66,22 @@ export default function ChatMessage({ isBot, content }: Props) {
 
     processContent();
   }, [content]);
+
+  if (isSystem) {
+    return (
+      <Collapsible open={isOpen} onOpenChange={setIsOpen} className="py-4">
+        <CollapsibleTrigger className="flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <ChevronRight className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+          <span>Show system message</span>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-2 pl-4 border-l-2 border-muted">
+            <div className="prose prose-sm dark:prose-invert" dangerouslySetInnerHTML={{ __html: parsedContent }} />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    );
+  }
 
   return (
     <div className={`py-8 ${isBot ? "bg-accent/50" : ""}`}>
