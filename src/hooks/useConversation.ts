@@ -62,7 +62,16 @@ export function useConversation(
           throw new Error("Query was cancelled");
         }
 
-        // Cast the response to ConversationResponse to ensure type safety
+        // Transform the response to match ConversationResponse type
+        if (Array.isArray(response)) {
+          return {
+            log: response,
+            logfile: conversation.name,
+            branches: {}
+          } as ConversationResponse;
+        }
+
+        // If response is already in correct format, use it directly
         const typedResponse = response as ConversationResponse;
         
         if (!typedResponse?.log || !typedResponse?.logfile) {
