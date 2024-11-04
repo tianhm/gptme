@@ -78,7 +78,7 @@
 }
 
 .chat-message details[open] > *:not(summary) {
-  @apply px-4 py-2;
+  @apply px-6 py-4;
 }
 
 .chat-message code {
