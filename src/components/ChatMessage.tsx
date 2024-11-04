@@ -4,17 +4,16 @@ import { markedHighlight } from "marked-highlight";
 import { useEffect, useState } from "react";
 import hljs from 'highlight.js';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+import { Message } from "@/types/message";
 
 interface Props {
-  isBot: boolean;
-  content: string;
-  role?: string;
+  message: Message;
 }
 
-export default function ChatMessage({ isBot, content, role }: Props) {
+export default function ChatMessage({ message }: Props) {
   const [parsedContent, setParsedContent] = useState("");
   const [isOpen, setIsOpen] = useState(false);
-  const isSystem = role === 'system';
+  const isSystem = message.role === 'system';
 
   useEffect(() => {
     // Configure marked with only valid options
@@ -44,7 +43,7 @@ export default function ChatMessage({ isBot, content, role }: Props) {
     const processContent = async () => {
       try {
         // Parse markdown to HTML
-        let result = await marked.parse(content, { async: true });
+        let result = await marked.parse(message.content, { async: true });
 
         // Wrap code blocks in details/summary
         result = result.replace(
@@ -60,12 +59,12 @@ export default function ChatMessage({ isBot, content, role }: Props) {
         setParsedContent(result);
       } catch (error) {
         console.error('Error parsing markdown:', error);
-        setParsedContent(content);
+        setParsedContent(message.content);
       }
     };
 
     processContent();
-  }, [content]);
+  }, [message.content]);
 
   if (isSystem) {
     return (
@@ -84,15 +83,15 @@ export default function ChatMessage({ isBot, content, role }: Props) {
   }
 
   return (
-    <div className={`py-8 ${isBot ? "bg-accent/50" : ""}`}>
+    <div className={`py-8 ${message.role === 'assistant' ? "bg-accent/50" : ""}`}>
       <div className="max-w-3xl mx-auto px-4">
         <div className="flex items-start space-x-4">
           <div
             className={`w-8 h-8 rounded-full flex items-center justify-center ${
-              isBot ? "bg-gptme-600 text-white" : "bg-blue-600 text-white"
+              message.role === 'assistant' ? "bg-gptme-600 text-white" : "bg-blue-600 text-white"
             }`}
           >
-            {isBot ? <Bot className="w-5 h-5" /> : <User className="w-5 h-5" />}
+            {message.role === 'assistant' ? <Bot className="w-5 h-5" /> : <User className="w-5 h-5" />}
           </div>
           <div 
             className="flex-1 chat-message prose prose-sm dark:prose-invert"

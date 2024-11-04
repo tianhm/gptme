@@ -6,15 +6,7 @@ import RightSidebar from "@/components/RightSidebar";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import { useApi } from "@/contexts/ApiContext";
-
-interface Message {
-  role: string;
-  content: string;
-  timestamp?: string;
-  files?: string[];
-  pinned?: boolean;
-  hide?: boolean;
-}
+import { Message } from "@/types/message";
 
 interface ConversationResponse {
   log: Message[];
@@ -44,21 +36,18 @@ const demoConversations = [
   },
 ];
 
-const demoMessages = {
+const demoMessages: Record<string, Message[]> = {
   "demo-1": [
     {
-      id: "1",
-      isBot: true,
+      role: "assistant",
       content: "Hello! I'm gptme, your coding assistant. I can help you set up and manage your Python projects. What kind of project would you like to create?"
     },
     {
-      id: "2",
-      isBot: false,
+      role: "user",
       content: "I want to create a new web scraping project with Python. Can you help me set it up?"
     },
     {
-      id: "3",
-      isBot: true,
+      role: "assistant",
       content: `I'll help you set up a web scraping project. Here's a basic project structure:
 
 \`\`\`
@@ -84,13 +73,11 @@ pytest==7.4.0
 Would you like me to help you implement the scraper.py file next?`
     },
     {
-      id: "4",
-      isBot: false,
+      role: "user",
       content: "Yes, please show me how to implement a basic scraper using BeautifulSoup."
     },
     {
-      id: "5",
-      isBot: true,
+      role: "assistant",
       content: `Here's a basic web scraper implementation:
 
 \`\`\`python
@@ -127,15 +114,13 @@ Would you like me to show you how to write tests for this scraper?`
   ],
   "demo-2": [
     {
-      id: "1",
-      isBot: true,
+      role: "assistant",
       content: "Welcome to the Debug Session! How can I help you debug your code today?",
     },
   ],
   "demo-3": [
     {
-      id: "1",
-      isBot: true,
+      role: "assistant",
       content: "Let's work on file operations. What would you like to do with your files?",
     },
   ],
@@ -230,11 +215,7 @@ export default function Index() {
   const currentMessages = selectedConversation?.startsWith('demo-')
     ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
     : conversationData?.log 
-      ? conversationData.log.map((msg: Message, index: number) => ({
-          id: `${selectedConversation}-${index}`,
-          isBot: msg.role === 'assistant',
-          content: msg.content,
-        }))
+      ? conversationData.log 
       : [];
 
   return (
@@ -250,11 +231,10 @@ export default function Index() {
         />
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto">
-            {currentMessages.map((msg) => (
+            {currentMessages.map((msg, index) => (
               <ChatMessage 
-                key={msg.id} 
-                isBot={msg.isBot} 
-                content={msg.content} 
+                key={index} 
+                message={msg}
               />
             ))}
           </div>
