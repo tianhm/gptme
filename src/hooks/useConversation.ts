@@ -21,7 +21,6 @@ interface UseConversationResult {
 }
 
 function getDemo(name: string): DemoConversation | undefined {
-  console.log(name);
   return demoConversations.find((conv) => conv.name === name);
 }
 
@@ -32,7 +31,6 @@ export function useConversation(
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  // Cancel any pending queries when conversation changes
   useEffect(() => {
     return () => {
       queryClient.cancelQueries({
@@ -48,33 +46,31 @@ export function useConversation(
   } = useQuery({
     queryKey: ["conversation", conversation.name, conversation.readonly],
     queryFn: async ({ signal }) => {
-      // For readonly conversations, return demo data
       if (conversation.readonly) {
         const demo = getDemo(conversation.name);
         return {
           log: demo?.messages || [],
           logfile: conversation.name,
           branches: {}
-        };
+        } as ConversationResponse;
       }
 
-      // For API conversations, fetch from server
       try {
         const response = await api.getConversation(conversation.name);
         
-        // Handle cancellation
         if (signal.aborted) {
           throw new Error("Query was cancelled");
         }
 
-        // Validate response shape
-        if (!response?.log || !response?.logfile) {
+        // Cast the response to ConversationResponse to ensure type safety
+        const typedResponse = response as ConversationResponse;
+        
+        if (!typedResponse?.log || !typedResponse?.logfile) {
           throw new Error("Invalid conversation data received");
         }
 
-        return response as ConversationResponse;
+        return typedResponse;
       } catch (error) {
-        // Enhance error message
         throw new Error(
           `Failed to fetch conversation: ${(error as Error).message}`
         );
@@ -91,16 +87,11 @@ export function useConversation(
 
   const { mutateAsync: sendMessage, isPending: isSending } = useMutation({
     mutationFn: async (message: string) => {
-      // First, send the user's message
       await api.sendMessage(conversation.name, {
         role: "user",
         content: message,
       });
-
-      // Then, generate the AI's response
       await api.generateResponse(conversation.name);
-
-      // Finally, invalidate the conversation query to fetch the updated messages
       queryClient.invalidateQueries({
         queryKey: ["conversation", conversation.name],
       });
@@ -115,7 +106,6 @@ export function useConversation(
     },
   });
 
-  // Combine loading states to show loading indicator during initial load, background updates, and message sending
   const isLoadingState = isLoading || isFetching || isSending;
 
   return {

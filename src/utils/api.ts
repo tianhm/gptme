@@ -17,7 +17,8 @@ export class ApiClient {
     this.baseUrl = baseUrl;
   }
 
-  private cancelPendingRequests() {
+  // Changed to public so it can be accessed from ApiContext
+  public cancelPendingRequests() {
     if (this.controller) {
       this.controller.abort();
       this.controller = null;
