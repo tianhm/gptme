@@ -5,13 +5,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { ApiProvider } from "./contexts/ApiContext";
 import Index from "./pages/Index";
+import type { FC } from "react";
 import { useEffect } from "react";
 import { useToast } from "@/components/ui/use-toast";
 import { createApiClient } from "./utils/api";
 
 const queryClient = new QueryClient();
 
-const AppContent = () => {
+const AppContent: FC = () => {
   const { toast } = useToast();
   const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000';
 
@@ -29,7 +30,7 @@ const AppContent = () => {
     };
 
     attemptInitialConnection();
-  }, [toast]);
+  }, [toast, apiUrl]);
 
   return (
     <ApiProvider baseUrl={apiUrl}>
@@ -42,7 +43,7 @@ const AppContent = () => {
   );
 };
 
-const App = () => {
+const App: FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

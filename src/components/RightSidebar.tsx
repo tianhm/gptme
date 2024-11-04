@@ -6,7 +6,9 @@ interface Props {
   onToggle: () => void;
 }
 
-export default function RightSidebar({ isOpen, onToggle }: Props) {
+import type { FC } from "react";
+
+export const RightSidebar: FC<Props> = ({ isOpen, onToggle }) => {
   return (
     <div className="relative h-full">
       <div

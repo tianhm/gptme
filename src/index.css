@@ -61,8 +61,36 @@
   }
 }
 
+.chat-message > * {
+  @apply my-2;
+}
+
+.chat-message h1 {
+  @apply text-3xl font-bold;
+}
+
+.chat-message h2 {
+  @apply text-2xl font-bold;
+}
+
+.chat-message h3 {
+  @apply text-xl font-bold;
+}
+
+.chat-message h4 {
+  @apply text-lg font-bold;
+}
+
+.chat-message h5 {
+  @apply text-base font-bold;
+}
+
+.chat-message h6 {
+  @apply text-sm font-bold;
+}
+
 .chat-message pre {
-  @apply my-2 bg-black text-white rounded-lg overflow-x-auto;
+  @apply bg-black text-white rounded-lg overflow-x-auto;
 }
 
 .chat-message details {
@@ -78,10 +106,10 @@
 }
 
 .chat-message details[open] > *:not(summary) {
-  @apply px-6 py-4;
+  @apply p-4;
 }
 
-.chat-message code {
+.chat-message > pre {
   @apply p-4 block;
 }
 

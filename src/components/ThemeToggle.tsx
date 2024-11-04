@@ -1,8 +1,9 @@
 import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
+import type { FC } from "react";
 
-export default function ThemeToggle() {
+export const ThemeToggle: FC = () => {
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
   useEffect(() => {

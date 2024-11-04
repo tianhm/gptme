@@ -1,19 +1,20 @@
-import { Send } from "lucide-react";
+import { Send, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { useState } from "react";
+import { useState, type FC, type FormEvent, type KeyboardEvent } from "react";
 import { useApi } from "@/contexts/ApiContext";
 
 interface Props {
   onSend: (message: string) => void;
   isReadOnly?: boolean;
+  isSending?: boolean;
 }
 
-export default function ChatInput({ onSend, isReadOnly }: Props) {
+export const ChatInput: FC<Props> = ({ onSend, isReadOnly, isSending }) => {
   const [message, setMessage] = useState("");
   const api = useApi();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (message.trim()) {
       onSend(message);
@@ -21,12 +22,13 @@ export default function ChatInput({ onSend, isReadOnly }: Props) {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
     }
   };
+
 
   const placeholder = isReadOnly 
     ? "This is a demo conversation (read-only)" 
@@ -41,18 +43,23 @@ export default function ChatInput({ onSend, isReadOnly }: Props) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder}
+          placeholder={isSending ? "Sending message..." : placeholder}
           className="min-h-[60px]"
-          disabled={!api.isConnected || isReadOnly}
+          disabled={!api.isConnected || isReadOnly || isSending}
         />
         <Button 
           type="submit" 
           className="bg-gptme-600 hover:bg-gptme-700"
-          disabled={!api.isConnected || isReadOnly}
+          disabled={!api.isConnected || isReadOnly || isSending}
         >
-          <Send className="w-4 h-4" />
+          {isSending ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Send className="w-4 h-4" />
+          )}
         </Button>
       </div>
     </form>
   );
-}
+};
+

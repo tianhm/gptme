@@ -11,7 +11,16 @@ export default tseslint.config(
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
       ecmaVersion: 2020,
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        React: "readonly",
+      },
+      parserOptions: {
+        ecmaFeatures: {
+          jsx: true,
+        },
+        sourceType: "module",
+      },
     },
     plugins: {
       "react-hooks": reactHooks,
@@ -19,11 +28,38 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      "react-refresh/only-export-components": [
+      "@typescript-eslint/no-unused-vars": [
         "warn",
-        { allowConstantExport: true },
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          ignoreRestSiblings: true,
+        },
       ],
-      "@typescript-eslint/no-unused-vars": "off",
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
+      "no-undef": "error",
+      "no-unused-vars": "off",
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/consistent-type-imports": [
+        "warn",
+        {
+          prefer: "type-imports",
+          fixStyle: "inline-type-imports",
+        },
+      ],
+      //"@typescript-eslint/no-restricted-imports": [
+      //  "error",
+      //  {
+      //    patterns: [
+      //      {
+      //        group: ["react"],
+      //        message: "Import specific entities from react instead of the entire module",
+      //        allowTypeImports: true
+      //      }
+      //    ]
+      //  }
+      //]
     },
   }
 );

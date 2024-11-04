@@ -1,12 +1,14 @@
 import { Terminal, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import ThemeToggle from "./ThemeToggle";
-import ConnectionButton from "./ConnectionButton";
+import { ThemeToggle } from "./ThemeToggle";
+import { ConnectionButton } from "./ConnectionButton";
 import { useApi } from "@/contexts/ApiContext";
 import { useToast } from "@/components/ui/use-toast";
 import { useNavigate } from "react-router-dom";
 
-export default function MenuBar() {
+import type { FC } from "react";
+
+export const MenuBar: FC = () => {
   const api = useApi();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -20,7 +22,7 @@ export default function MenuBar() {
         description: "Starting a fresh conversation",
       });
       navigate(`/?conversation=${newId}`);
-    } catch (error) {
+    } catch {
       toast({
         variant: "destructive",
         title: "Error",

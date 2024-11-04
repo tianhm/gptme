@@ -1,11 +1,22 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import MenuBar from "@/components/MenuBar";
-import LeftSidebar from "@/components/LeftSidebar";
-import RightSidebar from "@/components/RightSidebar";
-import ConversationContent from "@/components/ConversationContent";
+import { type FC } from "react";
+import { useState, useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { MenuBar } from "@/components/MenuBar";
+import { LeftSidebar } from "@/components/LeftSidebar";
+import { RightSidebar } from "@/components/RightSidebar";
+import { ConversationContent } from "@/components/ConversationContent";
 import { useApi } from "@/contexts/ApiContext";
-import { Message } from "@/types/message";
+import type { Message } from "@/types/message";
+
+interface ApiConversation {
+  name: string;
+  modified: number;
+  messages: number;
+}
+
+interface Props {
+  className?: string;
+}
 
 // Demo conversations (read-only)
 const demoConversations = [
@@ -119,11 +130,12 @@ Would you like me to show you how to write tests for this scraper?`
   ],
 };
 
-export default function Index() {
+const Index: FC<Props> = () => {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<string>("demo-1");
   const api = useApi();
+  const queryClient = useQueryClient();
 
   // Fetch conversations from API with proper caching
   const { data: apiConversations = [] } = useQuery({
@@ -137,7 +149,7 @@ export default function Index() {
   // Combine demo and API conversations
   const allConversations = [
     ...demoConversations,
-    ...apiConversations.map((conv: any) => ({
+    ...apiConversations.map((conv: ApiConversation) => ({
       id: conv.name,
       name: conv.name,
       lastUpdated: new Date(conv.modified * 1000).toLocaleString(),
@@ -145,12 +157,14 @@ export default function Index() {
     }))
   ];
 
-  const handleSelectConversation = (id: string) => {
+  const handleSelectConversation = useCallback((id: string) => {
     if (id === selectedConversation) {
       return;
     }
+    // Cancel any pending queries for the previous conversation
+    queryClient.cancelQueries({ queryKey: ['conversation', selectedConversation] });
     setSelectedConversation(id);
-  };
+  }, [selectedConversation, queryClient]);
 
   return (
     <div className="h-screen flex flex-col">
@@ -174,4 +188,6 @@ export default function Index() {
       </div>
     </div>
   );
-}
+};
+
+export default Index;

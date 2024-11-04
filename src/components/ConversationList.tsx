@@ -13,7 +13,9 @@ interface Props {
   onSelect: (id: string) => void;
 }
 
-export default function ConversationList({ conversations, selectedId, onSelect }: Props) {
+import type { FC } from "react";
+
+export const ConversationList: FC<Props> = ({ conversations, selectedId, onSelect }) => {
   if (!conversations) {
     return null; // Or a loading state/placeholder
   }

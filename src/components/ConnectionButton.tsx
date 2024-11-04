@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { FC } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -12,7 +13,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { Network } from "lucide-react";
 import { useApi } from "@/contexts/ApiContext";
 
-export default function ConnectionButton() {
+export const ConnectionButton: FC = () => {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState(import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000');
   const { toast } = useToast();
