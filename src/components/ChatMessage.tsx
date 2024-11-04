@@ -16,7 +16,6 @@ export default function ChatMessage({ message }: Props) {
   const isSystem = message.role === 'system';
 
   useEffect(() => {
-    // Configure marked with only valid options
     marked.setOptions({
       gfm: true,
       breaks: true,
@@ -42,8 +41,14 @@ export default function ChatMessage({ message }: Props) {
 
     const processContent = async () => {
       try {
+        // Transform thinking tags before markdown parsing
+        let processedContent = message.content.replace(
+          /<thinking>([\s\S]*?)<\/thinking>/g,
+          (_, content) => `<details><summary>Thinking</summary>${content}</details>`
+        );
+
         // Parse markdown to HTML
-        let result = await marked.parse(message.content, { async: true });
+        let result = await marked.parse(processedContent, { async: true });
 
         // Wrap code blocks in details/summary
         result = result.replace(
