@@ -1,18 +1,11 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import MenuBar from "@/components/MenuBar";
 import LeftSidebar from "@/components/LeftSidebar";
 import RightSidebar from "@/components/RightSidebar";
-import ChatMessage from "@/components/ChatMessage";
-import ChatInput from "@/components/ChatInput";
+import ConversationContent from "@/components/ConversationContent";
 import { useApi } from "@/contexts/ApiContext";
 import { Message } from "@/types/message";
-
-interface ConversationResponse {
-  log: Message[];
-  logfile: string;
-  branches?: Record<string, Message[]>;
-}
 
 // Demo conversations (read-only)
 const demoConversations = [
@@ -131,7 +124,6 @@ export default function Index() {
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [selectedConversation, setSelectedConversation] = useState<string>("demo-1");
   const api = useApi();
-  const queryClient = useQueryClient();
 
   // Fetch conversations from API with proper caching
   const { data: apiConversations = [] } = useQuery({
@@ -141,64 +133,6 @@ export default function Index() {
     staleTime: 30000,
     gcTime: 5 * 60 * 1000,
   });
-
-  // Fetch messages for selected conversation with proper typing and caching
-  const { data: conversationData } = useQuery({
-    queryKey: ['conversation', selectedConversation],
-    queryFn: async () => {
-      if (selectedConversation.startsWith('demo-')) {
-        return { log: [], logfile: '' };
-      }
-      const response = await api.getConversation(selectedConversation);
-      if (!response || typeof response !== 'object' || !('log' in response) || !('logfile' in response)) {
-        throw new Error('Invalid conversation data received');
-      }
-      return response as ConversationResponse;
-    },
-    enabled: api.isConnected && selectedConversation && !selectedConversation.startsWith('demo-'),
-    staleTime: 1000, // Keep data fresh for 1 second to prevent excessive refetching
-    gcTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-    retry: false, // Disable retries on failure
-  });
-
-  // Send message mutation
-  const { mutate: sendMessage } = useMutation({
-    mutationFn: (message: string) => 
-      api.sendMessage(selectedConversation, { role: 'user', content: message }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['conversation', selectedConversation] });
-    },
-  });
-
-  const handleSend = (message: string) => {
-    if (!selectedConversation || selectedConversation.startsWith('demo-')) {
-      return;
-    }
-    sendMessage(message);
-  };
-
-  const handleSelectConversation = (id: string) => {
-    if (id === selectedConversation) {
-      return; // Don't switch if it's the same conversation
-    }
-    
-    setSelectedConversation(id);
-    
-    if (!id.startsWith('demo-')) {
-      // Prefetch the conversation data
-      queryClient.prefetchQuery({
-        queryKey: ['conversation', id],
-        queryFn: async () => {
-          const response = await api.getConversation(id);
-          if (!response || typeof response !== 'object' || !('log' in response) || !('logfile' in response)) {
-            throw new Error('Invalid conversation data received');
-          }
-          return response as ConversationResponse;
-        },
-      });
-    }
-  };
 
   // Combine demo and API conversations
   const allConversations = [
@@ -211,12 +145,12 @@ export default function Index() {
     }))
   ];
 
-  // Get current messages based on selected conversation
-  const currentMessages = selectedConversation?.startsWith('demo-')
-    ? demoMessages[selectedConversation as keyof typeof demoMessages] || []
-    : conversationData?.log 
-      ? conversationData.log 
-      : [];
+  const handleSelectConversation = (id: string) => {
+    if (id === selectedConversation) {
+      return;
+    }
+    setSelectedConversation(id);
+  };
 
   return (
     <div className="h-screen flex flex-col">
@@ -229,20 +163,10 @@ export default function Index() {
           selectedConversationId={selectedConversation}
           onSelectConversation={handleSelectConversation}
         />
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto">
-            {currentMessages.map((msg, index) => (
-              <ChatMessage 
-                key={index} 
-                message={msg}
-              />
-            ))}
-          </div>
-          <ChatInput 
-            onSend={handleSend} 
-            isReadOnly={!selectedConversation || selectedConversation.startsWith('demo-')}
-          />
-        </main>
+        <ConversationContent
+          selectedConversation={selectedConversation}
+          demoMessages={demoMessages}
+        />
         <RightSidebar
           isOpen={rightSidebarOpen}
           onToggle={() => setRightSidebarOpen(!rightSidebarOpen)}
