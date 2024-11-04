@@ -5,6 +5,7 @@ import { useApi } from "@/contexts/ApiContext";
 import { useToast } from "@/components/ui/use-toast";
 import { useNavigate } from "react-router-dom";
 import type { Conversation } from "@/types/conversation";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface Props {
   isOpen: boolean;
@@ -26,11 +27,14 @@ export const LeftSidebar: FC<Props> = ({
   const api = useApi();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const handleNewConversation = async () => {
     try {
       const newId = Date.now().toString();
       await api.createConversation(newId, []);
+      // Invalidate conversations query to trigger a refresh
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
       toast({
         title: "New conversation created",
         description: "Starting a fresh conversation",
