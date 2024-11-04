@@ -13,13 +13,10 @@ export default function ChatMessage({ isBot, content }: Props) {
   const [parsedContent, setParsedContent] = useState("");
 
   useEffect(() => {
-    // Configure marked
+    // Configure marked with only valid options
     marked.setOptions({
       gfm: true,
       breaks: true,
-      headerIds: false,
-      mangle: false,
-      sanitize: false,
       silent: true
     });
 
