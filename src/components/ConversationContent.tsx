@@ -16,7 +16,6 @@ interface Props {
 export const ConversationContent: FC<Props> = ({ conversation }) => {
   const { conversationData, sendMessage, isLoading, isSending } =
     useConversation(conversation);
-  // Reset state when conversation changes
   const [showInitialSystem, setShowInitialSystem] = useState(false);
 
   // Reset checkbox state when conversation changes
@@ -28,13 +27,15 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
   const { currentMessages, firstNonSystemIndex, hasInitialSystem } =
     useMemo(() => {
       const messages: Message[] = conversationData?.log || [];
-
       const firstNonSystem = messages.findIndex((msg) => msg.role !== "system");
-      const hasInitialSystem = firstNonSystem > 0;
+      
+      // If all messages are system messages, treat the last one as non-system
+      const effectiveFirstNonSystem = firstNonSystem === -1 ? messages.length - 1 : firstNonSystem;
+      const hasInitialSystem = effectiveFirstNonSystem > 0;
 
       return {
         currentMessages: messages,
-        firstNonSystemIndex: firstNonSystem,
+        firstNonSystemIndex: effectiveFirstNonSystem,
         hasInitialSystem,
       };
     }, [conversationData]);
