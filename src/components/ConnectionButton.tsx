@@ -120,7 +120,10 @@ export const ConnectionButton: FC = () => {
             <ul className="space-y-2">
               {features.map((feature, index) => (
                 <li key={index} className="flex items-center text-sm">
-                  {api.isConnected && <Check className="w-4 h-4 mr-2 text-green-500" />}
+                  <Check className={cn(
+                    "w-4 h-4 mr-2",
+                    api.isConnected ? "text-green-500" : "text-gray-300"
+                  )} />
                   <span className="text-foreground">{feature}</span>
                 </li>
               ))}
