@@ -53,8 +53,17 @@ export const ConversationList: FC<Props> = ({
 
       if (!messages) return {};
 
-      return (Array.isArray(messages) ? messages : messages.log).reduce((acc, msg) => {
-        acc[msg.role] = (acc[msg.role] || 0) + 1;
+      // Handle both array and object response formats
+      const messageList = Array.isArray(messages) 
+        ? messages 
+        : messages.log && Array.isArray(messages.log) 
+          ? messages.log 
+          : [];
+
+      return messageList.reduce((acc, msg) => {
+        if (msg && typeof msg === 'object' && 'role' in msg) {
+          acc[msg.role] = (acc[msg.role] || 0) + 1;
+        }
         return acc;
       }, {} as Record<string, number>);
     };
