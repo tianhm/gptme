@@ -6,6 +6,12 @@ import { useToast } from "@/components/ui/use-toast";
 import { useNavigate } from "react-router-dom";
 import type { Conversation } from "@/types/conversation";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface Props {
   isOpen: boolean;
@@ -59,15 +65,27 @@ export const LeftSidebar: FC<Props> = ({
         <div className="h-12 border-b flex items-center justify-between px-4">
           <h2 className="font-semibold">Conversations</h2>
           <div className="flex items-center space-x-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleNewConversation}
-              disabled={!api.isConnected}
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              New
-            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleNewConversation}
+                      disabled={!api.isConnected}
+                    >
+                      <Plus className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {!api.isConnected
+                    ? "Connect to create new conversations"
+                    : "Create new conversation"}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             <Button variant="ghost" size="icon" onClick={onToggle}>
               <PanelLeftClose className="h-5 w-5" />
             </Button>
