@@ -90,11 +90,11 @@
 }
 
 .chat-message pre {
-  @apply bg-black text-white rounded-lg overflow-x-auto;
+  @apply bg-black text-white rounded-lg overflow-x-auto max-w-full;
 }
 
 .chat-message details {
-  @apply my-2 rounded-lg overflow-hidden;
+  @apply my-2 rounded-lg overflow-hidden max-w-full;
 }
 
 .chat-message details summary {
@@ -106,7 +106,7 @@
 }
 
 .chat-message details[open] > *:not(summary) {
-  @apply p-4;
+  @apply p-4 overflow-x-auto;
 }
 
 .chat-message > pre {
