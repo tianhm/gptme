@@ -27,7 +27,7 @@ export const ConnectionButton: FC = () => {
     "Generate AI responses"
   ];
 
-  const serverCommand = `gptme-server --cors-origins='${window.location.origin}'`;
+  const serverCommand = `gptme-server --cors-origin='${window.location.origin}'`;
 
   const copyCommand = () => {
     navigator.clipboard.writeText(serverCommand);
