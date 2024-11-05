@@ -11,7 +11,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
-import { Network, Check, X, Copy } from "lucide-react";
+import { Network, Check, Copy } from "lucide-react";
 import { useApi } from "@/contexts/ApiContext";
 import { cn } from "@/lib/utils";
 
@@ -120,11 +120,7 @@ export const ConnectionButton: FC = () => {
             <ul className="space-y-2">
               {features.map((feature, index) => (
                 <li key={index} className="flex items-center text-sm">
-                  {api.isConnected ? (
-                    <Check className="w-4 h-4 mr-2 text-green-500" />
-                  ) : (
-                    <X className="w-4 h-4 mr-2 text-gray-400" />
-                  )}
+                  {api.isConnected && <Check className="w-4 h-4 mr-2 text-green-500" />}
                   <span className="text-foreground">{feature}</span>
                 </li>
               ))}
