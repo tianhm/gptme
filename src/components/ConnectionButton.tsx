@@ -24,9 +24,7 @@ export const ConnectionButton: FC = () => {
   const features = [
     "Create new conversations",
     "Access conversation history",
-    "Generate AI responses",
-    "Use custom models",
-    "Save conversations locally"
+    "Generate AI responses"
   ];
 
   const serverCommand = `gptme-server --cors-origins='${window.location.origin}'`;
@@ -127,7 +125,7 @@ export const ConnectionButton: FC = () => {
                   ) : (
                     <X className="w-4 h-4 mr-2 text-gray-400" />
                   )}
-                  {feature}
+                  <span className="text-foreground">{feature}</span>
                 </li>
               ))}
             </ul>
