@@ -6,7 +6,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getRelativeTimeString } from "@/utils/time";
-
+import { useQuery } from "@tanstack/react-query";
+import { useApi } from "@/contexts/ApiContext";
+import { demoConversations } from "@/democonversations";
 
 interface Props {
   conversations: Conversation[];
@@ -21,8 +23,10 @@ export const ConversationList: FC<Props> = ({
   selectedId,
   onSelect,
 }) => {
+  const api = useApi();
+
   if (!conversations) {
-    return null; // Or a loading state/placeholder
+    return null;
   }
 
   // strip leading YYYY-MM-DD from name if present
@@ -30,6 +34,38 @@ export const ConversationList: FC<Props> = ({
     const match = name.match(/^\d{4}-\d{2}-\d{2}[- ](.*)/);
     return match ? match[1] : name;
   }
+
+  const getMessageBreakdown = (convName: string) => {
+    // For demo conversations, get messages from demoConversations
+    const demoConv = demoConversations.find(conv => conv.name === convName);
+    if (demoConv) {
+      const breakdown = demoConv.messages.reduce((acc, msg) => {
+        acc[msg.role] = (acc[msg.role] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      return breakdown;
+    }
+
+    // For API conversations, fetch messages
+    const { data: messages } = useQuery({
+      queryKey: ["conversation", convName],
+      queryFn: () => api.getConversation(convName),
+      enabled: api.isConnected && !demoConv,
+    });
+
+    if (!messages) return {};
+
+    return (Array.isArray(messages) ? messages : messages.log).reduce((acc, msg) => {
+      acc[msg.role] = (acc[msg.role] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+  };
+
+  const formatBreakdown = (breakdown: Record<string, number>) => {
+    return Object.entries(breakdown)
+      .map(([role, count]) => `${role}: ${count}`)
+      .join('\n');
+  };
 
   return (
     <div className="space-y-2 p-4 h-full overflow-y-auto">
@@ -54,10 +90,19 @@ export const ConversationList: FC<Props> = ({
                 {conv.lastUpdated.toLocaleString()}
               </TooltipContent>
             </Tooltip>
-            <span className="flex items-center">
-              <MessageSquare className="w-4 h-4 mr-1" />
-              {conv.messageCount}
-            </span>
+            <Tooltip>
+              <TooltipTrigger>
+                <span className="flex items-center">
+                  <MessageSquare className="w-4 h-4 mr-1" />
+                  {conv.messageCount}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className="whitespace-pre">
+                  {formatBreakdown(getMessageBreakdown(conv.name))}
+                </div>
+              </TooltipContent>
+            </Tooltip>
             {conv.readonly && (
               <Tooltip>
                 <TooltipTrigger>
