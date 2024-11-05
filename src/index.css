@@ -114,11 +114,11 @@
 }
 
 .chat-message ul {
-  @apply list-disc list-inside my-2 space-y-1;
+  @apply list-disc my-2 space-y-1 ml-5;
 }
 
 .chat-message ol {
-  @apply list-decimal list-inside my-2 space-y-1;
+  @apply list-decimal my-2 space-y-1 ml-5;
 }
 
 /* Syntax highlighting colors */
