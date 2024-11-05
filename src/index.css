@@ -61,10 +61,6 @@
   }
 }
 
-.chat-message {
-  @apply break-words;
-}
-
 .chat-message > * {
   @apply my-2;
 }
@@ -94,11 +90,11 @@
 }
 
 .chat-message pre {
-  @apply bg-black text-white rounded-lg overflow-x-auto w-full;
+  @apply bg-black text-white rounded-lg overflow-x-auto;
 }
 
 .chat-message details {
-  @apply my-2 rounded-lg overflow-hidden w-full;
+  @apply my-2 rounded-lg overflow-hidden;
 }
 
 .chat-message details summary {
@@ -110,7 +106,7 @@
 }
 
 .chat-message details[open] > *:not(summary) {
-  @apply p-4 overflow-x-auto w-full;
+  @apply p-4;
 }
 
 .chat-message > pre {
