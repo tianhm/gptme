@@ -125,7 +125,7 @@ export const LeftSidebar: FC<Props> = ({
           variant="ghost"
           size="icon"
           onClick={onToggle}
-          className="absolute top-2 -right-10"
+          className="absolute top-2 -right-10 z-50"
         >
           <PanelLeftOpen className="h-5 w-5" />
         </Button>
