@@ -199,7 +199,7 @@ export class ApiClient {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ model, branch }),
+          body: JSON.stringify({ model, branch, stream: true }),
         }
       );
 
