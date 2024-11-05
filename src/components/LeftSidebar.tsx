@@ -1,4 +1,4 @@
-import { PanelLeftOpen, PanelLeftClose, Plus } from "lucide-react";
+import { PanelLeftOpen, PanelLeftClose, Plus, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConversationList } from "./ConversationList";
 import { useApi } from "@/contexts/ApiContext";
@@ -39,7 +39,6 @@ export const LeftSidebar: FC<Props> = ({
     try {
       const newId = Date.now().toString();
       await api.createConversation(newId, []);
-      // Invalidate conversations query to trigger a refresh
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       toast({
         title: "New conversation created",
@@ -60,7 +59,7 @@ export const LeftSidebar: FC<Props> = ({
       <div
         className={`border-r transition-all duration-300 ${
           isOpen ? "w-80" : "w-0"
-        } overflow-hidden h-full`}
+        } overflow-hidden h-full flex flex-col`}
       >
         <div className="h-12 border-b flex items-center justify-between px-4">
           <h2 className="font-semibold">Conversations</h2>
@@ -91,11 +90,35 @@ export const LeftSidebar: FC<Props> = ({
             </Button>
           </div>
         </div>
-        <ConversationList
-          conversations={conversations}
-          selectedId={selectedConversationId}
-          onSelect={onSelectConversation}
-        />
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <ConversationList
+            conversations={conversations}
+            selectedId={selectedConversationId}
+            onSelect={onSelectConversation}
+          />
+          <div className="border-t p-2 text-xs text-muted-foreground">
+            <div className="flex items-center justify-center space-x-4">
+              <a
+                href="https://github.com/ErikBjare/gptme"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center hover:text-foreground"
+              >
+                <ExternalLink className="w-3 h-3 mr-1" />
+                gptme
+              </a>
+              <a
+                href="https://github.com/ErikBjare/gptme-webui"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center hover:text-foreground"
+              >
+                <ExternalLink className="w-3 h-3 mr-1" />
+                gptme-webui
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
       {!isOpen && (
         <Button
