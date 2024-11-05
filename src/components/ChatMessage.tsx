@@ -34,14 +34,20 @@ marked.use(
 export const ChatMessage: FC<Props> = ({ message }) => {
   const [parsedContent, setParsedContent] = useState("");
 
+  // Ensure content is never undefined
+  const content = message.content || "";
+
   useEffect(() => {
+    let isMounted = true;
     const processContent = async () => {
+      // console.log('Processing content for message:', message.id);
       try {
+        // console.log('Raw content:', content);
         // Transform thinking tags before markdown parsing
-        const processedContent = message.content.replace(
+        const processedContent = content.replace(
           /<thinking>([\s\S]*?)<\/thinking>/g,
-          (_, content) =>
-            `<details><summary>Thinking</summary>\n\n${content}\n\n</details>`
+          (_, thinkingContent) =>
+            `<details><summary>Thinking</summary>\n\n${thinkingContent}\n\n</details>`
         );
 
         // Parse markdown to HTML
@@ -51,9 +57,9 @@ export const ChatMessage: FC<Props> = ({ message }) => {
 
         // Wrap code blocks in details/summary
         parsedResult = parsedResult.replace(
-          /<pre><code class="([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
-          (_, classes, code) => {
-            const langtag = (classes.split(" ")[1] || "Code").replace(
+          /<pre><code(?:\s+class="([^"]+)")?>([^]*?)<\/code><\/pre>/g,
+          (_, classes = "", code) => {
+            const langtag = ((classes || "").split(" ")[1] || "Code").replace(
               "language-",
               ""
             );
@@ -66,15 +72,23 @@ export const ChatMessage: FC<Props> = ({ message }) => {
           }
         );
 
-        setParsedContent(parsedResult);
+        if (isMounted) {
+          setParsedContent(parsedResult);
+        }
       } catch (error) {
         console.error("Error parsing markdown:", error);
-        setParsedContent(message.content);
+        if (isMounted) {
+          setParsedContent(content);
+        }
       }
     };
 
     processContent();
-  }, [message.content]);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [content, message.id]);
 
   // All messages (including system) are displayed in the same style
   return (

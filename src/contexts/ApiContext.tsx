@@ -23,7 +23,16 @@ interface ApiContextType {
   getConversation: (logname: string) => Promise<ConversationMessage[]>;
   createConversation: (logname: string, messages: ConversationMessage[]) => Promise<void>;
   sendMessage: (logname: string, message: ConversationMessage) => Promise<void>;
-  generateResponse: (logname: string, model?: string) => Promise<ConversationMessage[]>;
+  generateResponse: (
+    logname: string,
+    callbacks: {
+      onToken?: (token: string) => void;
+      onComplete?: (message: ConversationMessage) => void;
+      onToolOutput?: (message: ConversationMessage) => void;
+      onError?: (error: string) => void;
+    },
+    model?: string
+  ) => Promise<void>;
 }
 
 interface ApiProviderProps {
@@ -55,7 +64,7 @@ export const ApiProvider: FC<ApiProviderProps> = ({ children, baseUrl }): JSX.El
             timeoutId = window.setTimeout(checkConnection, 60000); // Reduced frequency to 1 minute
           }
         }
-      } catch (error) {
+      } catch {
         if (mounted) {
           timeoutId = window.setTimeout(checkConnection, 60000);
         }

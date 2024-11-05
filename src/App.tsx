@@ -10,7 +10,28 @@ import { useEffect } from "react";
 import { useToast } from "@/components/ui/use-toast";
 import { createApiClient } from "./utils/api";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Disable automatic background refetching
+      refetchOnWindowFocus: false,
+      refetchOnMount: false,
+      refetchOnReconnect: false,
+      // Reduce stale time to ensure updates are visible immediately
+      staleTime: 0,
+      // Keep cached data longer
+      gcTime: 1000 * 60 * 5,
+      // Ensure we get updates
+      notifyOnChangeProps: 'all',
+    },
+    mutations: {
+      // Ensure mutations trigger immediate updates
+      onSuccess: () => {
+        queryClient.invalidateQueries();
+      },
+    },
+  },
+});
 
 const AppContent: FC = () => {
   const { toast } = useToast();
@@ -20,7 +41,7 @@ const AppContent: FC = () => {
     const attemptInitialConnection = async () => {
       const api = createApiClient(apiUrl);
       const connected = await api.checkConnection();
-      
+
       if (connected) {
         toast({
           title: "Connected",
