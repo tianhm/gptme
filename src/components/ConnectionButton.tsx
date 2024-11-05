@@ -11,7 +11,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
-import { Network, Check, X } from "lucide-react";
+import { Network, Check, X, Copy } from "lucide-react";
 import { useApi } from "@/contexts/ApiContext";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +28,16 @@ export const ConnectionButton: FC = () => {
     "Use custom models",
     "Save conversations locally"
   ];
+
+  const serverCommand = `gptme-server --cors-origins='${window.location.origin}'`;
+
+  const copyCommand = () => {
+    navigator.clipboard.writeText(serverCommand);
+    toast({
+      title: "Copied",
+      description: "Command copied to clipboard",
+    });
+  };
 
   const handleConnect = async () => {
     try {
@@ -78,6 +88,7 @@ export const ConnectionButton: FC = () => {
           <DialogTitle>Connect to gptme</DialogTitle>
           <DialogDescription>
             Connect to a gptme instance to enable advanced features and AI interactions.
+            See the <a href="https://gptme.org/docs/server.html" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">server documentation</a> for more details.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-6">
@@ -89,6 +100,21 @@ export const ConnectionButton: FC = () => {
               onChange={(e) => setUrl(e.target.value)}
               placeholder="http://127.0.0.1:5000"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Start the server with:</label>
+            <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
+              <code className="flex-1 text-sm">{serverCommand}</code>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={copyCommand}
+                className="h-8 w-8"
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
           
           <div className="space-y-3">
