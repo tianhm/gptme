@@ -35,14 +35,14 @@ export const RightSidebar: FC<Props> = ({ isOpen, onToggle }) => {
               <PanelRightClose className="h-5 w-5" />
             </Button>
           </div>
-          
+
           <div className="h-[calc(100%-3rem)] overflow-hidden">
             <TabsContent value="details" className="p-4 m-0 h-full">
               <div className="text-sm text-muted-foreground">
                 Select a file or tool to view details
               </div>
             </TabsContent>
-            
+
             <TabsContent value="computer" className="p-0 m-0 h-full">
               <iframe
                 src={VNC_URL}
@@ -54,7 +54,7 @@ export const RightSidebar: FC<Props> = ({ isOpen, onToggle }) => {
           </div>
         </Tabs>
       </div>
-      
+
       {!isOpen && (
         <Button
           variant="ghost"

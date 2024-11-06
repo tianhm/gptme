@@ -32,4 +32,3 @@ export function getRelativeTimeString(date: Date): string {
 
   return date.toLocaleDateString();
 }
-

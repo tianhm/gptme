@@ -25,12 +25,12 @@ const Index: FC<Props> = () => {
   const queryClient = useQueryClient();
 
   // Fetch conversations from API with proper caching
-  const { 
-    data: apiConversations = [], 
-    isError, 
-    error, 
+  const {
+    data: apiConversations = [],
+    isError,
+    error,
     isLoading,
-    refetch 
+    refetch
   } = useQuery<ConversationSummary[]>({
     queryKey: ["conversations", baseUrl, isConnected],
     queryFn: async () => {

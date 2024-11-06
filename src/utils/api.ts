@@ -120,7 +120,7 @@ export class ApiClient {
         {},
         3000
       );
-      
+
       if (!response.ok) {
         console.error("API endpoint returned non-OK status:", response.status);
         this._isConnected = false;

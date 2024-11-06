@@ -32,7 +32,7 @@ const queryClient = new QueryClient({
 
 const AppContent: FC = () => {
   const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000';
-  
+
   return (
     <ApiProvider initialBaseUrl={apiUrl} queryClient={queryClient}>
       <BrowserRouter>

@@ -54,7 +54,7 @@ export const ConnectionButton: FC = () => {
           errorMessage += " Error: " + error.message;
         }
       }
-      
+
       console.error("Connection error:", error);
       toast({
         variant: "destructive",
@@ -67,8 +67,8 @@ export const ConnectionButton: FC = () => {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button 
-          variant="outline" 
+        <Button
+          variant="outline"
           size="sm"
           className={isConnected ? "text-green-600" : "text-muted-foreground"}
         >
@@ -109,7 +109,7 @@ export const ConnectionButton: FC = () => {
               </Button>
             </div>
           </div>
-          
+
           <div className="space-y-3">
             <h4 className="text-sm font-semibold">Features enabled by connecting:</h4>
             <ul className="space-y-2">
@@ -125,8 +125,8 @@ export const ConnectionButton: FC = () => {
             </ul>
           </div>
 
-          <Button 
-            onClick={handleConnect} 
+          <Button
+            onClick={handleConnect}
             className={cn(
               "w-full",
               isConnected && "bg-green-600 hover:bg-green-700"

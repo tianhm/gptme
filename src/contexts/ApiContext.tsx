@@ -55,17 +55,17 @@ export function ApiProvider({
     try {
       setBaseUrl(newUrl);
       const newApi = createApiClient(newUrl);
-      
+
       // Update connection status
       const connected = await newApi.checkConnection();
       if (!connected) {
         throw new Error("Failed to connect to API");
       }
-      
+
       newApi.setConnected(true);  // Explicitly set connection state
       setApi(newApi);
       setIsConnected(true);
-      
+
       // Invalidate and refetch all queries
       await queryClient.invalidateQueries();
       await queryClient.refetchQueries({
