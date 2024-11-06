@@ -7,10 +7,10 @@ export const MenuBar: FC = () => {
   return (
     <div className="h-12 border-b flex items-center justify-between px-4">
       <div className="flex items-center space-x-2">
-        <img 
-          src="https://gptme.org/media/logo.png" 
-          alt="GPTme Logo" 
-          className="w-6 h-6"
+        <img
+          src="https://gptme.org/media/logo.png"
+          alt="gptme logo"
+          className="w-6"
         />
         <span className="font-semibold text-lg">gptme</span>
       </div>
@@ -20,4 +20,4 @@ export const MenuBar: FC = () => {
       </div>
     </div>
   );
-}
+};
