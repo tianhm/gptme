@@ -122,6 +122,8 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
             />
           );
         })}
+        {/* Add a margin at the bottom to give the last message some space and signify end of conversation */}
+        <div className="mb-[10vh]"></div>
       </div>
       <ChatInput
         onSend={sendMessage}
