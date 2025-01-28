@@ -5,7 +5,7 @@ import type { FC } from "react";
 
 export const MenuBar: FC = () => {
   return (
-    <div className="h-8 border-b flex items-center justify-between px-4">
+    <div className="h-9 border-b flex items-center justify-between px-4">
       <div className="flex items-center space-x-2">
         <img
           src="https://gptme.org/media/logo.png"
