@@ -130,7 +130,11 @@ export const ChatMessage: FC<Props> = ({ message }) => {
               const outputs = ["stdout", "stderr", "result"];
               return outputs.indexOf(langtag.toLowerCase()) !== -1;
             }
-            const emoji = isPath(langtag) ? "📄" : isTool(langtag) ? "🛠️" : isOutput(langtag) ? "📤" : "💻";
+            function isWrite(langtag: string) {
+                const writes = ["save", "patch", "append"];
+                return writes.indexOf(langtag.toLowerCase()) !== -1;
+            }
+            const emoji = isPath(langtag) ? "📄" : isTool(langtag) ? "🛠️" : isOutput(langtag) ? "📤" : isWrite(langtag) ? "📝" : "💻";
             return `
             <details>
               <summary>${emoji} ${langtag}</summary>
