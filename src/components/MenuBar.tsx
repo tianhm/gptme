@@ -5,14 +5,14 @@ import type { FC } from "react";
 
 export const MenuBar: FC = () => {
   return (
-    <div className="h-12 border-b flex items-center justify-between px-4">
+    <div className="h-8 border-b flex items-center justify-between px-4">
       <div className="flex items-center space-x-2">
         <img
           src="https://gptme.org/media/logo.png"
           alt="gptme logo"
-          className="w-6"
+          className="w-4"
         />
-        <span className="font-semibold text-lg">gptme</span>
+        <span className="font-semibold text-base font-mono">gptme</span>
       </div>
       <div className="flex items-center space-x-2">
         <ConnectionButton />
