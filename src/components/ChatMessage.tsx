@@ -28,29 +28,8 @@ marked.use(
   })
 );
 
-function handleWrappedFencedCodeBlocks(content: string) {
-    // Parse codeblocks in string, handling nested blocks by changing the outermost level
-    // fence to use ~~~ instead of backticks (need to count backticks to make sure it's the outermost).
-    //
-    // We can assume that codeblocks always have a language tag, so we can use that to separate the start and end of the block.
-    //
-    // Example input:
-    // ```markdown
-    // Here's a nested block
-    // ```python
-    // print("hello")
-    // ```
-    // ```
-    //
-    // Example output:
-    // ~~~markdown
-    // Here's a nested block
-    // ```python
-    // print("hello")
-    // ```
-    // ~~~
-
-    // Early exit if no code blocks (needs at least opening and closing fence)
+export function handleWrappedFencedCodeBlocks(content: string) {
+    // Early exit if no code blocks
     if (content.split('```').length < 3) {
         return content;
     }
@@ -65,9 +44,14 @@ function handleWrappedFencedCodeBlocks(content: string) {
         if (strippedLine.startsWith('```')) {
             const lang = strippedLine.slice(3);
             if (stack.length === 0) {
-                // Start of a new outermost block
-                stack.push(lang);
-                result += '~~~' + lang + '\n';
+                // Only transform outermost blocks that have nested blocks
+                const remainingContent = lines.slice(lines.indexOf(line) + 1).join('\n');
+                if (remainingContent.includes('```') && remainingContent.split('```').length > 2) {
+                    stack.push(lang);
+                    result += '~~~' + lang + '\n';
+                } else {
+                    result += line + '\n';
+                }
             } else if (lang && stack[stack.length - 1] !== lang) {
                 // Nested start - different language
                 currentBlock.push(line);
@@ -93,12 +77,20 @@ function handleWrappedFencedCodeBlocks(content: string) {
         }
     }
 
-    // Handle any unclosed blocks
-    if (stack.length > 0) {
-        result += currentBlock.join('\n');
+    return result.trim();
+}
+
+export function transformThinkingTags(content: string) {
+    // Don't transform if inside backticks
+    if (content.startsWith('`') && content.endsWith('`')) {
+        return content;
     }
 
-    return result.trim();
+    return content.replace(
+        /<thinking>([\s\S]*?)<\/thinking>/g,
+        (_match: string, thinkingContent: string) =>
+            `<details><summary>Thinking</summary>\n\n${thinkingContent}\n\n</details>`
+    );
 }
 
 export const ChatMessage: FC<Props> = ({ message }) => {
@@ -111,11 +103,7 @@ export const ChatMessage: FC<Props> = ({ message }) => {
     const processContent = async () => {
       try {
         // Transform thinking tags before markdown parsing
-        let processedContent = content.replace(
-          /(?:[^`])<thinking>([\s\S]*?)(?:<\/thinking>|$)/g,
-          (_match: string, thinkingContent: string) =>
-            `<details><summary>Thinking</summary>\n\n${thinkingContent}\n\n</details>`
-        );
+        let processedContent = transformThinkingTags(content);
 
         // Handle wrapped fenced code blocks
         processedContent = handleWrappedFencedCodeBlocks(processedContent);
