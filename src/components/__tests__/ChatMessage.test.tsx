@@ -57,14 +57,14 @@ console.log("world")
 describe('transformThinkingTags', () => {
   it('should transform thinking tags to details/summary', () => {
     const input = 'Before <thinking>Some thoughts</thinking> After';
-    const expected = 'Before <details><summary>Thinking</summary>\n\nSome thoughts\n\n</details> After';
+    const expected = 'Before <details><summary>💭 Thinking</summary>\n\nSome thoughts\n\n</details> After';
 
     expect(transformThinkingTags(input)).toBe(expected);
   });
 
   it('should handle multiple thinking tags', () => {
     const input = '<thinking>First thought</thinking> Middle <thinking>Second thought</thinking>';
-    const expected = '<details><summary>Thinking</summary>\n\nFirst thought\n\n</details> Middle <details><summary>Thinking</summary>\n\nSecond thought\n\n</details>';
+    const expected = '<details><summary>💭 Thinking</summary>\n\nFirst thought\n\n</details> Middle <details><summary>💭 Thinking</summary>\n\nSecond thought\n\n</details>';
 
     expect(transformThinkingTags(input)).toBe(expected);
   });

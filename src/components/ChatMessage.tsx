@@ -89,7 +89,7 @@ export function transformThinkingTags(content: string) {
     return content.replace(
         /<thinking>([\s\S]*?)<\/thinking>/g,
         (_match: string, thinkingContent: string) =>
-            `<details><summary>Thinking</summary>\n\n${thinkingContent}\n\n</details>`
+            `<details><summary>💭 Thinking</summary>\n\n${thinkingContent}\n\n</details>`
     );
 }
 
@@ -119,9 +119,21 @@ export const ChatMessage: FC<Props> = ({ message }) => {
               "language-",
               ""
             );
+            function isPath(langtag: string) {
+              return langtag.includes("/") || langtag.includes("\\") || langtag.includes(".") && code.split(" ").length === 1;
+            }
+            function isTool(langtag: string) {
+              const tools = ["ipython", "shell"];
+              return tools.indexOf(langtag.split(" ")[0]) !== -1;
+            }
+            function isOutput(langtag: string) {
+              const outputs = ["stdout", "stderr", "result"];
+              return outputs.indexOf(langtag.toLowerCase()) !== -1;
+            }
+            const emoji = isPath(langtag) ? "📄" : isTool(langtag) ? "🛠️" : isOutput(langtag) ? "📤" : "💻";
             return `
             <details>
-              <summary>${langtag}</summary>
+              <summary>${emoji} ${langtag}</summary>
               <pre><code class="${classes}">${code}</code></pre>
             </details>
           `;
