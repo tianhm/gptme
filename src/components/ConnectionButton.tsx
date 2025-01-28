@@ -69,10 +69,10 @@ export const ConnectionButton: FC = () => {
       <DialogTrigger asChild>
         <Button
           variant="outline"
-          size="sm"
+          size="xs"
           className={isConnected ? "text-green-600" : "text-muted-foreground"}
         >
-          <Network className="w-4 h-4 mr-2" />
+          <Network className="w-3 h-3 mr-2" />
           {isConnected ? "Connected" : "Connect"}
         </Button>
       </DialogTrigger>

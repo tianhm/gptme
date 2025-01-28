@@ -18,13 +18,13 @@ export const ThemeToggle: FC = () => {
   return (
     <Button
       variant="ghost"
-      size="icon"
+      size="xs"
       onClick={() => setTheme(theme === "light" ? "dark" : "light")}
     >
       {theme === "light" ? (
-        <Sun className="h-5 w-5" />
+        <Sun className="h-3 w-3" />
       ) : (
-        <Moon className="h-5 w-5" />
+        <Moon className="h-3 w-3" />
       )}
     </Button>
   );
