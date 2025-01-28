@@ -67,7 +67,12 @@
   }
 }
 
+.chat-message {
+  @apply py-6;
+}
+
 .chat-message > p {
+  @apply leading-relaxed;
 }
 
 .chat-message h1 {

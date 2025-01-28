@@ -23,8 +23,6 @@ marked.use(
     highlight(code, lang, info) {
       // check if info has ext, if so, use that as lang
       lang = info.split(".")[1] || lang;
-      //console.log(info);
-      //console.log(lang);
       const language = hljs.getLanguage(lang) ? lang : "plaintext";
       return hljs.highlight(code, { language }).value;
     },
@@ -41,9 +39,7 @@ export const ChatMessage: FC<Props> = ({ message }) => {
   useEffect(() => {
     let isMounted = true;
     const processContent = async () => {
-      // console.log('Processing content for message:', message.id);
       try {
-        // console.log('Raw content:', content);
         // Transform thinking tags before markdown parsing
         const processedContent = content.replace(
           /(?:[^`])<thinking>([\s\S]*?)(?:<\/thinking>|$)/g,
@@ -91,17 +87,8 @@ export const ChatMessage: FC<Props> = ({ message }) => {
     };
   }, [content]);
 
-  // All messages (including system) are displayed in the same style
   return (
-    <div
-      className={`py-4 ${
-        message.role === "assistant"
-          ? "bg-accent/50"
-          : message.role === "system"
-          ? "bg-slate/100 text-sm"
-          : ""
-      }`}
-    >
+    <div className="py-4">
       <div className="max-w-3xl mx-auto px-4">
         <div className="flex items-start space-x-4">
           <div
