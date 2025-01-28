@@ -120,7 +120,7 @@ export const ChatMessage: FC<Props> = ({ message }) => {
               ""
             );
             function isPath(langtag: string) {
-              return langtag.includes("/") || langtag.includes("\\") || langtag.includes(".") && code.split(" ").length === 1;
+              return (langtag.includes("/") || langtag.includes("\\") || langtag.includes(".")) && langtag.split(" ").length === 1;
             }
             function isTool(langtag: string) {
               const tools = ["ipython", "shell"];
