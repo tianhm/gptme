@@ -7,7 +7,7 @@
     "dev": "vite",
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "typecheck:watch": "tsc -p tsconfig.app.json --noEmit --watch",
-    "build": "tsc -p tsconfig.app.json --noEmit && vite build",
+    "build": "tsc -p tsconfig.app.json --noEmit && vite build --config vite.config.prod.ts",
     "build:dev": "tsc -p tsconfig.app.json --noEmit && vite build --mode development",
     "lint": "eslint . && tsc -p tsconfig.app.json --noEmit",
     "preview": "vite preview",
