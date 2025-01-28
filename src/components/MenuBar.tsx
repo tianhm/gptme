@@ -14,7 +14,7 @@ export const MenuBar: FC = () => {
         />
         <span className="font-semibold text-base font-mono">gptme</span>
       </div>
-      <div className="flex items-center space-x-2">
+      <div className="flex items-center gap-2">
         <ConnectionButton />
         <ThemeToggle />
       </div>
