@@ -41,7 +41,7 @@ export const ChatMessage: FC<Props> = ({ message, previousMessage, nextMessage }
     const isAssistant = message.role === "assistant";
     const isSystem = message.role === "system";
     const isError = message.content.startsWith("Error");
-    const isSuccess = message.content.startsWith("Patch successfully");
+    const isSuccess = message.content.startsWith("Patch successfully") || message.content.startsWith("Saved");
 
     const chainType = getMessageChainType(message, previousMessage ?? null, nextMessage ?? null);
 
