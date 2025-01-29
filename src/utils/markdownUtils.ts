@@ -21,24 +21,24 @@ marked.use(
 
 export function processNestedCodeBlocks(content: string) {
     if (content.split('```').length < 3) {
-        return { processedContent: content, fences: [] };
+        return { processedContent: content, langtags: [] };
     }
 
     const lines = content.split('\n');
     const stack: string[] = [];
     let result = '';
     let currentBlock: string[] = [];
-    const fences: string[] = [];
+    const langtags: string[] = [];
 
     for (const line of lines) {
         const strippedLine = line.trim();
         if (strippedLine.startsWith('```')) {
             const lang = strippedLine.slice(3);
+            langtags.push(lang);
             if (stack.length === 0) {
                 const remainingContent = lines.slice(lines.indexOf(line) + 1).join('\n');
                 if (remainingContent.includes('```') && remainingContent.split('```').length > 2) {
                     stack.push(lang);
-                    fences.push(lang);
                     result += '~~~' + lang + '\n';
                 } else {
                     result += line + '\n';
@@ -64,7 +64,7 @@ export function processNestedCodeBlocks(content: string) {
 
     return {
         processedContent: result.trim(),
-        fences
+        langtags
     };
 }
 
@@ -82,7 +82,7 @@ export function transformThinkingTags(content: string) {
 
 export function parseMarkdownContent(content: string) {
     const processedContent = transformThinkingTags(content);
-    const { processedContent: transformedContent, fences } = processNestedCodeBlocks(processedContent);
+    const { processedContent: transformedContent, langtags } = processNestedCodeBlocks(processedContent);
 
     let parsedResult = marked.parse(transformedContent, {
         async: false,
@@ -91,13 +91,12 @@ export function parseMarkdownContent(content: string) {
     parsedResult = parsedResult.replace(
         /<pre><code(?:\s+class="([^"]+)")?>([^]*?)<\/code><\/pre>/g,
         (_, classes = "", code) => {
-            const langtag = ((classes || "").split(" ")[1] || "Code").replace("language-", "");
-            const args = fences?.shift() || "";
-
+            const langtag_fallback = ((classes || "").split(" ")[1] || "Code").replace("language-", "");
+            const langtag = langtags?.shift() || langtag_fallback;
             const emoji = getCodeBlockEmoji(langtag);
             return `
             <details>
-                <summary>${emoji} ${args || langtag}</summary>
+                <summary>${emoji} ${langtag}</summary>
                 <pre><code class="${classes}">${code}</code></pre>
             </details>
             `;
@@ -120,7 +119,7 @@ function isPath(langtag: string): boolean {
 }
 
 function isTool(langtag: string): boolean {
-    return ["ipython", "shell"].includes(langtag.split(" ")[0]);
+    return ["ipython", "shell", "tmux"].includes(langtag.split(" ")[0].toLowerCase());
 }
 
 function isOutput(langtag: string): boolean {
@@ -128,5 +127,5 @@ function isOutput(langtag: string): boolean {
 }
 
 function isWrite(langtag: string): boolean {
-    return ["save", "patch", "append"].includes(langtag.toLowerCase());
+    return ["save", "patch", "append"].includes(langtag.split(" ")[0].toLowerCase());
 }
