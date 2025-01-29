@@ -10,7 +10,7 @@ describe("ChatMessage", () => {
             content: "Hello!",
             timestamp: new Date().toISOString(),
         };
-        
+
         render(<ChatMessage message={message} />);
         expect(screen.getByText("Hello!")).toBeInTheDocument();
     });
@@ -21,7 +21,7 @@ describe("ChatMessage", () => {
             content: "Hi there!",
             timestamp: new Date().toISOString(),
         };
-        
+
         render(<ChatMessage message={message} />);
         expect(screen.getByText("Hi there!")).toBeInTheDocument();
     });
@@ -32,7 +32,7 @@ describe("ChatMessage", () => {
             content: "System message",
             timestamp: new Date().toISOString(),
         };
-        
+
         const { container } = render(<ChatMessage message={message} />);
         const messageElement = container.querySelector('.font-mono');
         expect(messageElement).toBeInTheDocument();

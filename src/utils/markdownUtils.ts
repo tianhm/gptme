@@ -20,51 +20,38 @@ marked.use(
 );
 
 export function processNestedCodeBlocks(content: string) {
+    // If no code blocks or only one code block, return as-is
     if (content.split('```').length < 3) {
-        return { processedContent: content, langtags: [] };
+        const match = content.match(/```(\S*)/);
+        return {
+            processedContent: content,
+            langtags: match ? [match[1]] : []
+        };
     }
 
     const lines = content.split('\n');
-    const stack: string[] = [];
-    let result = '';
-    let currentBlock: string[] = [];
     const langtags: string[] = [];
+    const result: string[] = [];
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         const strippedLine = line.trim();
+
         if (strippedLine.startsWith('```')) {
-            const lang = strippedLine.slice(3);
-            langtags.push(lang);
-            if (stack.length === 0) {
-                const remainingContent = lines.slice(lines.indexOf(line) + 1).join('\n');
-                if (remainingContent.includes('```') && remainingContent.split('```').length > 2) {
-                    stack.push(lang);
-                    result += '~~~' + lang + '\n';
-                } else {
-                    result += line + '\n';
-                }
-            } else if (lang && stack[stack.length - 1] !== lang) {
-                currentBlock.push(line);
-                stack.push(lang);
-            } else {
-                if (stack.length === 1) {
-                    result += currentBlock.join('\n') + '\n~~~\n';
-                    currentBlock = [];
-                } else {
-                    currentBlock.push(line);
-                }
-                stack.pop();
+            if (strippedLine !== '```') {
+                // Start of a code block with a language
+                const lang = strippedLine.slice(3);
+                langtags.push(lang);
             }
-        } else if (stack.length > 0) {
-            currentBlock.push(line);
+            result.push(line);
         } else {
-            result += line + '\n';
+            result.push(line);
         }
     }
 
     return {
-        processedContent: result.trim(),
-        langtags
+        processedContent: result.join('\n'),
+        langtags: langtags.filter(Boolean)
     };
 }
 

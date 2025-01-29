@@ -1,6 +1,6 @@
 import type { Message } from "@/types/conversation";
 
-export const isNonUserMessage = (role?: string) => 
+export const isNonUserMessage = (role?: string) =>
     role === "assistant" || role === "system";
 
 export const getMessageChainType = (
