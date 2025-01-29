@@ -1,6 +1,6 @@
-import { handleWrappedFencedCodeBlocks, transformThinkingTags } from '../ChatMessage';
+import { processNestedCodeBlocks, transformThinkingTags } from '../ChatMessage';
 
-describe('handleWrappedFencedCodeBlocks', () => {
+describe('processNestedCodeBlocks', () => {
   it('should handle nested code blocks', () => {
     const input = `\`\`\`markdown
 Here's a nested block
@@ -16,7 +16,10 @@ print("hello")
 \`\`\`
 ~~~`;
 
-    expect(handleWrappedFencedCodeBlocks(input)).toBe(expected);
+    expect(processNestedCodeBlocks(input)).toEqual({
+      processedContent: expected,
+      fences: ['markdown']
+    });
   });
 
   it('should not modify single code blocks', () => {
@@ -24,7 +27,10 @@ print("hello")
 print("hello")
 \`\`\``;
 
-    expect(handleWrappedFencedCodeBlocks(input)).toBe(input);
+    expect(processNestedCodeBlocks(input)).toEqual({
+      processedContent: input,
+      fences: []
+    });
   });
 
   it('should handle multiple nested blocks', () => {
@@ -50,7 +56,10 @@ console.log("world")
 \`\`\`
 ~~~`;
 
-    expect(handleWrappedFencedCodeBlocks(input)).toBe(expected);
+    expect(processNestedCodeBlocks(input)).toEqual({
+      processedContent: expected,
+      fences: ['markdown']
+    });
   });
 });
 

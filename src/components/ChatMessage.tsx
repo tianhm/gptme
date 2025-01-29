@@ -28,16 +28,22 @@ marked.use(
   })
 );
 
-export function handleWrappedFencedCodeBlocks(content: string) {
+interface ProcessedContent {
+    processedContent: string;
+    fences: string[];
+}
+
+export function processNestedCodeBlocks(content: string): ProcessedContent {
     // Early exit if no code blocks
     if (content.split('```').length < 3) {
-        return content;
+        return { processedContent: content, fences: [] };
     }
 
     const lines = content.split('\n');
     const stack: string[] = [];  // Stack of language tags to track nesting
     let result = '';
     let currentBlock: string[] = [];
+    const fences: string[] = [];  // Store all fence info for later use
 
     for (const line of lines) {
         const strippedLine = line.trim();
@@ -48,6 +54,7 @@ export function handleWrappedFencedCodeBlocks(content: string) {
                 const remainingContent = lines.slice(lines.indexOf(line) + 1).join('\n');
                 if (remainingContent.includes('```') && remainingContent.split('```').length > 2) {
                     stack.push(lang);
+                    fences.push(lang);  // Store fence info
                     result += '~~~' + lang + '\n';
                 } else {
                     result += line + '\n';
@@ -77,7 +84,10 @@ export function handleWrappedFencedCodeBlocks(content: string) {
         }
     }
 
-    return result.trim();
+    return {
+        processedContent: result.trim(),
+        fences
+    };
 }
 
 export function transformThinkingTags(content: string) {
@@ -103,15 +113,13 @@ export const ChatMessage: FC<Props> = ({ message }) => {
     const processContent = async () => {
       try {
         // Transform thinking tags before markdown parsing
-        let processedContent = transformThinkingTags(content);
+        const processedContent = transformThinkingTags(content);
 
         // Handle wrapped fenced code blocks
-        processedContent = handleWrappedFencedCodeBlocks(processedContent);
+        // Process nested code blocks and collect fence info
+        const { processedContent: transformedContent, fences } = processNestedCodeBlocks(processedContent);
 
-        // Find start fences for codeblocks (hljs doesn't include paths like "```save PATH")
-        const fences = [...processedContent.matchAll(/(~~~|```)[^\n]+/g)].map((s: RegExpExecArray) => s[0].replace(/(~~~|```)/g, ""));
-
-        let parsedResult = await marked.parse(processedContent, {
+        let parsedResult = await marked.parse(transformedContent, {
           async: true,
         });
 
