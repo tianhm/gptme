@@ -108,10 +108,14 @@ export const ChatMessage: FC<Props> = ({ message }) => {
         // Handle wrapped fenced code blocks
         processedContent = handleWrappedFencedCodeBlocks(processedContent);
 
+        // Find start fences for codeblocks (hljs doesn't include paths like "```save PATH")
+        const fences = [...processedContent.matchAll(/(~~~|```)[^\n]+/g)].map((s: RegExpExecArray) => s[0].replace(/(~~~|```)/g, ""));
+
         let parsedResult = await marked.parse(processedContent, {
           async: true,
         });
 
+        // TODO: correctly parse file extensions for highlighting, e.g. "```save script.py" will not highlight as python
         parsedResult = parsedResult.replace(
           /<pre><code(?:\s+class="([^"]+)")?>([^]*?)<\/code><\/pre>/g,
           (_, classes = "", code) => {
@@ -119,6 +123,7 @@ export const ChatMessage: FC<Props> = ({ message }) => {
               "language-",
               ""
             );
+            const args = fences?.shift() || "";
             function isPath(langtag: string) {
               return (langtag.includes("/") || langtag.includes("\\") || langtag.includes(".")) && langtag.split(" ").length === 1;
             }
@@ -137,7 +142,7 @@ export const ChatMessage: FC<Props> = ({ message }) => {
             const emoji = isPath(langtag) ? "📄" : isTool(langtag) ? "🛠️" : isOutput(langtag) ? "📤" : isWrite(langtag) ? "📝" : "💻";
             return `
             <details>
-              <summary>${emoji} ${langtag}</summary>
+              <summary>${emoji} ${args || langtag}</summary>
               <pre><code class="${classes}">${code}</code></pre>
             </details>
           `;
