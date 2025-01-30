@@ -1,6 +1,7 @@
 import { marked } from "marked";
 import hljs from "highlight.js";
 import { markedHighlight } from "marked-highlight";
+import type { Link } from "marked";
 
 marked.use(markedHighlight({
     highlight: (code, lang) => {
@@ -21,10 +22,10 @@ const renderer = new marked.Renderer();
 const originalLinkRenderer = renderer.link.bind(renderer);
 
 // Customize the link renderer to add icons
-renderer.link = (href: string, title: string | null | undefined, text: string) => {
-    const originalLink = originalLinkRenderer(href, title, text);
+renderer.link = ({ href, title, text }: Link) => {
+    if (!href) return text;
     
-    if (!href) return originalLink;
+    const linkHtml = originalLinkRenderer({ href, title, text });
     
     let iconSvg = '';
     
@@ -40,9 +41,35 @@ renderer.link = (href: string, title: string | null | undefined, text: string) =
     }
     
     // Insert the icon after the link
-    return originalLink.slice(0, -4) + iconSvg + '</a>';
+    return linkHtml.slice(0, -4) + iconSvg + '</a>';
 };
 
+export function processNestedCodeBlocks(content: string): { processedContent: string; langtags: string[] } {
+    const langtags: string[] = [];
+    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+    let match;
+    let lastIndex = 0;
+    let processedContent = '';
+
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+        const [fullMatch, lang] = match;
+        if (lang) langtags.push(lang);
+        processedContent += content.slice(lastIndex, match.index) + fullMatch;
+        lastIndex = match.index + fullMatch.length;
+    }
+
+    processedContent += content.slice(lastIndex);
+    return { processedContent, langtags };
+}
+
+export function transformThinkingTags(content: string): string {
+    return content.replace(
+        /<thinking>([\s\S]*?)<\/thinking>/g,
+        '<details><summary>💭 Thinking</summary>\n\n$1\n\n</details>'
+    );
+}
+
 export function parseMarkdownContent(content: string): string {
-    return marked(content);
+    const transformedContent = transformThinkingTags(content);
+    return marked(transformedContent, { renderer });
 }
