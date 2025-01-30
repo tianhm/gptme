@@ -1,5 +1,6 @@
 import { type FC } from "react";
 import { useState, useCallback, useEffect } from "react";
+import { setDocumentTitle } from "@/utils/title";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MenuBar } from "@/components/MenuBar";
 import { LeftSidebar } from "@/components/LeftSidebar";
@@ -100,6 +101,16 @@ const Index: FC<Props> = () => {
   const conversation = allConversations.find(
     (conv) => conv.name === selectedConversation
   ) ?? allConversations[0];  // Fallback to first conversation if none selected
+
+  // Update document title when selected conversation changes
+  useEffect(() => {
+    if (conversation) {
+      setDocumentTitle(conversation.name);
+    } else {
+      setDocumentTitle();
+    }
+    return () => setDocumentTitle();  // Reset title on unmount
+  }, [conversation]);
 
   return (
     <div className="h-screen flex flex-col">
