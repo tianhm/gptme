@@ -15,7 +15,7 @@ An alternative to the minimal UI currently provided by `gptme`.
 
 ## Usage
 
-You can use the web UI hosted at [gptme.gptengineer.run](https://gptme.gptengineer.run/), or run it locally:
+You can use the web UI hosted at [chat.gptme.org](https://chat.gptme.org/), or run it locally:
 
 ```sh
 git clone https://github.com/ErikBjare/gptme-webui
@@ -24,7 +24,7 @@ npm i
 npm run dev
 ```
 
-To connect to a local `gptme-server` instance, you need to start one with `gptme-server --cors-origin='https://gptme.gptengineer.run'` (or whatever the origin of your web UI is).
+To connect to a local `gptme-server` instance, you need to start one with `gptme-server --cors-origin='https://chat.gptme.org'` (or whatever the origin of your web UI is).
 
 ## Tech stack
 
