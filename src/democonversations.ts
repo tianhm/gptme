@@ -110,13 +110,28 @@ export const demoConversations: DemoConversation[] = [
         timestamp: now.toISOString(),
       },
       {
+        role: "assistant",
+        content: "When patches fail, I can attempt to apply them in different ways or re-read the file to ensure the content matches. I can recover from many common such issues without needing help.",
+        timestamp: now.toISOString(),
+      },
+      {
         role: "user",
         content: "Tell me about the web UI features",
         timestamp: now.toISOString(),
       },
       {
         role: "assistant",
-        content: "The gptme web UI offers several advantages over the CLI interface:\n\n1. **Rich Message Display**:\n   - Syntax highlighted code blocks\n   - Collapsible sections for code and thinking\n   - Different styles for user/assistant/system messages\n   - Emoji indicators for different types of content:\n     - 📄 File paths\n     - 🛠️ Tool usage\n     - 📤 Command output\n     - 💻 Code blocks\n\n2. **Interactive Features**:\n   - Real-time streaming of responses\n   - Easy navigation between conversations\n   - Ability to view and restore conversation history\n\n3. **Integration with gptme-server**:\n   - Connects to your local gptme instance\n   - Access to all local tools and capabilities\n   - Secure local execution of commands\n\nHere's an example showing different types of content:\n\n```/path/to/file.py\n# This shows as a file path\n```\n\n```shell\n# This shows as a tool\nls -la\n```\n\n```stdout\n# This shows as command output\ntotal 0\n```\n\n<thinking>\nThinking blocks are collapsible and help show my reasoning process\n</thinking>\n\nYou can try the web UI by:\n1. Starting a local gptme-server: `gptme-server --cors-origin='http://localhost:8080'`\n2. Running the web UI: `npm run dev`\n3. Opening http://localhost:8080 in your browser",
+        content: "The gptme web UI offers several advantages over the CLI interface:\n\n1. **Rich Message Display**:\n   - Syntax highlighted code blocks\n   - Collapsible sections for code and thinking\n   - Different styles for user/assistant/system messages\n   - Emoji indicators for different types of content:\n     - 📄 File paths\n     - 🛠️ Tool usage\n     - 📤 Command output\n     - 💻 Code blocks\n\n2. **Interactive Features**:\n   - Real-time streaming of responses\n   - Easy navigation between conversations\n   - Ability to view and restore conversation history\n\n3. **Integration with gptme-server**:\n   - Connects to your local gptme instance\n   - Access to all local tools and capabilities\n   - Secure local execution of commands\n\nHere's an example showing different types of content:\n\n```/path/to/file.py\n# This shows as a file path\n```\n\n```shell\n# This shows as a tool\nls -la\n```\n\n```stdout\n# This shows as command output\ntotal 0\n```\n\n<thinking>\nThinking blocks are collapsible and help show my reasoning process\n</thinking>\n\nThis web UI is a work in progress and will be improved over time (see the [remaining issues](https://github.com/ErikBjare/gptme-webui/issues)).",
+        timestamp: now.toISOString(),
+      },
+      {
+        role: "user",
+        content: "How do I use the web UI?",
+        timestamp: now.toISOString(),
+      },
+      {
+        role: "assistant",
+        content: "To use the gptme web UI, you'll need to run gptme-server locally first:\n\n```shell\ngptme-server --cors-origin='<origin>'  # Replace <origin> with the web UI URL\n```\n\nThen you have two options for accessing the web UI:\n\n1. **Use the hosted version** at [gptme.gptengineer.run](https://gptme.gptengineer.run):\n   - Use `--cors-origin='https://gptme.gptengineer.run'` when starting the server\n   - Click the 'Connect' button in the top-right corner\n   - Enter the server URL (default: http://127.0.0.1:5000)\n\n2. **Run the web UI locally**:\n   ```shell\n   git clone https://github.com/ErikBjare/gptme-webui\n   cd gptme-webui\n   npm install\n   npm run dev\n   ```\n   Then:\n   - Use `--cors-origin='http://localhost:5173'` when starting the server\n   - Open http://localhost:5173 in your browser\n   - Click 'Connect' and enter the server URL\n\nBoth options provide the same features, just choose what works best for you!",
         timestamp: now.toISOString(),
       }
     ],

@@ -13,6 +13,8 @@ marked.use(
     langPrefix: "hljs language-",
     highlight(code, lang, info) {
       lang = info.split(".").pop() || lang;
+      if (lang == "shell") lang = "bash";
+      if (lang == "result") lang = "markdown";
       const language = hljs.getLanguage(lang) ? lang : "plaintext";
       return hljs.highlight(code, { language }).value;
     },

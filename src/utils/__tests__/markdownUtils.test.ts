@@ -214,7 +214,7 @@ You can try the web UI by:
 
         // Check code block content with syntax highlighting
         expect(result).toContain('<span class="hljs-comment"># This shows as a file path</span>');
-        expect(result).toContain('<span class="language-bash">This shows as a tool</span>');
+        expect(result).toContain('<code class="hljs language-shell"><span class="hljs-comment"># This shows as a tool</span>');
         expect(result).toContain('# This shows as command output');
         expect(result).toContain('drwxr-xr-x 2 user user');
 
