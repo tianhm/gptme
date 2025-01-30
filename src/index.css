@@ -73,49 +73,18 @@
 
 .chat-message a {
   @apply text-blue-300;
-  position: relative;
-  padding-right: 1.2em;
-}
 
-/* External link icon for general links */
-.chat-message a[href^="http"]::after {
-  content: "↗";
-  position: absolute;
-  right: 0;
-  top: -0.1em;
-  font-size: 0.9em;
-  @apply text-muted-foreground;
-}
+  &:hover {
+    @apply text-blue-600;
+  }
 
-/* GitHub icon */
-.chat-message a[href*="github.com"]::after {
-  content: "G";
-  font-family: monospace;
-  font-weight: bold;
-  font-size: 0.8em;
-  top: 0;
-}
+  &:visited {
+    @apply text-purple-300;
+  }
 
-/* Wikipedia icon */
-.chat-message a[href*="wikipedia.org"]::after {
-  content: "W";
-  font-family: "Times New Roman", serif;
-  font-style: italic;
-  font-weight: bold;
-  font-size: 0.9em;
-  top: 0;
-}
-
-.chat-message a:hover {
-  @apply text-blue-600;
-}
-
-.chat-message a:visited {
-  @apply text-purple-300;
-}
-
-.chat-message a:visited:hover {
-  @apply text-purple-600;
+  &:visited:hover {
+    @apply text-purple-600;
+  }
 }
 
 .chat-message > p {
@@ -230,4 +199,3 @@ details > details {
 .hljs-number {
   @apply text-orange-400;
 }
-
