@@ -53,7 +53,7 @@
     --ring: 142.4 71.8% 29.2%;
     --code-background: 0 0% 3%;
     --codesnip: 0 0% 100%;
-    --codesnip-background: 0 0% 13%;
+    --codesnip-background: 0 0% 6%;
   }
 }
 
@@ -134,7 +134,7 @@
 }
 
 .chat-message *:not(pre) > code {
-  @apply rounded-md border-border p-1 px-2 text-gray-900;
+  @apply rounded-sm border-border px-[.4rem] py-1 text-gray-900 text-[0.7rem];
   color: hsl(var(--codesnip));
   background-color: hsl(var(--codesnip-background));
 }
