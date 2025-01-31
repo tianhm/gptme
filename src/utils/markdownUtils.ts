@@ -2,10 +2,28 @@ import { marked } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
 
+// Create custom renderer
+const renderer = new marked.Renderer();
+
+interface MarkedLink {
+    href: string;
+    title?: string | null;
+    text: string;
+}
+
+// Override link rendering to open external links in new tabs
+renderer.link = ({ href, title, text }: MarkedLink) => {
+  const isExternal = href && (href.startsWith('http://') || href.startsWith('https://'));
+  const attrs = isExternal ? ' target="_blank" rel="noopener noreferrer"' : '';
+  const titleAttr = title ? ` title="${title}"` : '';
+  return `<a href="${href}"${attrs}${titleAttr}>${text}</a>`;
+};
+
 marked.setOptions({
   gfm: true,
   breaks: true,
   silent: true,
+  renderer: renderer,
 });
 
 marked.use(
