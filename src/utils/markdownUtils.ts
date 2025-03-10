@@ -76,15 +76,15 @@ export function processNestedCodeBlocks(content: string) {
 }
 
 export function transformThinkingTags(content: string) {
-    if (content.startsWith('`') && content.endsWith('`')) {
-        return content;
-    }
+  if (content.startsWith('`') && content.endsWith('`')) {
+    return content;
+  }
 
-    return content.replace(
-        /<thinking>([\s\S]*?)<\/thinking>/g,
-        (_match: string, thinkingContent: string) =>
-            `<details><summary>💭 Thinking</summary>\n\n${thinkingContent}\n\n</details>`
-    );
+  return content.replace(
+    /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/g,
+    (_match: string, thinkingContent: string) =>
+      `<details><summary>💭 Thinking</summary>\n\n${thinkingContent}\n\n</details>`
+  );
 }
 
 export function parseMarkdownContent(content: string) {
