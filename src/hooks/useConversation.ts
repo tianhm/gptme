@@ -1,12 +1,12 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { useApi } from "@/contexts/ApiContext";
-import { useToast } from "@/components/ui/use-toast";
-import type { ConversationResponse } from "@/types/api";
-import type { Message } from "@/types/conversation";
-import type { ConversationItem } from "@/components/ConversationList";
-import { demoConversations } from "@/democonversations";
-import type { DemoConversation } from "@/democonversations";
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useApi } from '@/contexts/ApiContext';
+import { useToast } from '@/components/ui/use-toast';
+import type { ConversationResponse } from '@/types/api';
+import type { Message } from '@/types/conversation';
+import type { ConversationItem } from '@/components/ConversationList';
+import { demoConversations } from '@/democonversations';
+import type { DemoConversation } from '@/democonversations';
 
 interface UseConversationResult {
   conversationData: ConversationResponse | undefined;
@@ -19,9 +19,7 @@ function getDemo(name: string): DemoConversation | undefined {
   return demoConversations.find((conv) => conv.name === name);
 }
 
-export function useConversation(
-  conversation: ConversationItem
-): UseConversationResult {
+export function useConversation(conversation: ConversationItem): UseConversationResult {
   const api = useApi();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -29,12 +27,12 @@ export function useConversation(
   useEffect(() => {
     return () => {
       queryClient.cancelQueries({
-        queryKey: ["conversation", conversation.name],
+        queryKey: ['conversation', conversation.name],
       });
     };
   }, [conversation.name, queryClient]);
 
-  const queryKey = ["conversation", conversation.name, conversation.readonly];
+  const queryKey = ['conversation', conversation.name, conversation.readonly];
 
   const {
     data: conversationData,
@@ -56,24 +54,20 @@ export function useConversation(
         const response = await api.getConversation(conversation.name);
 
         if (signal.aborted) {
-          throw new Error("Query was cancelled");
+          throw new Error('Query was cancelled');
         }
 
         // If response is already in correct format, use it directly
         if (!response?.log || !response?.branches) {
-          throw new Error("Invalid conversation data received");
+          throw new Error('Invalid conversation data received');
         }
 
         return response;
       } catch (error) {
-        throw new Error(
-          `Failed to fetch conversation: ${(error as Error).message}`
-        );
+        throw new Error(`Failed to fetch conversation: ${(error as Error).message}`);
       }
     },
-    enabled: Boolean(
-      conversation.name && (conversation.readonly || api.isConnected)
-    ),
+    enabled: Boolean(conversation.name && (conversation.readonly || api.isConnected)),
     staleTime: 0, // Always treat data as stale
     gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
@@ -95,7 +89,7 @@ export function useConversation(
       try {
         // Create user message
         const userMessage: Message = {
-          role: "user",
+          role: 'user',
           content: message,
           timestamp: new Date().toISOString(),
         };
@@ -112,22 +106,21 @@ export function useConversation(
       await queryClient.cancelQueries({ queryKey });
 
       // Snapshot the previous value
-      const previousData =
-        queryClient.getQueryData<ConversationResponse>(queryKey);
+      const previousData = queryClient.getQueryData<ConversationResponse>(queryKey);
 
       const timestamp = new Date().toISOString();
 
       // Create both messages
       const userMessage: Message = {
-        role: "user",
+        role: 'user',
         content: message,
         timestamp,
         id: `user-${Date.now()}`,
       };
 
       const assistantMessage: Message = {
-        role: "assistant",
-        content: "",
+        role: 'assistant',
+        content: '',
         timestamp,
         id: `assistant-${Date.now()}`,
       };
@@ -148,7 +141,7 @@ export function useConversation(
     onSuccess: async (_, _variables, context) => {
       if (!context) return;
 
-      let currentContent = "";
+      let currentContent = '';
       let currentMessageId = context.assistantMessage.id;
       setIsGenerating(true);
 
@@ -159,35 +152,28 @@ export function useConversation(
           return {
             ...old,
             log: old.log.map((msg) =>
-              msg.id === currentMessageId
-                ? { ...msg, content: currentContent }
-                : msg
+              msg.id === currentMessageId ? { ...msg, content: currentContent } : msg
             ),
           };
         });
       };
 
       const handleComplete = (message: Message) => {
-        if (message.role !== "system") {
-          queryClient.setQueryData<ConversationResponse>(
-            queryKey,
-            (old) => {
-              if (!old) return undefined;
-              return {
-                ...old,
-                log: old.log.map((msg) =>
-                  msg.id === currentMessageId
-                    ? { ...message, id: currentMessageId }
-                    : msg
-                ),
-              };
-            }
-          );
+        if (message.role !== 'system') {
+          queryClient.setQueryData<ConversationResponse>(queryKey, (old) => {
+            if (!old) return undefined;
+            return {
+              ...old,
+              log: old.log.map((msg) =>
+                msg.id === currentMessageId ? { ...message, id: currentMessageId } : msg
+              ),
+            };
+          });
         }
       };
 
       const handleInterrupt = () => {
-        console.log("Generation interrupted by user");
+        console.log('Generation interrupted by user');
         setIsGenerating(false);
         // Add [interrupted] to the current message
         queryClient.setQueryData<ConversationResponse>(queryKey, (old) => {
@@ -196,7 +182,7 @@ export function useConversation(
             ...old,
             log: old.log.map((msg) =>
               msg.id === currentMessageId
-                ? { ...msg, content: msg.content + "\n\n[interrupted]" }
+                ? { ...msg, content: msg.content + '\n\n[interrupted]' }
                 : msg
             ),
           };
@@ -204,13 +190,13 @@ export function useConversation(
       };
 
       const handleError = (error: string) => {
-        if (error === "AbortError") {
+        if (error === 'AbortError') {
           handleInterrupt();
         } else {
           setIsGenerating(false);
           toast({
-            variant: "destructive",
-            title: "Error",
+            variant: 'destructive',
+            title: 'Error',
             description: error,
           });
         }
@@ -230,29 +216,26 @@ export function useConversation(
 
         // Safety check - prevent infinite loops
         const currentLog = queryClient.getQueryData<ConversationResponse>(queryKey)?.log || [];
-        const toolUseCount = currentLog.filter(msg => msg.role === "tool").length;
+        const toolUseCount = currentLog.filter((msg) => msg.role === 'tool').length;
         if (toolUseCount > 10) {
-          console.warn("Too many tool uses, stopping auto-generation");
+          console.warn('Too many tool uses, stopping auto-generation');
           toast({
-            title: "Warning",
-            description: "Stopped auto-generation after 10 tool uses",
+            title: 'Warning',
+            description: 'Stopped auto-generation after 10 tool uses',
           });
           setIsGenerating(false);
           return;
         }
 
         // After tool output, continue generating
-        console.log(
-          "[useConversation] Preparing to continue after tool output",
-          {
-            isGenerating,
-            previousMessageId: currentMessageId,
-          }
-        );
+        console.log('[useConversation] Preparing to continue after tool output', {
+          isGenerating,
+          previousMessageId: currentMessageId,
+        });
 
         const assistantMessage: Message = {
-          role: "assistant",
-          content: "",
+          role: 'assistant',
+          content: '',
           timestamp: new Date().toISOString(),
           id: `assistant-${Date.now()}`,
         };
@@ -260,13 +243,10 @@ export function useConversation(
         // Add empty assistant message for streaming
         queryClient.setQueryData<ConversationResponse>(queryKey, (old) => {
           if (!old) return undefined;
-          console.log(
-            "[useConversation] Adding new assistant message for continuation",
-            {
-              newMessageId: assistantMessage.id,
-              isGenerating,
-            }
-          );
+          console.log('[useConversation] Adding new assistant message for continuation', {
+            newMessageId: assistantMessage.id,
+            isGenerating,
+          });
           return {
             ...old,
             log: [...old.log, assistantMessage],
@@ -275,9 +255,9 @@ export function useConversation(
 
         // Update current message tracking
         currentMessageId = assistantMessage.id;
-        currentContent = "";
+        currentContent = '';
 
-        console.log("[useConversation] Starting continued generation", {
+        console.log('[useConversation] Starting continued generation', {
           newMessageId: currentMessageId,
           isGenerating,
         });
@@ -291,7 +271,7 @@ export function useConversation(
             onError: handleError,
           });
         } catch (error) {
-          if (error instanceof DOMException && error.name === "AbortError") {
+          if (error instanceof DOMException && error.name === 'AbortError') {
             handleInterrupt();
           } else {
             setIsGenerating(false);
@@ -309,14 +289,14 @@ export function useConversation(
           onError: handleError,
         });
       } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
+        if (error instanceof DOMException && error.name === 'AbortError') {
           handleInterrupt();
         } else {
           // Show error toast and rethrow
           toast({
-            variant: "destructive",
-            title: "Error",
-            description: "Failed to generate response",
+            variant: 'destructive',
+            title: 'Error',
+            description: 'Failed to generate response',
           });
           throw error;
         }
@@ -330,11 +310,11 @@ export function useConversation(
 
       // Show error toast
       toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to send message or generate response",
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Failed to send message or generate response',
       });
-      console.error("Error in mutation:", error);
+      console.error('Error in mutation:', error);
     },
   });
 

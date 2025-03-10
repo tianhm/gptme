@@ -1,5 +1,5 @@
-import type { ConversationSummary } from "@/types/conversation";
-import type { ConversationItem } from "@/components/ConversationList";
+import type { ConversationSummary } from '@/types/conversation';
+import type { ConversationItem } from '@/components/ConversationList';
 
 /**
  * Convert an API ConversationSummary to a UI ConversationItem

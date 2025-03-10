@@ -1,7 +1,7 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
-import { createApiClient } from "@/utils/api";
-import type { ApiClient } from "@/utils/api";
-import type { QueryClient } from "@tanstack/react-query";
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createApiClient } from '@/utils/api';
+import type { ApiClient } from '@/utils/api';
+import type { QueryClient } from '@tanstack/react-query';
 
 interface ApiContextType {
   api: ApiClient;
@@ -34,17 +34,17 @@ export function ApiProvider({
   useEffect(() => {
     const attemptInitialConnection = async () => {
       try {
-        console.log("Attempting initial connection to:", baseUrl);
+        console.log('Attempting initial connection to:', baseUrl);
         const connected = await api.checkConnection();
-        console.log("Initial connection result:", connected);
+        console.log('Initial connection result:', connected);
         if (connected) {
           setIsConnected(true);
-          console.log("Successfully connected to API");
+          console.log('Successfully connected to API');
         } else {
-          console.log("Failed to connect to API - server may be down");
+          console.log('Failed to connect to API - server may be down');
         }
       } catch (error) {
-        console.error("Initial connection attempt failed:", error);
+        console.error('Initial connection attempt failed:', error);
         setIsConnected(false);
       }
     };
@@ -60,23 +60,23 @@ export function ApiProvider({
       // Update connection status
       const connected = await newApi.checkConnection();
       if (!connected) {
-        throw new Error("Failed to connect to API");
+        throw new Error('Failed to connect to API');
       }
 
-      newApi.setConnected(true);  // Explicitly set connection state
+      newApi.setConnected(true); // Explicitly set connection state
       setApi(newApi);
       setIsConnected(true);
 
       // Invalidate and refetch all queries
       await queryClient.invalidateQueries();
       await queryClient.refetchQueries({
-        queryKey: ["conversations"],
-        type: "active",
+        queryKey: ['conversations'],
+        type: 'active',
       });
     } catch (error) {
-      console.error("Failed to update API connection:", error);
+      console.error('Failed to update API connection:', error);
       setIsConnected(false);
-      throw error;  // Re-throw to handle in the UI
+      throw error; // Re-throw to handle in the UI
     }
   };
 
@@ -102,7 +102,7 @@ export function ApiProvider({
 export function useApi() {
   const context = useContext(ApiContext);
   if (!context) {
-    throw new Error("useApi must be used within an ApiProvider");
+    throw new Error('useApi must be used within an ApiProvider');
   }
   return context;
 }

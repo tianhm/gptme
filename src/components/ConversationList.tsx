@@ -1,26 +1,22 @@
-import { Clock, MessageSquare, Lock, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { getRelativeTimeString } from "@/utils/time";
-import { useQuery } from "@tanstack/react-query";
-import { useApi } from "@/contexts/ApiContext";
-import { demoConversations } from "@/democonversations";
-import type { ConversationResponse } from "@/types/api";
-import type { MessageRole } from "@/types/conversation";
+import { Clock, MessageSquare, Lock, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { getRelativeTimeString } from '@/utils/time';
+import { useQuery } from '@tanstack/react-query';
+import { useApi } from '@/contexts/ApiContext';
+import { demoConversations } from '@/democonversations';
+import type { ConversationResponse } from '@/types/api';
+import type { MessageRole } from '@/types/conversation';
 
-import type { FC } from "react";
+import type { FC } from 'react';
 
 type MessageBreakdown = Partial<Record<MessageRole, number>>;
 
 // UI-specific type for rendering conversations
 export interface ConversationItem {
   name: string;
-  lastUpdated: Date;  // Converted from modified timestamp
-  messageCount: number;  // From messages count
+  lastUpdated: Date; // Converted from modified timestamp
+  messageCount: number; // From messages count
   readonly?: boolean;
   // Matches Conversation from API but with converted date
 }
@@ -62,7 +58,7 @@ export const ConversationList: FC<Props> = ({
 
     // For API conversations, fetch messages
     const { data: messages } = useQuery<ConversationResponse>({
-      queryKey: ["conversation", conv.name],
+      queryKey: ['conversation', conv.name],
       queryFn: () => api.getConversation(conv.name),
       enabled: isConnected && !demoConv,
     });
@@ -84,7 +80,7 @@ export const ConversationList: FC<Props> = ({
     };
 
     const formatBreakdown = (breakdown: MessageBreakdown) => {
-      const order: MessageRole[] = ["user", "assistant", "system", "tool"];
+      const order: MessageRole[] = ['user', 'assistant', 'system', 'tool'];
       return Object.entries(breakdown)
         .sort(([a], [b]) => {
           const aIndex = order.indexOf(a as MessageRole);
@@ -96,22 +92,22 @@ export const ConversationList: FC<Props> = ({
           return aIndex - bIndex;
         })
         .map(([role, count]) => `${role}: ${count}`)
-        .join("\n");
+        .join('\n');
     };
 
     return (
       <div
-        className={`p-3 rounded-lg hover:bg-accent cursor-pointer transition-colors ${
-          selectedId === conv.name ? "bg-accent" : ""
+        className={`cursor-pointer rounded-lg p-3 transition-colors hover:bg-accent ${
+          selectedId === conv.name ? 'bg-accent' : ''
         }`}
         onClick={() => onSelect(conv.name)}
       >
-        <div className="font-medium mb-1">{stripDate(conv.name)}</div>
-        <div className="flex items-center text-sm text-muted-foreground space-x-4">
+        <div className="mb-1 font-medium">{stripDate(conv.name)}</div>
+        <div className="flex items-center space-x-4 text-sm text-muted-foreground">
           <Tooltip>
             <TooltipTrigger>
               <span className="flex items-center">
-                <Clock className="w-4 h-4 mr-1" />
+                <Clock className="mr-1 h-4 w-4" />
                 {getRelativeTimeString(conv.lastUpdated)}
               </span>
             </TooltipTrigger>
@@ -120,15 +116,13 @@ export const ConversationList: FC<Props> = ({
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="flex items-center">
-                <MessageSquare className="w-4 h-4 mr-1" />
+                <MessageSquare className="mr-1 h-4 w-4" />
                 {conv.messageCount}
               </span>
             </TooltipTrigger>
             <TooltipContent>
               <div className="whitespace-pre">
-                {demoConv || messages?.log
-                  ? formatBreakdown(getMessageBreakdown())
-                  : "Loading..."}
+                {demoConv || messages?.log ? formatBreakdown(getMessageBreakdown()) : 'Loading...'}
               </div>
             </TooltipContent>
           </Tooltip>
@@ -136,7 +130,7 @@ export const ConversationList: FC<Props> = ({
             <Tooltip>
               <TooltipTrigger>
                 <span className="flex items-center">
-                  <Lock className="w-4 h-4" />
+                  <Lock className="h-4 w-4" />
                 </span>
               </TooltipTrigger>
               <TooltipContent>This conversation is read-only</TooltipContent>
@@ -148,38 +142,38 @@ export const ConversationList: FC<Props> = ({
   };
 
   return (
-    <div className="space-y-2 p-4 h-full overflow-y-auto">
+    <div className="h-full space-y-2 overflow-y-auto p-4">
       {isLoading && (
-        <div className="flex items-center justify-center text-sm text-muted-foreground p-4">
-          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+        <div className="flex items-center justify-center p-4 text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           Loading conversations...
         </div>
       )}
       {!isLoading && isError && (
-        <div className="text-sm text-destructive p-4 space-y-2">
+        <div className="space-y-2 p-4 text-sm text-destructive">
           <div className="font-medium">Failed to load conversations</div>
           <div className="text-muted-foreground">{error?.message}</div>
           {onRetry && (
             <Button variant="outline" size="sm" onClick={onRetry} className="w-full">
-              <Loader2 className="w-4 h-4 mr-2" />
+              <Loader2 className="mr-2 h-4 w-4" />
               Retry
             </Button>
           )}
         </div>
       )}
       {!isLoading && !isError && !isConnected && conversations.length === 0 && (
-        <div className="text-sm text-muted-foreground p-2">
+        <div className="p-2 text-sm text-muted-foreground">
           Not connected to API. Use the connect button to load conversations.
         </div>
       )}
       {!isLoading && !isError && isConnected && conversations.length === 0 && (
-        <div className="text-sm text-muted-foreground p-2">
+        <div className="p-2 text-sm text-muted-foreground">
           No conversations found. Start a new conversation to get started.
         </div>
       )}
-      {!isLoading && !isError && conversations.map((conv) => (
-        <ConversationItem key={conv.name} conv={conv} />
-      ))}
+      {!isLoading &&
+        !isError &&
+        conversations.map((conv) => <ConversationItem key={conv.name} conv={conv} />)}
     </div>
   );
 };

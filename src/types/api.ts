@@ -1,4 +1,4 @@
-import type { Message, MessageRole } from "./conversation";
+import type { Message, MessageRole } from './conversation';
 
 // Response from /api/conversations/<logfile>/generate
 export interface GenerateResponse {

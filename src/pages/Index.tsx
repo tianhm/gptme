@@ -1,16 +1,16 @@
-import { type FC } from "react";
-import { useState, useCallback, useEffect } from "react";
-import { setDocumentTitle } from "@/utils/title";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MenuBar } from "@/components/MenuBar";
-import { LeftSidebar } from "@/components/LeftSidebar";
-import { RightSidebar } from "@/components/RightSidebar";
-import { ConversationContent } from "@/components/ConversationContent";
-import { useApi } from "@/contexts/ApiContext";
-import type { ConversationItem } from "@/components/ConversationList";
-import { toConversationItems } from "@/utils/conversation";
-import { demoConversations, type DemoConversation } from "@/democonversations";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { type FC } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { setDocumentTitle } from '@/utils/title';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { MenuBar } from '@/components/MenuBar';
+import { LeftSidebar } from '@/components/LeftSidebar';
+import { RightSidebar } from '@/components/RightSidebar';
+import { ConversationContent } from '@/components/ConversationContent';
+import { useApi } from '@/contexts/ApiContext';
+import type { ConversationItem } from '@/components/ConversationList';
+import { toConversationItems } from '@/utils/conversation';
+import { demoConversations, type DemoConversation } from '@/democonversations';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 
 interface Props {
   className?: string;
@@ -41,21 +41,21 @@ const Index: FC<Props> = () => {
     isError,
     error,
     isLoading,
-    refetch
+    refetch,
   } = useQuery({
-    queryKey: ["conversations", baseUrl, isConnected],
+    queryKey: ['conversations', baseUrl, isConnected],
     queryFn: async () => {
-      console.log("Fetching conversations, connection state:", isConnected);
+      console.log('Fetching conversations, connection state:', isConnected);
       if (!isConnected) {
-        console.warn("Attempting to fetch conversations while disconnected");
+        console.warn('Attempting to fetch conversations while disconnected');
         return [];
       }
       try {
         const conversations = await api.getConversations();
-        console.log("Fetched conversations:", conversations);
+        console.log('Fetched conversations:', conversations);
         return conversations;
       } catch (err) {
-        console.error("Failed to fetch conversations:", err);
+        console.error('Failed to fetch conversations:', err);
         throw err;
       }
     },
@@ -66,7 +66,7 @@ const Index: FC<Props> = () => {
 
   // Log any query errors
   if (isError) {
-    console.error("Conversation query error:", error);
+    console.error('Conversation query error:', error);
   }
 
   // Combine demo and API conversations
@@ -89,7 +89,7 @@ const Index: FC<Props> = () => {
       }
       // Cancel any pending queries for the previous conversation
       queryClient.cancelQueries({
-        queryKey: ["conversation", selectedConversation],
+        queryKey: ['conversation', selectedConversation],
       });
       setSelectedConversation(id);
       // Update URL with the new conversation ID
@@ -98,9 +98,8 @@ const Index: FC<Props> = () => {
     [selectedConversation, queryClient, navigate]
   );
 
-  const conversation = allConversations.find(
-    (conv) => conv.name === selectedConversation
-  ) ?? allConversations[0];  // Fallback to first conversation if none selected
+  const conversation =
+    allConversations.find((conv) => conv.name === selectedConversation) ?? allConversations[0]; // Fallback to first conversation if none selected
 
   // Update document title when selected conversation changes
   useEffect(() => {
@@ -109,13 +108,13 @@ const Index: FC<Props> = () => {
     } else {
       setDocumentTitle();
     }
-    return () => setDocumentTitle();  // Reset title on unmount
+    return () => setDocumentTitle(); // Reset title on unmount
   }, [conversation]);
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="flex h-screen flex-col">
       <MenuBar />
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex flex-1 overflow-hidden">
         <LeftSidebar
           isOpen={leftSidebarOpen}
           onToggle={() => setLeftSidebarOpen(!leftSidebarOpen)}

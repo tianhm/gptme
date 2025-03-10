@@ -4,10 +4,10 @@ import type {
   ApiError,
   SendMessageRequest,
   CreateConversationRequest,
-} from "@/types/api";
-import type { Message } from "@/types/conversation";
+} from '@/types/api';
+import type { Message } from '@/types/conversation';
 
-const DEFAULT_API_URL = "http://127.0.0.1:5000";
+const DEFAULT_API_URL = 'http://127.0.0.1:5000';
 
 // Add DOM types
 type RequestInit = globalThis.RequestInit;
@@ -20,7 +20,7 @@ class ApiClientError extends Error {
   constructor(message: string, status?: number) {
     super(message);
     this.status = status;
-    this.name = "ApiClientError";
+    this.name = 'ApiClientError';
   }
 
   static isApiError(error: unknown): error is ApiClientError {
@@ -30,9 +30,7 @@ class ApiClientError extends Error {
 
 // Type guard for API error responses
 function isApiErrorResponse(response: unknown): response is ApiError {
-  return (
-    typeof response === "object" && response !== null && "error" in response
-  );
+  return typeof response === 'object' && response !== null && 'error' in response;
 }
 
 export class ApiClient {
@@ -65,23 +63,17 @@ export class ApiClient {
     }
   }
 
-  private async fetchJson<T>(
-    url: string,
-    options: RequestInit = {}
-  ): Promise<T> {
+  private async fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(url, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
         ...options.headers,
       },
     });
 
     if (!response.ok) {
-      throw new ApiClientError(
-        `HTTP error! status: ${response.status}`,
-        response.status
-      );
+      throw new ApiClientError(`HTTP error! status: ${response.status}`, response.status);
     }
 
     return response.json();
@@ -115,14 +107,10 @@ export class ApiClient {
   async checkConnection(): Promise<boolean> {
     try {
       // First try a basic connection check
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api`,
-        {},
-        3000
-      );
+      const response = await this.fetchWithTimeout(`${this.baseUrl}/api`, {}, 3000);
 
       if (!response.ok) {
-        console.error("API endpoint returned non-OK status:", response.status);
+        console.error('API endpoint returned non-OK status:', response.status);
         this._isConnected = false;
         return false;
       }
@@ -131,7 +119,7 @@ export class ApiClient {
       try {
         await response.json();
       } catch (parseError) {
-        console.error("Failed to parse API response:", parseError);
+        console.error('Failed to parse API response:', parseError);
         this._isConnected = false;
         return false;
       }
@@ -140,9 +128,9 @@ export class ApiClient {
       return true;
     } catch (error) {
       if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-        console.error("Network error - server may be down or CORS not configured");
+        console.error('Network error - server may be down or CORS not configured');
       } else {
-        console.error("Connection check failed:", error);
+        console.error('Connection check failed:', error);
       }
       this._isConnected = false;
       return false;
@@ -152,7 +140,7 @@ export class ApiClient {
   // Add method to explicitly set connection state
   setConnected(connected: boolean) {
     if (connected && !this._isConnected) {
-      console.warn("Manually setting connected state without verification");
+      console.warn('Manually setting connected state without verification');
     }
     this._isConnected = connected;
   }
@@ -161,15 +149,15 @@ export class ApiClient {
     limit: number = 100
   ): Promise<{ name: string; modified: number; messages: number }[]> {
     if (!this._isConnected) {
-      throw new ApiClientError("Not connected to API");
+      throw new ApiClientError('Not connected to API');
     }
     try {
-      return await this.fetchJson<
-        { name: string; modified: number; messages: number }[]
-      >(`${this.baseUrl}/api/conversations?limit=${limit}`);
+      return await this.fetchJson<{ name: string; modified: number; messages: number }[]>(
+        `${this.baseUrl}/api/conversations?limit=${limit}`
+      );
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new ApiClientError("Request aborted", 499);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ApiClientError('Request aborted', 499);
       }
       throw error;
     }
@@ -177,7 +165,7 @@ export class ApiClient {
 
   async getConversation(logfile: string): Promise<ConversationResponse> {
     if (!this._isConnected) {
-      throw new ApiClientError("Not connected to API");
+      throw new ApiClientError('Not connected to API');
     }
     try {
       const response = await this.fetchJson<ConversationResponse>(
@@ -188,60 +176,50 @@ export class ApiClient {
       );
       return response;
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new ApiClientError("Request aborted", 499);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ApiClientError('Request aborted', 499);
       }
       throw error;
     }
   }
 
-  async createConversation(
-    logfile: string,
-    messages: Message[]
-  ): Promise<{ status: string }> {
+  async createConversation(logfile: string, messages: Message[]): Promise<{ status: string }> {
     if (!this._isConnected) {
-      console.error("Attempted to create conversation while disconnected");
-      throw new ApiClientError("Not connected to API");
+      console.error('Attempted to create conversation while disconnected');
+      throw new ApiClientError('Not connected to API');
     }
     try {
       const request: CreateConversationRequest = { messages };
       return await this.fetchJson<{ status: string }>(
         `${this.baseUrl}/api/conversations/${logfile}`,
         {
-          method: "PUT",
+          method: 'PUT',
           body: JSON.stringify(request),
         }
       );
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new ApiClientError("Request aborted", 499);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ApiClientError('Request aborted', 499);
       }
-      console.error("Create conversation error:", error);
+      console.error('Create conversation error:', error);
       throw error;
     }
   }
 
-  async sendMessage(
-    logfile: string,
-    message: Message,
-    branch: string = "main"
-  ): Promise<void> {
+  async sendMessage(logfile: string, message: Message, branch: string = 'main'): Promise<void> {
     if (!this._isConnected) {
-      throw new ApiClientError("Not connected to API");
+      throw new ApiClientError('Not connected to API');
     }
     try {
       const request: SendMessageRequest = { ...message, branch };
-      await this.fetchJson<{ status: string }>(
-        `${this.baseUrl}/api/conversations/${logfile}`,
-        {
-          method: "POST",
-          body: JSON.stringify(request),
-          signal: this.controller?.signal,
-        }
-      );
+      await this.fetchJson<{ status: string }>(`${this.baseUrl}/api/conversations/${logfile}`, {
+        method: 'POST',
+        body: JSON.stringify(request),
+        signal: this.controller?.signal,
+      });
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw new ApiClientError("Request aborted", 499);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ApiClientError('Request aborted', 499);
       }
       throw error;
     }
@@ -256,10 +234,10 @@ export class ApiClient {
       onError?: (error: string) => void;
     },
     model?: string,
-    branch: string = "main"
+    branch: string = 'main'
   ): Promise<void> {
     if (!this._isConnected) {
-      throw new Error("Not connected to API");
+      throw new Error('Not connected to API');
     }
     await this.cancelPendingRequests();
 
@@ -268,18 +246,15 @@ export class ApiClient {
     let cleanup: (() => void) | undefined;
 
     try {
-      const response = await fetch(
-        `${this.baseUrl}/api/conversations/${logfile}/generate`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Connection: "keep-alive",
-          },
-          body: JSON.stringify({ model, branch, stream: true }),
-          signal: this.controller?.signal,
-        }
-      );
+      const response = await fetch(`${this.baseUrl}/api/conversations/${logfile}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Connection: 'keep-alive',
+        },
+        body: JSON.stringify({ model, branch, stream: true }),
+        signal: this.controller?.signal,
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -295,12 +270,12 @@ export class ApiClient {
             await response.body.cancel();
           }
         } catch (e) {
-          console.error("Error during cleanup:", e);
+          console.error('Error during cleanup:', e);
         }
       };
 
       this.controller?.signal.addEventListener(
-        "abort",
+        'abort',
         async () => {
           await cleanup?.();
         },
@@ -312,14 +287,14 @@ export class ApiClient {
         if (done) break;
 
         const chunk = decoder.decode(value);
-        for (const line of chunk.split("\n")) {
-          if (!line.trim() || !line.startsWith("data: ")) continue;
+        for (const line of chunk.split('\n')) {
+          if (!line.trim() || !line.startsWith('data: ')) continue;
 
           try {
             const data = JSON.parse(line.slice(6)) as GenerateResponse;
 
             if (isApiErrorResponse(data)) {
-              console.error("Error from SSE:", data.error);
+              console.error('Error from SSE:', data.error);
               callbacks.onError?.(data.error);
               return;
             }
@@ -333,20 +308,20 @@ export class ApiClient {
                 timestamp: new Date().toISOString(),
               };
 
-              if (data.role === "system") {
+              if (data.role === 'system') {
                 callbacks.onToolOutput?.(message);
               } else {
                 callbacks.onComplete?.(message);
               }
             }
           } catch (e) {
-            console.error("Error parsing SSE data:", e);
+            console.error('Error parsing SSE data:', e);
           }
         }
       }
     } catch (error) {
       if (this.controller?.signal.aborted) {
-        console.log("Request/stream aborted");
+        console.log('Request/stream aborted');
         return;
       }
       throw error;

@@ -1,22 +1,21 @@
-import type { FC } from "react";
-import { useState, useMemo, useEffect, useRef } from "react";
-import { ChatMessage } from "./ChatMessage";
-import { ChatInput } from "./ChatInput";
-import { useConversation } from "@/hooks/useConversation";
-import { Checkbox } from "./ui/checkbox";
-import { Label } from "./ui/label";
-import { Loader2 } from "lucide-react";
-import type { ConversationItem } from "./ConversationList";
-import { useApi } from "@/contexts/ApiContext";
-import { useQueryClient } from "@tanstack/react-query";
+import type { FC } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { ChatMessage } from './ChatMessage';
+import { ChatInput } from './ChatInput';
+import { useConversation } from '@/hooks/useConversation';
+import { Checkbox } from './ui/checkbox';
+import { Label } from './ui/label';
+import { Loader2 } from 'lucide-react';
+import type { ConversationItem } from './ConversationList';
+import { useApi } from '@/contexts/ApiContext';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface Props {
   conversation: ConversationItem;
 }
 
 export const ConversationContent: FC<Props> = ({ conversation }) => {
-  const { conversationData, sendMessage, isLoading, isGenerating } =
-    useConversation(conversation);
+  const { conversationData, sendMessage, isLoading, isGenerating } = useConversation(conversation);
   const [showInitialSystem, setShowInitialSystem] = useState(false);
   const api = useApi();
   const queryClient = useQueryClient();
@@ -26,35 +25,33 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
     setShowInitialSystem(false);
   }, [conversation.name]);
 
-  const { currentMessages, firstNonSystemIndex, hasSystemMessages } =
-    useMemo(() => {
-      if (!conversationData?.log) {
-        return {
-          currentMessages: [],
-          firstNonSystemIndex: 0,
-          hasSystemMessages: false,
-        };
-      }
-
-      const messages = conversationData.log;
-
-      const firstNonSystem = messages.findIndex((msg) => msg.role !== "system");
-      const hasInitialSystemMessages = firstNonSystem > 0;
-
+  const { currentMessages, firstNonSystemIndex, hasSystemMessages } = useMemo(() => {
+    if (!conversationData?.log) {
       return {
-        currentMessages: messages,
-        firstNonSystemIndex:
-          firstNonSystem === -1 ? messages.length : firstNonSystem,
-        hasSystemMessages: hasInitialSystemMessages,
+        currentMessages: [],
+        firstNonSystemIndex: 0,
+        hasSystemMessages: false,
       };
-    }, [conversationData]);
+    }
+
+    const messages = conversationData.log;
+
+    const firstNonSystem = messages.findIndex((msg) => msg.role !== 'system');
+    const hasInitialSystemMessages = firstNonSystem > 0;
+
+    return {
+      currentMessages: messages,
+      firstNonSystemIndex: firstNonSystem === -1 ? messages.length : firstNonSystem,
+      hasSystemMessages: hasInitialSystemMessages,
+    };
+  }, [conversationData]);
 
   // Create a ref for the scroll container
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Memoize the messages content string
   const messagesContent = useMemo(
-    () => currentMessages.map((msg) => msg.content).join(""),
+    () => currentMessages.map((msg) => msg.content).join(''),
     [currentMessages]
   );
 
@@ -62,8 +59,7 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
   useEffect(() => {
     const scrollToBottom = () => {
       if (scrollContainerRef.current) {
-        scrollContainerRef.current.scrollTop =
-          scrollContainerRef.current.scrollHeight;
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
       }
     };
 
@@ -76,11 +72,11 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
   ]);
 
   return (
-    <main className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex-1 overflow-y-auto relative" ref={scrollContainerRef}>
+    <main className="flex flex-1 flex-col overflow-hidden">
+      <div className="relative flex-1 overflow-y-auto" ref={scrollContainerRef}>
         {hasSystemMessages ? (
-          <div className="flex items-center w-full bg-accent/50">
-            <div className="flex items-center gap-2 flex-1 p-4 max-w-3xl mx-auto">
+          <div className="flex w-full items-center bg-accent/50">
+            <div className="mx-auto flex max-w-3xl flex-1 items-center gap-2 p-4">
               <Checkbox
                 id="showInitialSystem"
                 checked={showInitialSystem}
@@ -94,28 +90,26 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
               <Label
                 htmlFor="showInitialSystem"
                 className={`text-sm text-muted-foreground hover:text-foreground ${
-                  isLoading ? "opacity-50" : "cursor-pointer"
+                  isLoading ? 'opacity-50' : 'cursor-pointer'
                 }`}
               >
                 Show initial system messages
               </Label>
             </div>
-            {isLoading && (
-              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-            )}
+            {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
           </div>
         ) : null}
         {currentMessages.map((msg, index) => {
           // Hide all system messages before the first non-system message by default
-          const isInitialSystem =
-            msg.role === "system" && index < firstNonSystemIndex;
+          const isInitialSystem = msg.role === 'system' && index < firstNonSystemIndex;
           if (isInitialSystem && !showInitialSystem) {
             return null;
           }
 
           // Get the previous and next messages for spacing context
           const previousMessage = index > 0 ? currentMessages[index - 1] : null;
-          const nextMessage = index < currentMessages.length - 1 ? currentMessages[index + 1] : null;
+          const nextMessage =
+            index < currentMessages.length - 1 ? currentMessages[index + 1] : null;
 
           return (
             <ChatMessage
@@ -133,11 +127,11 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
       <ChatInput
         onSend={sendMessage}
         onInterrupt={async () => {
-          console.log("Interrupting from ConversationContent...");
+          console.log('Interrupting from ConversationContent...');
           await api.cancelPendingRequests();
           // Invalidate the query to ensure UI updates
           queryClient.invalidateQueries({
-            queryKey: ["conversation", conversation.name],
+            queryKey: ['conversation', conversation.name],
           });
         }}
         isReadOnly={conversation.readonly}

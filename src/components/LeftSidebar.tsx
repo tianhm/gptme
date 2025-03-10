@@ -1,19 +1,14 @@
-import { PanelLeftOpen, PanelLeftClose, Plus, ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { ConversationList } from "./ConversationList";
-import { useApi } from "@/contexts/ApiContext";
-import { useToast } from "@/components/ui/use-toast";
-import { useNavigate } from "react-router-dom";
-import type { ConversationItem } from "./ConversationList";
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { PanelLeftOpen, PanelLeftClose, Plus, ExternalLink } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { ConversationList } from './ConversationList';
+import { useApi } from '@/contexts/ApiContext';
+import { useToast } from '@/components/ui/use-toast';
+import { useNavigate } from 'react-router-dom';
+import type { ConversationItem } from './ConversationList';
+import { useQueryClient } from '@tanstack/react-query';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
-import type { FC } from "react";
+import type { FC } from 'react';
 
 interface Props {
   isOpen: boolean;
@@ -47,17 +42,17 @@ export const LeftSidebar: FC<Props> = ({
     try {
       const newId = Date.now().toString();
       await api.createConversation(newId, []);
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
       toast({
-        title: "New conversation created",
-        description: "Starting a fresh conversation",
+        title: 'New conversation created',
+        description: 'Starting a fresh conversation',
       });
       navigate(`/?conversation=${newId}`);
     } catch {
       toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to create new conversation",
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Failed to create new conversation',
       });
     }
   };
@@ -66,10 +61,10 @@ export const LeftSidebar: FC<Props> = ({
     <div className="relative h-full">
       <div
         className={`border-r transition-all duration-300 ${
-          isOpen ? "w-80" : "w-0"
-        } overflow-hidden h-full flex flex-col`}
+          isOpen ? 'w-80' : 'w-0'
+        } flex h-full flex-col overflow-hidden`}
       >
-        <div className="h-12 border-b flex items-center justify-between px-4">
+        <div className="flex h-12 items-center justify-between border-b px-4">
           <h2 className="font-semibold">Conversations</h2>
           <div className="flex items-center space-x-2">
             <TooltipProvider>
@@ -82,14 +77,12 @@ export const LeftSidebar: FC<Props> = ({
                       onClick={handleNewConversation}
                       disabled={!isConnected}
                     >
-                      <Plus className="w-4 h-4" />
+                      <Plus className="h-4 w-4" />
                     </Button>
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {!isConnected
-                    ? "Connect to create new conversations"
-                    : "Create new conversation"}
+                  {!isConnected ? 'Connect to create new conversations' : 'Create new conversation'}
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -98,7 +91,7 @@ export const LeftSidebar: FC<Props> = ({
             </Button>
           </div>
         </div>
-        <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex flex-1 flex-col overflow-hidden">
           <ConversationList
             conversations={conversations}
             selectedId={selectedConversationId}
@@ -116,7 +109,7 @@ export const LeftSidebar: FC<Props> = ({
                 rel="noopener noreferrer"
                 className="flex items-center hover:text-foreground"
               >
-                <ExternalLink className="w-3 h-3 mr-1" />
+                <ExternalLink className="mr-1 h-3 w-3" />
                 gptme
               </a>
               <a
@@ -125,7 +118,7 @@ export const LeftSidebar: FC<Props> = ({
                 rel="noopener noreferrer"
                 className="flex items-center hover:text-foreground"
               >
-                <ExternalLink className="w-3 h-3 mr-1" />
+                <ExternalLink className="mr-1 h-3 w-3" />
                 gptme-webui
               </a>
             </div>
@@ -137,7 +130,7 @@ export const LeftSidebar: FC<Props> = ({
           variant="ghost"
           size="icon"
           onClick={onToggle}
-          className="absolute top-2 -right-10 z-50"
+          className="absolute -right-10 top-2 z-50"
         >
           <PanelLeftOpen className="h-5 w-5" />
         </Button>
