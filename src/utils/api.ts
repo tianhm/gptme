@@ -1,9 +1,9 @@
 import type {
-  ConversationResponse,
-  GenerateResponse,
   ApiError,
-  SendMessageRequest,
+  ConversationResponse,
   CreateConversationRequest,
+  GenerateResponse,
+  SendMessageRequest,
 } from '@/types/api';
 import type { Message } from '@/types/conversation';
 
@@ -35,11 +35,13 @@ function isApiErrorResponse(response: unknown): response is ApiError {
 
 export class ApiClient {
   public baseUrl: string;
+  public authHeader: string | null = null;
   private _isConnected: boolean = false;
   private controller: AbortController | null = null;
 
-  constructor(baseUrl: string = DEFAULT_API_URL) {
+  constructor(baseUrl: string = DEFAULT_API_URL, authHeader: string | null = null) {
     this.baseUrl = baseUrl;
+    this.authHeader = authHeader;
   }
 
   private async fetchWithTimeout(
@@ -50,9 +52,21 @@ export class ApiClient {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+    let headers = {
+      ...options.headers,
+    };
+
+    if (this.authHeader) {
+      headers = {
+        ...headers,
+        Authorization: this.authHeader,
+      };
+    }
+
     try {
       const response = await fetch(url, {
         ...options,
+        headers,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -64,11 +78,22 @@ export class ApiClient {
   }
 
   private async fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
+    let headers = {
+      ...options.headers,
+    };
+
+    if (this.authHeader) {
+      headers = {
+        ...headers,
+        Authorization: this.authHeader,
+      };
+    }
+
     const response = await fetch(url, {
       ...options,
       headers: {
-        'Content-Type': 'application/json',
         ...options.headers,
+        'Content-Type': 'applications/json',
       },
     });
 
@@ -246,12 +271,23 @@ export class ApiClient {
     let cleanup: (() => void) | undefined;
 
     try {
+      let headers: {
+        [key: string]: string;
+      } = {
+        'Content-Type': 'application/json',
+        Connection: 'keep-alive',
+      };
+
+      if (this.authHeader) {
+        headers = {
+          ...headers,
+          Authorization: this.authHeader,
+        };
+      }
+
       const response = await fetch(`${this.baseUrl}/api/conversations/${logfile}/generate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Connection: 'keep-alive',
-        },
+        headers,
         body: JSON.stringify({ model, branch, stream: true }),
         signal: this.controller?.signal,
       });
@@ -331,6 +367,6 @@ export class ApiClient {
   }
 }
 
-export const createApiClient = (baseUrl?: string): ApiClient => {
-  return new ApiClient(baseUrl);
+export const createApiClient = (baseUrl?: string, authHeader?: string | null): ApiClient => {
+  return new ApiClient(baseUrl, authHeader);
 };
