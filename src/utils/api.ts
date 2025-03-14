@@ -12,6 +12,7 @@ const DEFAULT_API_URL = 'http://127.0.0.1:5000';
 // Add DOM types
 type RequestInit = globalThis.RequestInit;
 type Response = globalThis.Response;
+type HeadersInit = globalThis.HeadersInit;
 
 // Error type for API client
 class ApiClientError extends Error {
@@ -78,23 +79,18 @@ export class ApiClient {
   }
 
   private async fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
-    let headers = {
+    const headers: HeadersInit = {
       ...options.headers,
+      'Content-Type': 'application/json',
     };
 
     if (this.authHeader) {
-      headers = {
-        ...headers,
-        Authorization: this.authHeader,
-      };
+      (headers as Record<string, string>)['Authorization'] = this.authHeader;
     }
 
     const response = await fetch(url, {
       ...options,
-      headers: {
-        ...options.headers,
-        'Content-Type': 'applications/json',
-      },
+      headers,
     });
 
     if (!response.ok) {
