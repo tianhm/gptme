@@ -210,6 +210,42 @@ export function useConversation(conversation: ConversationItem): UseConversation
             };
           });
         },
+        onInterrupted: () => {
+          console.log('[useConversation] Generation interrupted');
+
+          // Clear generating state
+          setIsGenerating(false);
+
+          // Clear any pending tool
+          if (pendingToolRef.current) {
+            setPendingTool(null);
+          }
+
+          // Mark the conversation as interrupted in the UI
+          queryClient.setQueryData<ConversationResponse>(queryKey, (old) => {
+            if (!old?.log?.length) return old;
+
+            // Find the last assistant message
+            const messages = [...old.log];
+            const lastMsg = messages[messages.length - 1];
+
+            // Only add [interrupted] if it's not already there
+            if (
+              lastMsg.role === 'assistant' &&
+              !lastMsg.content.toLowerCase().includes('[interrupted]')
+            ) {
+              messages.push({
+                ...lastMsg,
+                content: lastMsg.content + ' [interrupted]',
+              });
+            }
+
+            return {
+              ...old,
+              log: messages,
+            };
+          });
+        },
         onError: (error) => {
           console.error('[useConversation] Error from event stream:', error);
         },
@@ -302,31 +338,6 @@ export function useConversation(conversation: ConversationItem): UseConversation
 
       // Always update local state
       setIsGenerating(false);
-
-      // Mark the conversation as interrupted in the UI
-      queryClient.setQueryData<ConversationResponse>(queryKey, (old) => {
-        if (!old?.log?.length) return old;
-
-        // Find the last assistant message
-        const messages = [...old.log];
-        for (let i = messages.length - 1; i >= 0; i--) {
-          if (messages[i].role === 'assistant') {
-            // Only add [interrupted] if it's not already there
-            if (!messages[i].content.includes('[interrupted]')) {
-              messages[i] = {
-                ...messages[i],
-                content: messages[i].content + '[interrupted]',
-              };
-            }
-            break;
-          }
-        }
-
-        return {
-          ...old,
-          log: messages,
-        };
-      });
 
       console.log('Generation interrupted successfully');
     } catch (error) {
