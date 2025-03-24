@@ -7,7 +7,7 @@ import type { ConversationItem } from '@/components/ConversationList';
 import { demoConversations } from '@/democonversations';
 import type { DemoConversation } from '@/democonversations';
 import type { ChatOptions } from '@/components/ChatInput';
-import { use$, useObservable } from '@legendapp/state/react';
+import { useObservable } from '@legendapp/state/react';
 import { type Observable, syncState } from '@legendapp/state';
 
 // New type for pending tools
@@ -19,7 +19,7 @@ export interface PendingTool {
 interface UseConversationResult {
   conversationData$: Observable<ConversationResponse | undefined>;
   sendMessage: (messageInput: { message: string; options?: ChatOptions }) => Promise<void>;
-  isLoading: boolean;
+  isLoading$: Observable<boolean>;
   isGenerating$: Observable<boolean>;
   pendingTool$: Observable<PendingTool | null>;
   confirmTool: (
@@ -67,7 +67,8 @@ export function useConversation(conversation: ConversationItem): UseConversation
   }, [conversation.name, conversation.readonly, api]);
 
   const state$ = syncState(conversationData$);
-  const { isGetting: isLoading, error: _error } = use$(state$); // TODO: handle error
+  // const { isGetting: isLoading, error: _error } = use$(state$); // TODO: handle error
+  const isLoading$ = useObservable(state$.isGetting);
 
   // Subscribe to the event stream as soon as the conversation is loaded
   useEffect(() => {
@@ -365,7 +366,7 @@ export function useConversation(conversation: ConversationItem): UseConversation
   return {
     conversationData$,
     sendMessage,
-    isLoading: !!isLoading,
+    isLoading$,
     isGenerating$,
     pendingTool$,
     confirmTool,

@@ -31,7 +31,7 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
   const {
     conversationData$,
     sendMessage,
-    isLoading,
+    isLoading$,
     isGenerating$,
     pendingTool$,
     confirmTool,
@@ -125,35 +125,37 @@ export const ConversationContent: FC<Props> = ({ conversation }) => {
 
       <div className="relative flex-1 overflow-y-auto" ref={scrollContainerRef}>
         {hasSystemMessages$.get() ? (
-          <div className="flex w-full items-center bg-accent/50">
-            <div className="mx-auto flex max-w-3xl flex-1 items-center gap-2 p-4">
-              <Memo>
-                {() => {
-                  return (
+          <Memo>
+            {() => {
+              return (
+                <div className="flex w-full items-center bg-accent/50">
+                  <div className="mx-auto flex max-w-3xl flex-1 items-center gap-2 p-4">
                     <Checkbox
                       id="showInitialSystem"
                       checked={showInitialSystem$.get()}
                       onCheckedChange={(checked) => {
-                        if (!isLoading) {
+                        if (!isLoading$.get()) {
                           showInitialSystem$.set(checked as boolean);
                         }
                       }}
-                      disabled={isLoading}
+                      disabled={isLoading$.get()}
                     />
-                  );
-                }}
-              </Memo>
-              <Label
-                htmlFor="showInitialSystem"
-                className={`text-sm text-muted-foreground hover:text-foreground ${
-                  isLoading ? 'opacity-50' : 'cursor-pointer'
-                }`}
-              >
-                Show initial system messages
-              </Label>
-            </div>
-            {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-          </div>
+                    <Label
+                      htmlFor="showInitialSystem"
+                      className={`text-sm text-muted-foreground hover:text-foreground ${
+                        isLoading$.get() ? 'opacity-50' : 'cursor-pointer'
+                      }`}
+                    >
+                      Show initial system messages
+                    </Label>
+                  </div>
+                  {isLoading$.get() && (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+              );
+            }}
+          </Memo>
         ) : null}
         {conversationData$.log.get() !== undefined && (
           <For each={conversationData$.log as Observable<Message[]>} optimized>
