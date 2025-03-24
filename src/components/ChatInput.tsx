@@ -14,6 +14,7 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { type Observable } from '@legendapp/state';
+import { Memo, useObserveEffect } from '@legendapp/state/react';
 
 export interface ChatOptions {
   model?: string;
@@ -53,7 +54,7 @@ export const ChatInput: FC<Props> = ({
   }, [autoFocus, isReadOnly, api.isConnected]);
 
   // Global keyboard shortcut for interrupting generation with Escape key
-  useEffect(() => {
+  useObserveEffect(() => {
     const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape' && isGenerating$.get() && onInterrupt) {
         console.log('[ChatInput] Global Escape pressed, interrupting generation...');
@@ -65,7 +66,7 @@ export const ChatInput: FC<Props> = ({
     return () => {
       document.removeEventListener('keydown', handleGlobalKeyDown);
     };
-  }, [isGenerating$, onInterrupt]);
+  });
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -176,26 +177,32 @@ export const ChatInput: FC<Props> = ({
               </div>
             </div>
             <div className="relative h-full">
-              <Button
-                type="submit"
-                className={`absolute bottom-2 right-2 rounded-full p-1 transition-colors
+              <Memo>
+                {() => {
+                  return (
+                    <Button
+                      type="submit"
+                      className={`absolute bottom-2 right-2 rounded-full p-1 transition-colors
                   ${
                     isGenerating$.get()
                       ? 'animate-[pulse_1s_ease-in-out_infinite] bg-red-600 p-3 hover:bg-red-700'
                       : 'h-10 w-10 bg-green-600 text-green-100'
                   }
                 `}
-                disabled={!api.isConnected || isReadOnly}
-              >
-                {isGenerating$.get() ? (
-                  <div className="flex items-center gap-2">
-                    <span>Stop</span>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  </div>
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-              </Button>
+                      disabled={!api.isConnected || isReadOnly}
+                    >
+                      {isGenerating$.get() ? (
+                        <div className="flex items-center gap-2">
+                          <span>Stop</span>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        </div>
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  );
+                }}
+              </Memo>
             </div>
           </div>
         </div>
