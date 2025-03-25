@@ -7,18 +7,26 @@ import { ApiProvider } from './contexts/ApiContext';
 import Index from './pages/Index';
 import type { FC } from 'react';
 
-// Parse URL fragment parameters
+// Parse URL fragment parameters and persist to localStorage
 const parseFragmentParams = () => {
   const hash = window.location.hash.substring(1); // Remove the # character
   const params = new URLSearchParams(hash);
 
-  const baseUrl = params.get('baseUrl');
-  const userToken = params.get('userToken');
+  // Try to get values from fragment first, then fall back to localStorage
+  let baseUrl = params.get('baseUrl');
+  let userToken = params.get('userToken');
 
-  // Clean up the URL by removing the fragment if we found parameters
   if (baseUrl || userToken) {
+    // Store new values in localStorage
+    if (baseUrl) localStorage.setItem('gptme_baseUrl', baseUrl);
+    if (userToken) localStorage.setItem('gptme_userToken', userToken);
+
     // Remove the fragment from the URL to avoid exposing sensitive data
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } else {
+    // If no fragment params, try to get from localStorage
+    baseUrl = localStorage.getItem('gptme_baseUrl') || null;
+    userToken = localStorage.getItem('gptme_userToken') || null;
   }
 
   return { baseUrl, userToken };
