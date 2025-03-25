@@ -50,6 +50,27 @@ export function ToolConfirmationDialog({
     }
   }, [pendingTool]);
 
+  // Add keyboard handler for Enter key
+  React.useEffect(() => {
+    const handleKeyPress = async (e: KeyboardEvent) => {
+      // Only handle if dialog is open and not editing
+      if (
+        pendingTool &&
+        !isEditing &&
+        e.key === 'Enter' &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        await handleConfirm();
+      }
+    };
+
+    window.addEventListener('keypress', handleKeyPress);
+    return () => window.removeEventListener('keypress', handleKeyPress);
+  }, [pendingTool, isEditing]);
+
   const handleConfirm = async () => {
     setConfirmLoading(true);
     try {
