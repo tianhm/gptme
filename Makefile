@@ -192,6 +192,9 @@ metrics:
 	@echo
 	@echo "Largest Files (>300 SLOC):"
 	@poetry run radon raw ${SRCFILES} | awk '/^[^ ]/ {file=$$0} /SLOC:/ {if ($$2 > 300) printf "  %4d %s\n", $$2, file}' | sort -nr
+	@echo
+	@echo "Most Duplicated Files:"
+	@npx jscpd gptme/** docs/**.{md,rst} scripts/**.{sh,py}
 
 bench-importtime:
 	time poetry run python -X importtime -m gptme --model openai --non-interactive 2>&1 | grep "import time" | cut -d'|' -f 2- | sort -n
