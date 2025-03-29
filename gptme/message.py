@@ -32,22 +32,23 @@ class Message:
     Attributes:
         role: The role of the message sender (system, user, or assistant).
         content: The content of the message.
+        timestamp: The timestamp of the message.
+        files: Files attached to the message, could e.g. be images for vision.
         pinned: Whether this message should be pinned to the top of the chat, and never context-trimmed.
         hide: Whether this message should be hidden from the chat output (but still be sent to the assistant).
         quiet: Whether this message should be printed on execution (will still print on resume, unlike hide).
                This is not persisted to the log file.
-        timestamp: The timestamp of the message.
-        files: Files attached to the message, could e.g. be images for vision.
     """
 
     role: Literal["system", "user", "assistant"]
     content: str
-    pinned: bool = False
-    hide: bool = False
-    quiet: bool = False
     timestamp: datetime = field(default_factory=datetime.now)
     files: list[Path] = field(default_factory=list)
     call_id: str | None = None
+
+    pinned: bool = False
+    hide: bool = False
+    quiet: bool = False
 
     def __post_init__(self):
         assert isinstance(self.timestamp, datetime)
