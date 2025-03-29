@@ -13,34 +13,33 @@ from gptme.config import Config, MCPConfig, MCPServerConfig
 @pytest.fixture
 def test_config_path(tmp_path) -> Generator[Path, None, None]:
     """Create a temporary config file for testing"""
-    cmd, args = (
-        ["uvx", ["--from"]] if shutil.which("uvx") else ["pipx", ["run", "--spec"]]
+    # support both pipx and uvx
+    pyx_cmd, pyx_args = (
+        ("uvx", ["--from"]) if shutil.which("uvx") else ("pipx", ["run", "--spec"])
     )
-    if not shutil.which(cmd[0]):
-        pytest.skip(f"{cmd[0]} not found in PATH")
+    if not shutil.which(pyx_cmd):
+        pytest.skip("pipx or uvx not found in PATH")
+    if not shutil.which("npx"):
+        pytest.skip("npx not found in PATH")
 
     mcp_server_sqlite = {
         "name": "sqlite",
         "enabled": True,
-        "command": cmd,
+        "command": pyx_cmd,
         "args": [
-            *args,
+            *pyx_args,
             "git+ssh://git@github.com/modelcontextprotocol/servers#subdirectory=src/sqlite",
             "mcp-server-sqlite",
         ],
         "env": {},
     }
 
-    mcp_server_weather = {
-        "name": "weatherAPI",
+    mcp_server_memory = {
+        "name": "memory",
         "enabled": True,
-        "command": cmd,
-        "args": [
-            *args,
-            "git+https://github.com/adhikasp/mcp-weather.git",
-            "mcp-weather",
-        ],
-        "env": {"WEATHER_API_KEY": os.environ.get("WEATHER_API_KEY", "")},
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"],
+        "env": {"MEMORY_FILE_PATH": str(tmp_path / "memory.json")},
     }
 
     config_data = {
@@ -49,7 +48,7 @@ def test_config_path(tmp_path) -> Generator[Path, None, None]:
         "mcp": {
             "enabled": True,
             "auto_start": True,
-            "servers": [mcp_server_sqlite, mcp_server_weather],
+            "servers": [mcp_server_sqlite, mcp_server_memory],
         },
     }
 
@@ -140,34 +139,58 @@ def test_sqlite_operations(mcp_client):
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not os.environ.get("WEATHER_API_KEY"), reason="WEATHER_API_KEY not set"
-)
-def test_weather_connection(mcp_client):
-    """Test connecting to Weather MCP server"""
-    tools, session = mcp_client.connect("weatherAPI")
+def test_memory_connection(mcp_client):
+    """Test connecting to Memory MCP server"""
+    tools, session = mcp_client.connect("memory")
     assert tools is not None
     assert session is not None
 
-    # Verify weather tools are available
+    # Verify memory tools are available
     tool_names = [t.name for t in tools.tools]
-    assert "get_hourly_weather" in tool_names
+    assert "create_entities" in tool_names
+    assert "create_relations" in tool_names
+    assert "add_observations" in tool_names
+    assert "read_graph" in tool_names
+    assert "search_nodes" in tool_names
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not os.environ.get("WEATHER_API_KEY"), reason="WEATHER_API_KEY not set"
-)
-def test_weather_query(mcp_client):
-    """Test getting weather data"""
-    mcp_client.connect("weatherAPI")
+def test_memory_operations(mcp_client):
+    """Test Memory operations in sequence"""
+    mcp_client.connect("memory")
 
-    # Get weather for Stockholm
-    result = mcp_client.call_tool(
-        "get_hourly_weather", {"location": "Stockholm, Sweden"}
+    # Create test entity
+    create_result = mcp_client.call_tool(
+        "create_entities",
+        {
+            "entities": [
+                {
+                    "name": "test_user",
+                    "entityType": "person",
+                    "observations": ["Likes programming", "Uses Python"],
+                }
+            ]
+        },
     )
-    assert result is not None
-    # Basic validation that we got weather data
-    assert any(
-        term in result.lower() for term in ["temperature", "weather", "forecast"]
+    assert create_result is not None
+
+    # Add observation
+    add_result = mcp_client.call_tool(
+        "add_observations",
+        {
+            "observations": [
+                {"entityName": "test_user", "contents": ["Contributes to open source"]}
+            ]
+        },
     )
+    assert add_result is not None
+
+    # Read graph
+    read_result = mcp_client.call_tool("read_graph", {})
+    assert "test_user" in str(read_result)
+    assert "Likes programming" in str(read_result)
+    assert "Contributes to open source" in str(read_result)
+
+    # Search nodes
+    search_result = mcp_client.call_tool("search_nodes", {"query": "Python"})
+    assert "test_user" in str(search_result)
