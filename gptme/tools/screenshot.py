@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from .base import ToolSpec
+from .base import ToolSpec, ToolUse
 
 OUTPUT_DIR = Path("/tmp/outputs")
 IS_MACOS = platform.system() == "Darwin"
@@ -60,4 +60,11 @@ tool = ToolSpec(
     desc="Take a screenshot",
     instructions=INSTRUCTIONS,
     functions=[screenshot],
+    examples=f"""
+To take a screenshot and view it immediately:
+
+{ToolUse("ipython", [], "view_image(screenshot())")}
+
+This will take a screenshot, save it to a file, and include the image in the chat.
+    """,
 )
