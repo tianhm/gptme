@@ -12,6 +12,9 @@ eval[_-]results*
 eval-results*
 eval_results*
 
+# git worktrees for dev/ branches
+dev/
+
 # logs
 *.log
 *logs/
