@@ -1,10 +1,10 @@
 Message Control Protocol (MCP)
-============================
+==============================
 
 gptme supports MCP servers, allowing integration with external tools and services through a standardized protocol.
 
 Configuration
-------------
+-------------
 
 You can configure MCP in your ``~/.config/gptme/config.toml`` file:
 
@@ -22,7 +22,7 @@ You can configure MCP in your ``~/.config/gptme/config.toml`` file:
     env = { API_KEY = "your-key" }
 
 Configuration Options
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
 - ``enabled``: Enable/disable MCP support globally
 - ``auto_start``: Automatically start MCP servers when needed
@@ -35,7 +35,7 @@ Configuration Options
   - ``env``: Environment variables for the server
 
 Example Configuration
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
 Here's a complete example showing how to configure an MCP weather service:
 
