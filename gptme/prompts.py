@@ -282,9 +282,23 @@ def get_tree_output(workspace: Path) -> str | None:
         )
         return None
 
-    # TODO: check if in a git repository
-    #       use `git ls-files` instead?
+    # Check if in a git repository
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+        if result.returncode != 0:
+            logger.debug("Not in a git repository, skipping tree output")
+            return None
+    except Exception as e:
+        logger.warning(f"Error checking git repository: {e}")
+        return None
 
+    # TODO: use `git ls-files` instead? (respects .gitignore better)
     try:
         # Run tree command with --gitignore option
         result = subprocess.run(
