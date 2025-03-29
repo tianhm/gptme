@@ -7,6 +7,7 @@ from functools import lru_cache
 
 from gptme.config import get_config
 from gptme.constants import INTERRUPT_CONTENT
+from gptme.tools.mcp_adapter import create_mcp_tools
 
 from ..message import Message
 from ..util.interrupt import clear_interruptible
@@ -76,6 +77,10 @@ def _discover_tools(module_names: frozenset[str]) -> list[ToolSpec]:
         for module in modules:
             for _, obj in inspect.getmembers(module, lambda c: isinstance(c, ToolSpec)):
                 tools.append(obj)
+
+    # Add MCP tools
+    config = get_config()
+    tools.extend(create_mcp_tools(config))
 
     return tools
 

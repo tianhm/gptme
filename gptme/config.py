@@ -14,9 +14,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class MCPServerConfig:
+    name: str
+    enabled: bool = True
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict = field(default_factory=dict)
+
+
+@dataclass
+class MCPConfig:
+    enabled: bool = False
+    auto_start: bool = False
+    servers: list[MCPServerConfig] = field(default_factory=list)
+
+
+@dataclass
 class Config:
-    prompt: dict
-    env: dict
+    prompt: dict = field(default_factory=dict)
+    env: dict = field(default_factory=dict)
+    mcp: MCPConfig = field(default_factory=MCPConfig)
 
     def get_env(self, key: str, default: str | None = None) -> str | None:
         """Gets an environment variable, checks the config file if it's not set in the environment."""
@@ -34,6 +51,20 @@ class Config:
         return {
             "prompt": self.prompt,
             "env": self.env,
+            "mcp": {
+                "enabled": self.mcp.enabled,
+                "auto_start": self.mcp.auto_start,
+                "servers": [
+                    {
+                        "name": s.name,
+                        "enabled": s.enabled,
+                        "command": s.command,
+                        "args": s.args,
+                        "env": s.env,
+                    }
+                    for s in self.mcp.servers
+                ],
+            },
         }
 
 
@@ -96,11 +127,27 @@ def _load_config() -> Config:
     config = _load_config_doc()
     assert "prompt" in config, "prompt key missing in config"
     assert "env" in config, "env key missing in config"
+
     prompt = config.pop("prompt")
     env = config.pop("env")
+    mcp = config.pop("mcp", {})
+
     if config:
         logger.warning(f"Unknown keys in config: {config.keys()}")
-    return Config(prompt=prompt, env=env)
+
+    # Parse MCP config if present
+    mcp_config = MCPConfig(enabled=False, auto_start=False, servers=[])
+    if mcp:
+        servers = [
+            MCPServerConfig(**server_data) for server_data in mcp.get("servers", [])
+        ]
+        mcp_config = MCPConfig(
+            enabled=mcp.get("enabled", False),
+            auto_start=mcp.get("auto_start", False),
+            servers=servers,
+        )
+
+    return Config(prompt=prompt, env=env, mcp=mcp_config)
 
 
 def _load_config_doc() -> tomlkit.TOMLDocument:
