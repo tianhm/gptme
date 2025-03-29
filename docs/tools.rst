@@ -139,5 +139,5 @@ TTS
 MCP
 ---
 
-The Message Control Protocol (MCP) allows you to extend gptme with custom tools through external servers.
+The Model Context Protocol (MCP) allows you to extend gptme with custom tools through external servers.
 See :doc:`mcp` for configuration and usage details.

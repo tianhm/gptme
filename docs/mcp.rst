@@ -1,5 +1,5 @@
-Message Control Protocol (MCP)
-==============================
+Model Context Protocol (MCP)
+============================
 
 gptme supports MCP servers, allowing integration with external tools and services through a standardized protocol.
 
