@@ -3,12 +3,13 @@ Custom Tools
 
 Introduction
 ------------
-There are two main approaches to extending gptme's functionality:
+There are three main approaches to extending gptme's functionality:
 
 1. **Custom Tools**: Native gptme tools that integrate deeply with the assistant.
 2. **Script Tools**: Standalone scripts that can be called via the shell tool.
+3. **MCP Tools**: Tools that communicate via the Model Context Protocol, allowing language-agnostic tools that can be shared between different LLM clients.
 
-This guide covers both approaches and when to use each.
+This guide primarily covers the first two approaches. For information about MCP tools, see :doc:`mcp`.
 
 Script-based Tools
 ------------------
