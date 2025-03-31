@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 )
 @click.option(
     "--port",
-    default="5000",
+    default="5700",
     help="Port to run the server on.",
 )
 @click.option("--tools", default=None, help="Tools to enable, comma separated.")
