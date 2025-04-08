@@ -56,7 +56,7 @@ export class ApiClient {
   public readonly isConnected$: Observable<boolean> = observable(false);
   private identifier: string;
   private controller: AbortController | null = null;
-  private sessions: Map<string, string> = new Map(); // Map conversation IDs to session IDs
+  public sessions$: Observable<Map<string, string>> = observable(new Map()); // Map conversation IDs to session IDs
   private eventSources: Map<string, EventSource> = new Map(); // Map conversation IDs to EventSource instances
   private isCleaningUp = false;
 
@@ -255,6 +255,23 @@ export class ApiClient {
     // Close any existing event stream for this conversation
     this.closeEventStream(conversationId);
 
+    // Function to reconnect to the event stream if it fails, or we fail to get a session ID
+    const reconnect = () => {
+      console.log(`[ApiClient] Attempting reconnection for ${conversationId}`);
+      this.closeEventStream(conversationId);
+      this.subscribeToEvents(conversationId, callbacks);
+    };
+
+    // Create a timeout that will reconnect if we don't get a session ID after 5 seconds
+    const sessionIdTimeout = setTimeout(() => {
+      if (!this.sessions$.has(conversationId)) {
+        console.log(
+          `[ApiClient] Timed out waiting for session ID for ${conversationId}, reconnecting`
+        );
+        reconnect();
+      }
+    }, 5000);
+
     /**
      * For SSE connections, we need to pass the auth token as a query parameter
      * since EventSource doesn't support custom headers.
@@ -360,7 +377,10 @@ export class ApiClient {
 
           case 'connected':
             console.log(`[ApiClient] Session connected event:`, data);
-            this.sessions.set(conversationId, data.session_id);
+            // Resolve the promise with the session ID
+            this.sessions$.set(conversationId, data.session_id);
+            // Clear the session ID timeout
+            clearTimeout(sessionIdTimeout);
             break;
 
           case 'interrupted':
@@ -378,6 +398,9 @@ export class ApiClient {
 
     eventSource.onerror = (error) => {
       console.error(`[ApiClient] Event stream error for ${conversationId}:`, error);
+
+      // Clear the session ID timeout
+      clearTimeout(sessionIdTimeout);
 
       // If we were previously connected, try to reconnect
       if (isConnected) {
@@ -402,9 +425,7 @@ export class ApiClient {
 
           // Set a new timer for reconnection
           reconnectTimer = window.setTimeout(() => {
-            console.log(`[ApiClient] Attempting reconnection for ${conversationId}`);
-            this.closeEventStream(conversationId);
-            this.subscribeToEvents(conversationId, callbacks);
+            reconnect();
           }, delay);
         } else {
           console.warn(`[ApiClient] Max reconnects (${maxReconnects}) reached, giving up`);
@@ -486,7 +507,7 @@ export class ApiClient {
       });
 
       // Store the session ID
-      this.sessions.set(logfile, response.session_id);
+      this.sessions$.set(logfile, response.session_id);
       console.log(`[ApiClient] Stored session ID from createConversation: ${response.session_id}`);
 
       return response;
@@ -538,7 +559,11 @@ export class ApiClient {
     this.controller = new AbortController();
 
     try {
-      const sessionId = this.sessions.get(logfile);
+      // Wait for a valid session ID before proceeding
+      const sessionId: string | undefined = this.sessions$.get(logfile).get();
+      if (!sessionId) {
+        throw new ApiClientError('Session ID not found for conversation', 404);
+      }
       console.log(`[ApiClient] Using session ID for generation: ${sessionId}`);
 
       let headers: {
@@ -592,7 +617,7 @@ export class ApiClient {
 
     try {
       // Get the session ID
-      const sessionId = this.sessions.get(logfile);
+      const sessionId: string | undefined = this.sessions$.get(logfile).get();
       console.log(`[ApiClient] Using session for tool confirmation: ${sessionId}`);
 
       if (!sessionId) {
@@ -639,7 +664,11 @@ export class ApiClient {
 
     try {
       // Get the session ID
-      const sessionId = this.sessions.get(logfile);
+      const sessionId: string | undefined = this.sessions$.get(logfile).get();
+
+      if (!sessionId) {
+        throw new ApiClientError('Session ID not found for conversation', 404);
+      }
 
       await this.fetchJson<{ status: string }>(
         `${this.baseUrl}/api/v2/conversations/${logfile}/interrupt`,
