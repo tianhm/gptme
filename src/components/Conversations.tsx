@@ -11,6 +11,7 @@ import { toConversationItems } from '@/utils/conversation';
 import { demoConversations, type DemoConversation } from '@/democonversations';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Memo, use$, useObservable, useObserveEffect } from '@legendapp/state/react';
+import { initializeConversations, selectedConversation$ } from '@/stores/conversations';
 
 interface Props {
   className?: string;
@@ -23,9 +24,6 @@ const Conversations: FC<Props> = ({ route }) => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const conversationParam = searchParams.get('conversation');
-  const selectedConversation$ = useObservable<string>(
-    conversationParam || demoConversations[0].name
-  );
   const { api, isConnected$, connectionConfig } = useApi();
   const queryClient = useQueryClient();
   const isConnected = use$(isConnected$);
@@ -35,7 +33,7 @@ const Conversations: FC<Props> = ({ route }) => {
     if (conversationParam) {
       selectedConversation$.set(conversationParam);
     }
-  }, [conversationParam, selectedConversation$]);
+  }, [conversationParam]);
 
   // Fetch conversations from API with proper caching
   const {
@@ -72,9 +70,19 @@ const Conversations: FC<Props> = ({ route }) => {
     console.error('Conversation query error:', error);
   }
 
-  // Combine demo and API conversations
-  const allConversations: ConversationItem[] = useMemo(
-    () => [
+  // Combine demo and API conversations and initialize store
+  const allConversations: ConversationItem[] = useMemo(() => {
+    // Initialize API conversations in store
+    if (apiConversations.length) {
+      console.log('[Conversations] Initializing conversations in store');
+      void initializeConversations(
+        api,
+        apiConversations.map((c) => c.name),
+        10
+      );
+    }
+
+    return [
       // Convert demo conversations to ConversationItems
       ...demoConversations.map((conv: DemoConversation) => ({
         name: conv.name,
@@ -84,9 +92,8 @@ const Conversations: FC<Props> = ({ route }) => {
       })),
       // Convert API conversations to ConversationItems
       ...toConversationItems(apiConversations),
-    ],
-    [apiConversations]
-  );
+    ];
+  }, [apiConversations, api]);
 
   const handleSelectConversation = useCallback(
     (id: string) => {
@@ -102,7 +109,7 @@ const Conversations: FC<Props> = ({ route }) => {
       console.log(`[Conversations] [handleSelectConversation] id: ${id}`);
       navigate(`${route}?conversation=${id}`);
     },
-    [selectedConversation$, queryClient, navigate, route]
+    [queryClient, navigate, route]
   );
 
   const conversation$ = useObservable<ConversationItem | undefined>(undefined);
@@ -145,7 +152,12 @@ const Conversations: FC<Props> = ({ route }) => {
       <Memo>
         {() => {
           const conversation = conversation$.get();
-          return conversation ? <ConversationContent conversation={conversation} /> : null;
+          return conversation ? (
+            <ConversationContent
+              conversationId={conversation.name}
+              isReadOnly={conversation.readonly}
+            />
+          ) : null;
         }}
       </Memo>
       <RightSidebar
