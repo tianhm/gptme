@@ -13,7 +13,7 @@ from pick import pick
 from . import __version__
 from .chat import chat
 from .commands import _gen_help
-from .config import get_config
+from .config import ChatConfig, get_config, set_config
 from .constants import MULTIPROMPT_SEPARATOR
 from .dirs import get_logs_dir
 from .init import init_logging
@@ -179,6 +179,7 @@ def main(
         # split comma-separated values
         tool_allowlist = [tool for tools in tool_allowlist for tool in tools.split(",")]
 
+    set_config(Path(workspace) if workspace else Path.cwd())
     config = get_config()
 
     model = model or config.get_env("MODEL")
@@ -271,23 +272,37 @@ def main(
     else:
         workspace_path = Path(workspace) if workspace else None
 
+    # Load or create chat config, applying CLI overrides
+    logdir.mkdir(parents=True, exist_ok=True)
+    chat_config = ChatConfig.load_or_create(
+        logdir=logdir,
+        cli_config=ChatConfig(
+            model=model,
+            tools=tool_allowlist,
+            tool_format=selected_tool_format,
+            stream=stream,
+            interactive=interactive,
+        ),
+    )
+
     # register a handler for Ctrl-C
     set_interruptible()  # prepare, user should be able to Ctrl+C until user prompt ready
     signal.signal(signal.SIGINT, handle_keyboard_interrupt)
 
     try:
+        # TODO: pass ChatConfig instead of individual args?
         chat(
             prompt_msgs,
             initial_msgs,
             logdir,
-            model,
-            stream,
+            chat_config.model,
+            chat_config.stream,
             no_confirm,
-            interactive,
+            chat_config.interactive,
             show_hidden,
             workspace_path,
-            tool_allowlist,
-            selected_tool_format,
+            chat_config.tools,
+            chat_config.tool_format,
         )
     except RuntimeError as e:
         if verbose:

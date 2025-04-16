@@ -2,6 +2,8 @@ from logging import getLogger
 from collections.abc import Callable
 import json
 
+from gptme.config import Config
+
 from ..message import Message
 from ..mcp.client import MCPClient
 from .base import Parameter, ToolSpec, ToolUse
@@ -16,7 +18,7 @@ tool_specs: list[ToolSpec] = []
 
 
 # Function to create MCP tools
-def create_mcp_tools(config) -> list[ToolSpec]:
+def create_mcp_tools(config: Config) -> list[ToolSpec]:
     """Create tool specs for all MCP tools from the config"""
 
     tool_specs: list[ToolSpec] = []

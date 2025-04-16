@@ -113,7 +113,7 @@ class MCPClient:
                 hasattr(result, "content")
                 and result.content
                 and len(result.content) > 0
-                and hasattr(result.content[0], "text")
+                and isinstance(result.content[0], types.TextContent)
             ):
                 content_text = result.content[0].text
                 logger.debug(f"result {content_text}")
