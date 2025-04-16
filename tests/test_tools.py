@@ -71,8 +71,7 @@ def test_tool_loading_with_module():
 
 def test_tool_loading_with_missing_package():
     found = _discover_tools(["gptme.fake_"])
-
-    assert len(found) == 0
+    assert not found
 
 
 def test_get_available_tools():

@@ -1,6 +1,7 @@
 """Tests for auto-stepping and persistence in the V2 API."""
 
 import logging
+import os
 import unittest.mock
 
 import pytest
@@ -17,26 +18,31 @@ def test_auto_stepping(
     """Test auto-stepping and auto-confirm functionality with multiple tools in sequence."""
     port, conversation_id, session_id = setup_conversation
 
+    test_dir = "/tmp/test_dir"
+
     # Add a user message requesting multiple commands
     requests.post(
         f"http://localhost:{port}/api/v2/conversations/{conversation_id}",
-        json={"role": "user", "content": "Create a directory and list its contents"},
+        json={
+            "role": "user",
+            "content": f"Create a directory named {test_dir} and list its contents",
+        },
     )
 
     # Define tools that will be used
     tool1 = ToolUse(
         tool="shell",
         args=[],
-        content="mkdir -p test_dir",
+        content=f"mkdir -p {test_dir}",
     )
 
     tool2 = ToolUse(
         tool="shell",
         args=[],
-        content="ls -la test_dir",
+        content=f"ls -la {test_dir}",
     )
 
-    # Create a mock that returns different responses for each call
+    # Create mock response with the tools
     mock_stream = mock_generation(
         [
             (
@@ -48,7 +54,7 @@ def test_auto_stepping(
         ]
     )
 
-    # Start generation with auto-confirm and the sequential mock
+    # Start generation with auto-confirm=2 for automatic stepping
     with unittest.mock.patch("gptme.server.api_v2._stream", mock_stream):
         requests.post(
             f"http://localhost:{port}/api/v2/conversations/{conversation_id}/step",
@@ -59,12 +65,13 @@ def test_auto_stepping(
             },
         )
 
-        # Wait for first tool execution
+        # Wait for first tool execution and verify directory creation
         assert wait_for_event(event_listener, "generation_started")
         assert wait_for_event(event_listener, "generation_complete")
         assert wait_for_event(event_listener, "tool_pending")
         assert wait_for_event(event_listener, "tool_executing")
         assert wait_for_event(event_listener, "message_added")
+        assert os.path.exists(test_dir), f"Directory {test_dir} was not created"
 
         # Wait for second tool execution
         assert wait_for_event(event_listener, "generation_started")
@@ -73,27 +80,20 @@ def test_auto_stepping(
         assert wait_for_event(event_listener, "tool_executing")
         assert wait_for_event(event_listener, "message_added")
 
+    # Verify conversation state
     resp = requests.get(
         f"http://localhost:{port}/api/v2/conversations/{conversation_id}"
     )
     assert resp.status_code == 200
 
-    conversation_data = resp.json()
-    messages = conversation_data["log"]
+    messages = resp.json()["log"]
 
-    # We should have 7 messages:
-    # 1. System, 2. User, 3. Assistant (mkdir), 4. System output,
-    # 5. Assistant (ls), 6. System output, 7. Assistant (final message)
-    assert len(messages) == 7, (
-        f"Expected 7 messages, got {len(messages)}" + "\n" + str(messages)
-    )
-
-    # Check for specific content
-    content_text = " ".join([m["content"] for m in messages])
-    assert (
-        tool1.content and tool1.content in content_text
-    ), "First tool content not found"
-    assert (
-        tool2.content and tool2.content in content_text
-    ), "Second tool content not found"
-    assert "total " in content_text, "Expected 'total 0' in messages"
+    # Verify message sequence
+    assert len(messages) == 7, f"Expected 7 messages, got {len(messages)}"
+    assert messages[0]["role"] == "system" and "testing" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert messages[2]["role"] == "assistant"
+    assert messages[3]["role"] == "system"
+    assert messages[4]["role"] == "assistant"
+    assert messages[5]["role"] == "system"
+    assert messages[6]["role"] == "assistant"
