@@ -5,7 +5,6 @@ from dataclasses import (
     asdict,
     dataclass,
     field,
-    fields,
     replace,
 )
 from functools import lru_cache
@@ -15,6 +14,7 @@ from typing import TYPE_CHECKING
 import tomlkit
 from tomlkit import TOMLDocument
 from tomlkit.container import Container
+from tomlkit.exceptions import TOMLKitError
 from typing_extensions import Self
 
 from .util import console, path_with_tilde
@@ -246,11 +246,12 @@ class ChatConfig:
     tool_format: "ToolFormat | None" = None
     stream: bool = True
     interactive: bool = True
+    workspace: Path = field(
+        default_factory=Path.cwd
+    )  # TODO: Is default value cwd ok for server?
 
-    # TODO: support env in chat config
     env: dict = field(default_factory=dict)
-    # TODO: support mcp in chat config
-    mcp: MCPConfig = field(default_factory=MCPConfig)
+    mcp: MCPConfig | None = None
 
     @classmethod
     def from_dict(cls, config_data: dict) -> Self:
@@ -260,8 +261,16 @@ class ChatConfig:
         # Extract chat settings
         chat_data = config_data.pop("chat", {})
 
+        # Convert workspace to Path if present
+        if "workspace" in chat_data:
+            chat_data["workspace"] = Path(chat_data["workspace"])
+
         env = config_data.pop("env", {})
-        mcp = MCPConfig.from_dict(config_data.pop("mcp", {}))
+        mcp = (
+            MCPConfig.from_dict(config_data.pop("mcp", {}))
+            if "mcp" in config_data
+            else None
+        )
 
         # Check for unknown keys
         if config_data:
@@ -285,21 +294,42 @@ class ChatConfig:
                 config_data = tomlkit.load(f).unwrap()
             config_data["_logdir"] = path
             return cls.from_dict(config_data)
-        except (OSError, tomlkit.exceptions.TOMLKitError) as e:
+        except (OSError, TOMLKitError) as e:
             logger.warning(f"Failed to load chat config from {chat_config_path}: {e}")
             return cls()
 
-    def save(self) -> None:
+    def save(self) -> Self:
         """Save the chat config to the log directory."""
         if not self._logdir:
             raise ValueError("ChatConfig has no logdir set")
         self._logdir.mkdir(parents=True, exist_ok=True)
         chat_config_path = self._logdir / "config.toml"
 
-        # Convert to dict and remove None values
+        config_dict = self.to_dict()
+
+        # TODO: load and update this properly as TOMLDocument to preserve formatting
+        with open(chat_config_path, "w") as f:
+            tomlkit.dump(config_dict, f)
+
+        return self
+
+    def to_dict(self) -> dict:
+        """Convert ChatConfig to a dictionary. Returns a dict with non-'mcp' and non-'env' keys nested under a 'chat' key, and 'env' and 'mcp' as top-level keys."""
+
+        # Custom function to handle Path objects during serialization
+        def _dict_factory(items):
+            result = {}
+            for key, value in items:
+                if isinstance(value, Path):
+                    result[key] = str(value)
+                else:
+                    result[key] = value
+            return result
+
+        # Convert to dict and remove None values, using custom dict factory to handle Path objects
         config_dict = {
             k: v
-            for k, v in asdict(self).items()
+            for k, v in asdict(self, dict_factory=_dict_factory).items()
             if v is not None and not k.startswith("_")
         }
 
@@ -310,16 +340,18 @@ class ChatConfig:
                     config_dict["chat"] = {}
                 config_dict["chat"][k] = config_dict.pop(k)
 
+        mcp = config_dict.pop("mcp", None)
+
         # sort in chat -> env -> mcp order
         config_dict = {
             "chat": config_dict.pop("chat", {}),
             "env": config_dict.pop("env", {}),
-            "mcp": config_dict.pop("mcp", {}),
         }
 
-        # TODO: load and update this properly as TOMLDocument to preserve formatting
-        with open(chat_config_path, "w") as f:
-            tomlkit.dump(config_dict, f)
+        if mcp:
+            config_dict["mcp"] = mcp
+
+        return config_dict
 
     @classmethod
     def load_or_create(cls, logdir: Path, cli_config: Self) -> Self:
@@ -329,23 +361,20 @@ class ChatConfig:
         defaults = cls()
 
         # Apply CLI overrides (only if they differ from defaults)
-        for _field in fields(cli_config):
-            if _field.name.startswith("_"):
+        for field_name in cli_config.__dataclass_fields__:
+            if field_name.startswith("_"):
                 continue
-            cli_value = getattr(cli_config, _field.name)
-            default_value = getattr(defaults, _field.name)
+            cli_value = getattr(cli_config, field_name)
+            default_value = getattr(defaults, field_name)
             # TODO: note that this isn't a great check: CLI values equal to defaults won't override existing config values
             if cli_value != default_value:
                 # logger.info(f"Overriding {field_name} with CLI value: {cli_value}")
-                config = replace(config, **{_field.name: cli_value})
-
-        # Save the config
-        config.save()
+                config = replace(config, **{field_name: cli_value})
 
         return config
 
 
-@dataclass(frozen=True)
+@dataclass()
 class Config:
     """
     A complete configuration object, including user and project configurations.
@@ -356,6 +385,7 @@ class Config:
 
     user: UserConfig = field(default_factory=load_user_config)
     project: ProjectConfig | None = None
+    chat: ChatConfig | None = None
 
     @classmethod
     def from_workspace(cls, workspace: Path) -> Self:
@@ -371,20 +401,38 @@ class Config:
         """Get the MCP configuration, merging user and project configurations."""
         mcp = self.user.mcp
 
-        # Override MCP config from project config if present, merging mcp servers
-        if self.project and self.project.mcp:
-            servers = []
-            for server in self.project.mcp.servers:
-                servers.append(server)
-            for server in self.user.mcp.servers:
+        # Override MCP config from project config and chat config if present, merging mcp servers
+        servers: list[MCPServerConfig] = []
+        enabled = self.user.mcp.enabled
+        auto_start = self.user.mcp.auto_start
+
+        if self.chat and self.chat.mcp:
+            for server in self.chat.mcp.servers:
                 if server.name not in [s.name for s in servers]:
                     servers.append(server)
 
-            mcp = MCPConfig(
-                enabled=self.project.mcp.enabled,
-                auto_start=self.project.mcp.auto_start,
-                servers=servers,
-            )
+        if self.project and self.project.mcp:
+            for server in self.project.mcp.servers:
+                if server.name not in [s.name for s in servers]:
+                    servers.append(server)
+
+        for server in self.user.mcp.servers:
+            if server.name not in [s.name for s in servers]:
+                servers.append(server)
+
+        if self.project and self.project.mcp:
+            enabled = self.project.mcp.enabled
+            auto_start = self.project.mcp.auto_start
+
+        if self.chat and self.chat.mcp:
+            enabled = self.chat.mcp.enabled
+            auto_start = self.chat.mcp.auto_start
+
+        mcp = MCPConfig(
+            enabled=enabled,
+            auto_start=auto_start,
+            servers=servers,
+        )
 
         return mcp
 
@@ -392,6 +440,7 @@ class Config:
         """Gets an environment variable, checks the config file if it's not set in the environment."""
         return (
             os.environ.get(key)
+            or (self.chat and self.chat.env.get(key))
             or (self.project and self.project.env.get(key))
             or self.user.env.get(key)
             or default
@@ -401,6 +450,7 @@ class Config:
         """Gets an environment variable, checks the config file if it's not set in the environment."""
         if (
             val := os.environ.get(key)
+            or (self.chat and self.chat.env.get(key))
             or (self.project and self.project.env.get(key))
             or self.user.env.get(key)
         ):
@@ -430,7 +480,12 @@ def get_config() -> Config:
     return _thread_local.config
 
 
-def set_config(workspace: Path):
+def set_config(config: Config):
+    """Set the configuration."""
+    _thread_local.config = config
+
+
+def set_config_from_workspace(workspace: Path):
     """Set the configuration to use a specific workspace, possibly having a project config."""
     _thread_local.config = Config.from_workspace(workspace=workspace)
 

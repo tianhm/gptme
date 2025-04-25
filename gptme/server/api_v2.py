@@ -24,12 +24,15 @@ from typing import Literal, TypedDict
 import flask
 from flask import request
 
+from gptme.config import ChatConfig, Config, set_config
+from gptme.prompts import get_prompt
+
 from ..dirs import get_logs_dir
 from ..llm import _chat_complete, _stream
 from ..llm.models import get_default_model
 from ..logmanager import LogManager, get_user_conversations, prepare_messages
 from ..message import Message
-from ..tools import ToolUse, init_tools
+from ..tools import ToolUse, get_toolchain, get_tools, init_tools
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +189,7 @@ class ConversationSession:
     auto_confirm_count: int = 0
     clients: set[str] = field(default_factory=set)
     event_flag: threading.Event = field(default_factory=threading.Event)
+    chat_config: ChatConfig = field(default_factory=ChatConfig)
 
 
 class SessionManager:
@@ -195,10 +199,14 @@ class SessionManager:
     _conversation_sessions: dict[str, set[str]] = defaultdict(set)
 
     @classmethod
-    def create_session(cls, conversation_id: str) -> ConversationSession:
+    def create_session(
+        cls, conversation_id: str, config: ChatConfig
+    ) -> ConversationSession:
         """Create a new session for a conversation."""
         session_id = str(uuid.uuid4())
-        session = ConversationSession(id=session_id, conversation_id=conversation_id)
+        session = ConversationSession(
+            id=session_id, conversation_id=conversation_id, chat_config=config
+        )
         cls._sessions[session_id] = session
         cls._conversation_sessions[conversation_id].add(session_id)
         return session
@@ -276,6 +284,7 @@ def step(
     conversation_id: str,
     session: ConversationSession,
     model: str,
+    workspace: Path,
     branch: str = "main",
     auto_confirm: bool = False,
     stream: bool = True,
@@ -294,10 +303,19 @@ def step(
         conversation_id: The conversation ID
         session: The current session
         model: Model to use
+        workspace: Workspace to use
         branch: Branch to use (default: "main")
+        auto_confirm: Whether to auto-confirm tools (default: False)
+        stream: Whether to stream the response (default: True)
     """
+
+    # Create and set config
+    config = Config.from_workspace(workspace=workspace)
+    config.chat = session.chat_config
+    set_config(config)
+
     # Initialize tools in this thread
-    init_tools(None)
+    init_tools(session.chat_config.tools)
 
     # Load conversation
     manager = LogManager.load(
@@ -320,15 +338,18 @@ def step(
     # Notify clients about generation status
     SessionManager.add_event(conversation_id, {"type": "generation_started"})
 
+    tool_format = session.chat_config.tool_format
+    tools = None
+    if tool_format == "tool":
+        tools = [t for t in get_tools() if t.is_runnable()]
+
     try:
         # Stream tokens from the model
         output = ""
         tooluses = []
         for token in (
             char
-            for chunk in (_stream if stream else _chat_complete)(
-                msgs, model, tools=None
-            )
+            for chunk in (_stream if stream else _chat_complete)(msgs, model, tools)
             for char in chunk
         ):
             # check if interrupted
@@ -405,7 +426,7 @@ def step(
             if tool_exec.auto_confirm:
                 if session.auto_confirm_count > 0:
                     session.auto_confirm_count -= 1
-                start_tool_execution(conversation_id, session, tool_id, tooluse)
+                start_tool_execution(conversation_id, session, tool_id, tooluse, model)
 
         # Mark session as not generating
         session.generating = False
@@ -446,13 +467,16 @@ def api_conversation(conversation_id: str):
     log = LogManager.load(conversation_id, lock=False)
     log_dict = log.to_dict(branches=True)
 
+    chat_config = ChatConfig.load_or_create(log.logdir, ChatConfig())
+    workspace = chat_config.workspace
+
     # make all paths absolute or relative to workspace (no "../")
     for msg in log_dict["log"]:
         if files := msg.get("files"):
             msg["files"] = [
                 (
-                    str(path.relative_to(log.workspace))
-                    if (path := Path(f).resolve()).is_relative_to(log.workspace)
+                    str(path.relative_to(workspace))
+                    if (path := Path(f).resolve()).is_relative_to(workspace)
                     else str(path)
                 )
                 for f in files
@@ -464,7 +488,7 @@ def api_conversation(conversation_id: str):
 def api_conversation_put(conversation_id: str):
     """Create a new conversation."""
     msgs = []
-    req_json = flask.request.json
+    req_json = flask.request.json or {}
     if req_json and "messages" in req_json:
         for msg in req_json["messages"]:
             timestamp: datetime = datetime.fromisoformat(msg["timestamp"])
@@ -481,8 +505,19 @@ def api_conversation_put(conversation_id: str):
     log = LogManager(msgs, logdir=logdir)
     log.write()
 
+    # Load or create the chat config, overriding values from request config if provided
+    request_config = ChatConfig.from_dict(req_json.get("config", {}))
+    chat_config = ChatConfig.load_or_create(logdir, request_config)
+
+    # Set tool allowlist to available tools if not provided
+    if not chat_config.tools:
+        chat_config.tools = [t.name for t in get_toolchain(None)]
+
+    # Save the chat config
+    chat_config.save()
+
     # Create a session for this conversation
-    session = SessionManager.create_session(conversation_id)
+    session = SessionManager.create_session(conversation_id, chat_config)
 
     # Check for auto_confirm parameter and set auto_confirm_count
     if req_json and req_json.get("auto_confirm"):
@@ -542,8 +577,12 @@ def api_conversation_events(conversation_id: str):
     """Subscribe to conversation events."""
     session_id = request.args.get("session_id")
     if not session_id:
+        # load chat config
+        logdir = get_logs_dir() / conversation_id
+        chat_config = ChatConfig.load_or_create(logdir, ChatConfig())
+
         # Create a new session if none provided
-        session = SessionManager.create_session(conversation_id)
+        session = SessionManager.create_session(conversation_id, chat_config)
         session_id = session.id
     else:
         session_obj = SessionManager.get_session(session_id)
@@ -608,7 +647,6 @@ def api_conversation_step(conversation_id: str):
     req_json = flask.request.json or {}
     session_id = req_json.get("session_id")
     auto_confirm_int_or_bool: int | bool = req_json.get("auto_confirm", False)
-    stream = req_json.get("stream", True)
 
     if not session_id:
         return flask.jsonify({"error": "session_id is required"}), 400
@@ -616,6 +654,8 @@ def api_conversation_step(conversation_id: str):
     session = SessionManager.get_session(session_id)
     if session is None:
         return flask.jsonify({"error": f"Session not found: {session_id}"}), 404
+
+    stream = req_json.get("stream", session.chat_config.stream)
 
     # if auto_confirm set, set auto_confirm_count
     if isinstance(auto_confirm_int_or_bool, int):
@@ -633,13 +673,14 @@ def api_conversation_step(conversation_id: str):
     assert (
         default_model is not None
     ), "No model loaded and no model specified in request"
-    model = req_json.get("model", default_model.full)
+    model = req_json.get("model", session.chat_config.model or default_model.full)
 
     # Start step execution in a background thread
     _start_step_thread(
         conversation_id=conversation_id,
         session=session,
         model=model,
+        workspace=session.chat_config.workspace,
         branch=branch,
         auto_confirm=auto_confirm,
         stream=stream,
@@ -660,8 +701,6 @@ def api_conversation_tool_confirm(conversation_id: str):
     session_id = req_json.get("session_id")
     tool_id = req_json.get("tool_id")
     action = req_json.get("action")
-    # TODO: Use the model from the conversation
-    model = m.full if (m := get_default_model()) else "anthropic"
 
     if not session_id or not tool_id or not action:
         return (
@@ -678,12 +717,18 @@ def api_conversation_tool_confirm(conversation_id: str):
 
     tool_exec = session.pending_tools[tool_id]
 
+    # Get model from session config, default model, or fallback to "anthropic"
+    default_model = get_default_model()
+    model = session.chat_config.model or (
+        default_model.full if default_model else "anthropic"
+    )
+
     if action == "confirm":
         # Execute the tool
         tooluse = tool_exec.tooluse
 
         logger.info(f"Executing runnable tooluse: {tooluse}")
-        start_tool_execution(conversation_id, session, tool_id, tooluse)
+        start_tool_execution(conversation_id, session, tool_id, tooluse, model)
         return flask.jsonify({"status": "ok", "message": "Tool confirmed"})
 
     elif action == "edit":
@@ -698,6 +743,7 @@ def api_conversation_tool_confirm(conversation_id: str):
             session,
             tool_id,
             dataclasses.replace(tool_exec.tooluse, content=edited_content),
+            model,
         )
 
     elif action == "skip":
@@ -709,7 +755,9 @@ def api_conversation_tool_confirm(conversation_id: str):
         _append_and_notify(LogManager.load(conversation_id, lock=False), session, msg)
 
         # Resume generation
-        _start_step_thread(conversation_id, session, model)
+        _start_step_thread(
+            conversation_id, session, model, session.chat_config.workspace
+        )
 
     elif action == "auto":
         # Enable auto-confirmation for future tools
@@ -720,7 +768,9 @@ def api_conversation_tool_confirm(conversation_id: str):
         session.auto_confirm_count = count
 
         # Also confirm this tool
-        start_tool_execution(conversation_id, session, tool_id, tool_exec.tooluse)
+        start_tool_execution(
+            conversation_id, session, tool_id, tool_exec.tooluse, model
+        )
     else:
         return flask.jsonify({"error": f"Unknown action: {action}"}), 400
 
@@ -762,6 +812,63 @@ def api_conversation_interrupt(conversation_id: str):
     return flask.jsonify({"status": "ok", "message": "Interrupted"})
 
 
+@v2_api.route("/api/v2/conversations/<string:conversation_id>/config", methods=["GET"])
+def api_conversation_config(conversation_id: str):
+    """Get the chat config for a conversation."""
+    logdir = get_logs_dir() / conversation_id
+    chat_config_path = logdir / "config.toml"
+    if chat_config_path.exists():
+        chat_config = ChatConfig.from_logdir(logdir)
+        return flask.jsonify(chat_config.to_dict())
+    else:
+        return flask.jsonify(
+            {"error": f"Chat config not found: {conversation_id}"}
+        ), 404
+
+
+@v2_api.route(
+    "/api/v2/conversations/<string:conversation_id>/config", methods=["PATCH"]
+)
+def api_conversation_config_patch(conversation_id: str):
+    """Update the chat config for a conversation."""
+    req_json = flask.request.json
+    if not req_json:
+        return flask.jsonify({"error": "No JSON data provided"}), 400
+
+    # Create and set config
+    request_config = ChatConfig.from_dict(req_json)
+    logdir = get_logs_dir() / conversation_id
+    chat_config = ChatConfig.load_or_create(logdir, request_config).save()
+    config = Config.from_workspace(workspace=chat_config.workspace)
+    config.chat = chat_config
+    set_config(config)
+
+    # Initialize tools in this thread
+    init_tools(chat_config.tools)
+
+    tools = get_tools()
+
+    # Update system prompt with new tools
+    manager = LogManager.load(conversation_id, lock=False)
+    if len(manager.log.messages) >= 1 and manager.log.messages[0].role == "system":
+        manager.log.messages[0] = get_prompt(
+            tools=get_tools(),
+            tool_format=chat_config.tool_format or "markdown",
+            interactive=chat_config.interactive,
+            model=chat_config.model,
+        )
+    manager.write()
+
+    return flask.jsonify(
+        {
+            "status": "ok",
+            "message": "Chat config updated",
+            "config": chat_config.to_dict(),
+            "tools": [t.name for t in tools],
+        }
+    )
+
+
 # Helper functions
 # ---------------
 
@@ -771,10 +878,9 @@ def start_tool_execution(
     session: ConversationSession,
     tool_id: str,
     edited_tooluse: ToolUse | None,
+    model: str,
 ) -> threading.Thread:
     """Execute a tool and handle its output."""
-    # TODO: Use the model from the conversation
-    model = m.full if (m := get_default_model()) else "anthropic"
 
     # This function would ideally run asynchronously to not block the request
     # For simplicity, we'll run it in a thread
@@ -818,7 +924,9 @@ def start_tool_execution(
             _append_and_notify(manager, session, msg)
 
         # This implements auto-stepping similar to the CLI behavior
-        _start_step_thread(conversation_id, session, model)
+        _start_step_thread(
+            conversation_id, session, model, session.chat_config.workspace
+        )
 
     # Start execution in a thread
     thread = threading.Thread(target=execute_tool_thread)
@@ -831,6 +939,7 @@ def _start_step_thread(
     conversation_id: str,
     session: ConversationSession,
     model: str,
+    workspace: Path,
     branch: str = "main",
     auto_confirm: bool = False,
     stream: bool = True,
@@ -846,6 +955,7 @@ def _start_step_thread(
                 conversation_id=conversation_id,
                 session=session,
                 model=model,
+                workspace=workspace,
                 branch=branch,
                 auto_confirm=auto_confirm,
                 stream=stream,
