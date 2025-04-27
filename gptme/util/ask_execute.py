@@ -7,9 +7,11 @@ import sys
 import termios
 from collections.abc import Callable, Generator
 from pathlib import Path
+from textwrap import wrap
 
 from rich import print
 from rich.console import Console
+from rich.style import Style
 from rich.syntax import Syntax
 
 from ..message import Message
@@ -114,9 +116,26 @@ def ask_execute(question="Execute code?", default=True) -> bool:
 
     with terminal_state_title("❓ waiting for confirmation"):
         session = get_prompt_session()
+
+        prompt = f"{question} {choicestr}"
+
+        style_rich = "bold yellow on red"
+        style_prompt_toolkit = "bold fg:ansiyellow bg:ansired"
+
+        lines = wrap(prompt, width=console.width - 2)
+
+        # print pre-prompt lines
+        # we do this because of https://github.com/gptme/gptme/issues/498
+        if len(lines) > 1:
+            for line in lines[:-1]:
+                console.print(" " + line.strip() + " ", style=Style.parse(style_rich))
+
         answer = (
             session.prompt(
-                [("bold fg:ansiyellow bg:red", f" {question} {choicestr} "), ("", " ")],
+                [
+                    (style_prompt_toolkit, " " + lines[-1].strip() + " "),
+                    ("", " "),
+                ]
             )
             .lower()
             .strip()
