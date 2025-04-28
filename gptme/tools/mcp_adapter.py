@@ -1,12 +1,17 @@
-from logging import getLogger
-from collections.abc import Callable
 import json
+from collections.abc import Callable
+from logging import getLogger
 
 from gptme.config import Config
 
-from ..message import Message
 from ..mcp.client import MCPClient
-from .base import ExecuteFunc, Parameter, ToolSpec, ToolUse
+from ..message import Message
+from .base import (
+    ExecuteFunc,
+    Parameter,
+    ToolSpec,
+    ToolUse,
+)
 
 # Define ConfirmFunc type directly to avoid circular imports
 ConfirmFunc = Callable[[str], bool]
@@ -74,7 +79,7 @@ def create_mcp_tools(config: Config) -> list[ToolSpec]:
                 }
                 example_str = json.dumps(example, indent=2)
 
-                name = f"{server_config.name}_{mcp_tool.name}"
+                name = f"{server_config.name}.{mcp_tool.name}"
 
                 def make_examples(
                     tool_name: str, example_content: str
