@@ -53,6 +53,28 @@ export const ConversationContent: FC<Props> = ({ conversationId, isReadOnly }) =
     }
   }, [conversationId, shouldFocus$]);
 
+  // Add keyboard shortcut for focusing the input
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only handle 'i' key when:
+      // - Not in an input/textarea
+      // - Not in read-only mode
+      // - Has an active session
+      if (
+        e.key === 'i' &&
+        !isReadOnly &&
+        hasSession$.get() &&
+        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)
+      ) {
+        e.preventDefault();
+        shouldFocus$.set(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isReadOnly, hasSession$, shouldFocus$]);
+
   const firstNonSystemIndex$ = useObservable(() => {
     return conversation$.get()?.data.log.findIndex((msg) => msg.role !== 'system') || 0;
   });
@@ -139,7 +161,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, isReadOnly }) =
   }
 
   return (
-    <main className="flex flex-1 flex-col overflow-hidden">
+    <main className="relative flex flex-1 flex-col overflow-hidden">
       {/* Tool Confirmation Dialog */}
       <ToolConfirmationDialog
         pendingTool$={conversation$?.pendingTool}
@@ -217,8 +239,8 @@ export const ConversationContent: FC<Props> = ({ conversationId, isReadOnly }) =
           }}
         </For>
 
-        {/* Add a margin at the bottom */}
-        <div className="mb-[10vh]" />
+        {/* Add padding at the bottom to account for the floating input */}
+        <div className="mb-40" />
       </div>
 
       <ChatInput

@@ -99,16 +99,26 @@ export const ChatInput: FC<Props> = ({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
-    } else if (e.key === 'Escape' && isGenerating && onInterrupt) {
+    } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      console.log('[ChatInput] Escape pressed, interrupting generation...');
-      onInterrupt();
+
+      // If generating, interrupt
+      if (isGenerating && onInterrupt) {
+        console.log('[ChatInput] Escape pressed, interrupting generation...');
+        onInterrupt();
+      }
+
+      // Always blur the input on Escape
+      textareaRef.current?.blur();
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="border-t p-4">
+    <form
+      onSubmit={handleSubmit}
+      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-background via-background/80 to-transparent p-4"
+    >
       <div className="mx-auto flex max-w-2xl flex-col">
         <div className="flex">
           <div className="flex flex-1">
