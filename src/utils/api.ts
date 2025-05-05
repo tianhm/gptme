@@ -1,5 +1,6 @@
 import type {
   ApiError,
+  ChatConfig,
   ConversationResponse,
   CreateConversationRequest,
   SendMessageRequest,
@@ -203,7 +204,8 @@ export class ApiClient {
     try {
       // Check the API
       console.log('[ApiClient] Checking connection to', this.baseUrl);
-      const response = await this.fetchWithTimeout(`${this.baseUrl}/api/v2`, {}, 3000);
+      const url = `${this.baseUrl}/api/v2`;
+      const response = await this.fetchWithTimeout(url, {}, 3000);
       if (!response.ok) {
         console.error('API endpoint returned non-OK status:', response.status);
         this.isConnected$.set(false);
@@ -214,7 +216,7 @@ export class ApiClient {
       try {
         await response.json();
       } catch (parseError) {
-        console.error('[ApiClient] Failed to parse API response:', parseError);
+        console.error(`[ApiClient] Failed to parse API response from ${url}:`, parseError);
         this.isConnected$.set(false);
         return false;
       }
@@ -684,6 +686,33 @@ export class ApiClient {
       }
       throw error;
     }
+  }
+
+  async getChatConfig(logfile: string): Promise<ChatConfig> {
+    if (!this.isConnected) {
+      throw new ApiClientError('Not connected to API');
+    }
+
+    const response = await this.fetchJson<ChatConfig>(
+      `${this.baseUrl}/api/v2/conversations/${logfile}/config`
+    );
+
+    return response;
+  }
+
+  async updateChatConfig(logfile: string, config: ChatConfig): Promise<void> {
+    if (!this.isConnected) {
+      throw new ApiClientError('Not connected to API');
+    }
+
+    await this.fetchJson<{ status: string }>(
+      `${this.baseUrl}/api/v2/conversations/${logfile}/config`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(config),
+        signal: this.controller?.signal,
+      }
+    );
   }
 }
 

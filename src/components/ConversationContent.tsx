@@ -16,7 +16,7 @@ interface Props {
 }
 
 // This can be replaced with an API call to fetch available models from the server
-const AVAILABLE_MODELS = [
+export const AVAILABLE_MODELS = [
   'anthropic/claude-3-5-sonnet-20240620',
   'anthropic/claude-3-opus-20240229',
   'anthropic/claude-3-sonnet-20240229',
@@ -90,7 +90,11 @@ export const ConversationContent: FC<Props> = ({ conversationId, isReadOnly }) =
   const showInitialSystem$ = useObservable<boolean>(false);
 
   const hasInitialSystemMessages$ = useObservable(() => {
-    return firstNonSystemIndex$.get() > 0;
+    const log = conversation$.get()?.data.log;
+    if (!log || log.length === 0) {
+      return false;
+    }
+    return log[0].role === 'system';
   });
 
   // Create a ref for the scroll container
