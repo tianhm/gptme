@@ -19,7 +19,7 @@ def view_image(image_path: Path | str) -> Message:
         image_path = Path(image_path)
 
     if not image_path.exists():
-        return Message("system", f"Image not found at {image_path}")
+        return Message("system", f"Image not found at `{image_path}`")
 
     file_size = image_path.stat().st_size
     MAX_SIZE = 1024 * 1024  # 1MB in bytes
@@ -34,8 +34,8 @@ def view_image(image_path: Path | str) -> Message:
             msg_parts.append("No scaling required (under 1MB)")
             return Message(
                 "system",
-                f"Viewing image at {image_path}\n" + "\n".join(msg_parts),
-                files=[image_path],
+                f"Viewing image at `{image_path}`\n" + "\n".join(msg_parts),
+                files=[image_path.absolute()],
             )
 
         # Convert RGBA to RGB if needed
@@ -69,7 +69,7 @@ def view_image(image_path: Path | str) -> Message:
             "system",
             f"Viewing {action} image ({dimensions[0]}x{dimensions[1]}) from {image_path}\n"
             + "\n".join(msg_parts),
-            files=[scaled_path],
+            files=[scaled_path.absolute()],
         )
 
 
