@@ -10,6 +10,7 @@ Key improvements:
 
 import dataclasses
 import logging
+import shutil
 import threading
 import uuid
 from collections import defaultdict
@@ -262,6 +263,12 @@ class SessionManager:
                 if not cls._conversation_sessions[conversation_id]:
                     del cls._conversation_sessions[conversation_id]
             del cls._sessions[session_id]
+
+    @classmethod
+    def remove_all_sessions_for_conversation(cls, conversation_id: str) -> None:
+        """Remove all sessions for a conversation."""
+        for session in cls.get_sessions_for_conversation(conversation_id):
+            cls.remove_session(session.id)
 
 
 # Helper Functions for Generation
@@ -597,6 +604,32 @@ def api_conversation_post(conversation_id: str):
             "message": msg2dict(msg, log.workspace),
         },
     )
+
+    return flask.jsonify({"status": "ok"})
+
+
+@v2_api.route("/api/v2/conversations/<string:conversation_id>", methods=["DELETE"])
+def api_conversation_delete(conversation_id: str):
+    """Delete a conversation."""
+
+    # Validate conversation_id to prevent path traversal
+    if "/" in conversation_id or ".." in conversation_id or "\\" in conversation_id:
+        return flask.jsonify({"error": "Invalid conversation_id"}), 400
+
+    logdir = get_logs_dir() / conversation_id
+    assert logdir.parent == get_logs_dir()
+    if not logdir.exists():
+        return flask.jsonify(
+            {"error": f"Conversation not found: {conversation_id}"}
+        ), 404
+
+    try:
+        shutil.rmtree(logdir)
+    except OSError as e:
+        logger.error(f"Error deleting conversation {conversation_id}: {e}")
+        return flask.jsonify({"error": f"Could not delete conversation: {e}"}), 500
+
+    SessionManager.remove_all_sessions_for_conversation(conversation_id)
 
     return flask.jsonify({"status": "ok"})
 
