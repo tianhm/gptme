@@ -316,6 +316,11 @@ def run_precommit_checks() -> str | None:
         subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
         return None  # No issues found
     except subprocess.CalledProcessError as e:
+        # if exit code is 130, it means the user interrupted the process
+        if e.returncode == 130:
+            logger.info("Pre-commit checks interrupted by user")
+            return None
+
         logger.error(f"Pre-commit checks failed: {e}")
         output = "Pre-commit checks failed\n\n"
 
