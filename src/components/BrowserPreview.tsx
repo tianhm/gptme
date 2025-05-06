@@ -31,7 +31,11 @@ export const BrowserPreview: FC<Props> = ({ defaultUrl = 'http://localhost:8080'
 
   const handleRefresh = () => {
     // Force refresh by appending a dummy parameter if URL is unchanged
-    setCurrentUrl(inputValue === currentUrl ? `${inputValue}${inputValue.includes('?') ? '&' : '?'}_refresh=${Date.now()}` : inputValue);
+    setCurrentUrl(
+      inputValue === currentUrl
+        ? `${inputValue}${inputValue.includes('?') ? '&' : '?'}_refresh=${Date.now()}`
+        : inputValue
+    );
     setLogs([]); // Clear logs on refresh
   };
 

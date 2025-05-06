@@ -129,6 +129,7 @@ export const ChatInput: FC<Props> = ({
                     <Textarea
                       ref={textareaRef}
                       value={message}
+                      data-testid="chat-input"
                       onChange={(e) => {
                         setMessage(e.target.value);
                         // Auto-adjust height
