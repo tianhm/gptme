@@ -71,6 +71,11 @@ EngineType = Literal["google", "duckduckgo"]
 
 def examples(tool_format):
     return f"""
+### Reading docs
+User: how does gptme work?
+Assistant: Let's read the docs.
+{ToolUse("ipython", [], "read_url('https://gptme.org/docs/')").to_output(tool_format)}
+
 ### Answer question from URL with browsing
 User: find out which is the latest ActivityWatch version from superuserlabs.org
 Assistant: Let's browse the site.
