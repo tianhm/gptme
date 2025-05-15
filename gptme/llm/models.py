@@ -152,6 +152,28 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
             "price_output": 0.60,
             "supports_vision": True,
         },
+        "gemini-2.0-flash-lite": {
+            "context": 1_048_576,
+            "max_output": 8192,
+            "price_input": 0.075,
+            "price_output": 0.30,
+        },
+        "gemini-2.5-flash-preview-04-17": {
+            "context": 1_048_576,
+            "max_output": 8192,
+            "price_input": 0.15,
+            # NOTE: $3.5/Mtok for thinking tokens
+            "price_output": 0.60,
+            "supports_vision": True,
+        },
+        "gemini-2.5-pro-preview-05-06": {
+            "context": 1_048_576,
+            "max_output": 8192,
+            # NOTE: at >200k context price is 2x for input and 1.5x for output
+            "price_input": 1.25,
+            "price_output": 10,
+            "supports_vision": True,
+        },
     },
     # https://api-docs.deepseek.com/quick_start/pricing
     "deepseek": {
