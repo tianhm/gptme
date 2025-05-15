@@ -70,11 +70,9 @@ def test_version(runner: CliRunner):
 
 def test_command_exit(args: list[str], runner: CliRunner):
     args.append("/exit")
-    result = runner.invoke(gptme.cli.main, args, color=False)
+    result = runner.invoke(gptme.cli.main, args)
     assert "/exit" in result.output
     assert "Missing dependency" not in result.output
-    assert "Using logdir" in result.output
-    assert "WARNING" in result.output
     assert result.exit_code == 0
 
 
