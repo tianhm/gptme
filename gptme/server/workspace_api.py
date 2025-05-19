@@ -58,6 +58,23 @@ class WorkspaceFile:
             return None
         return mimetypes.guess_type(self.path)[0]
 
+    @property
+    def is_text(self) -> bool:
+        """Check if file is a text file."""
+        if self.mime_type and (
+            self.mime_type.startswith("text/") or self.mime_type in ["application/json"]
+        ):
+            return True
+
+        # Check if file is a text file by reading the first few bytes
+        try:
+            with open(self.path, "rb") as f:
+                content = f.read(1024)
+                content.decode("utf-8")
+            return True
+        except (UnicodeDecodeError, OSError):
+            return False
+
     def to_dict(self) -> FileType:
         """Convert to dictionary representation."""
         stat = self.path.stat()
@@ -195,7 +212,7 @@ def preview_file(conversation_id: str, filepath: str):
         mime_type = wfile.mime_type
 
         # Handle different file types
-        if mime_type and mime_type.startswith("text/"):
+        if wfile.is_text:
             # Text files
             with open(path) as f:
                 content = f.read()
@@ -204,7 +221,7 @@ def preview_file(conversation_id: str, filepath: str):
             # Images
             return flask.send_file(path, mimetype=mime_type)
         else:
-            # Binary files - just return metadata
+            # Binary files - return only metadata
             return flask.jsonify({"type": "binary", "metadata": wfile.to_dict()})
 
     except ValueError as e:
