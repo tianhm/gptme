@@ -12,7 +12,7 @@ export function useWorkspaceApi() {
       showHidden = false
     ): Promise<FileType[]> {
       const url = new URL(
-        `/api/v2/conversations/${conversationId}/workspace${path ? `/${path}` : ''}`,
+        `/api/v2/conversations/${conversationId}/workspace${path ? `/${encodeURIComponent(path)}` : ''}`,
         api.baseUrl
       );
       url.searchParams.set('show_hidden', showHidden.toString());
