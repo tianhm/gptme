@@ -320,6 +320,10 @@ def run_precommit_checks() -> str | None:
         if e.returncode == 130:
             logger.info("Pre-commit checks interrupted by user")
             return None
+        # If no pre-commit config found
+        # Can happen in nested git repos, since we check parent dirs but pre-commit only checks the current repo.
+        if ".pre-commit-config.yaml is not a file" in e.stdout:
+            return None
 
         logger.error(f"Pre-commit checks failed: {e}")
         output = "Pre-commit checks failed\n\n"
