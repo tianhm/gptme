@@ -202,7 +202,7 @@ const Conversations: FC<Props> = ({ route }) => {
         />
       </ResizablePanel>
 
-      <ResizableHandle withHandle />
+      <ResizableHandle />
 
       <ResizablePanel defaultSize={60} minSize={30} className="overflow-hidden">
         <Memo>
@@ -220,7 +220,7 @@ const Conversations: FC<Props> = ({ route }) => {
         </Memo>
       </ResizablePanel>
 
-      <ResizableHandle withHandle />
+      <ResizableHandle />
 
       <ResizablePanel
         ref={rightPanelRef}

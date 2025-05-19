@@ -244,7 +244,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, isReadOnly }) =
         </For>
 
         {/* Add padding at the bottom to account for the floating input */}
-        <div className="mb-24" />
+        <div className="mb-40" />
       </div>
 
       <ChatInput
