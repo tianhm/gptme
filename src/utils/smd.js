@@ -213,6 +213,7 @@ export function attr_to_html_attr(type) {
  * @property {number      } thinking_state  - For thinking block parsing
  * @property {boolean     } parsing_thinking_tag
  * @property {string      } thinking_tag_buffer
+ * @property {string      } thinking_tag_type - Either 'thinking' or 'think'
  */
 
 const TOKEN_ARRAY_CAP = 24;
@@ -243,6 +244,7 @@ export function parser(renderer) {
     thinking_state: 0,
     parsing_thinking_tag: false,
     thinking_tag_buffer: '',
+    thinking_tag_type: '',
   };
 }
 
@@ -1083,13 +1085,15 @@ export function parser_write(p, chunk) {
         continue;
       case THINKING_BLOCK:
         // Check if we're at the end of the thinking block
-        if (p.pending === '</thinking') {
+        const expectedClosingTagWithoutBracket = '</' + p.thinking_tag_type;
+        if (p.pending === expectedClosingTagWithoutBracket) {
           if (char === '>') {
             add_text(p);
             end_token(p); // End THINKING_CONTENT
             end_token(p); // End THINKING_BLOCK
             p.pending = '';
             p.thinking_state = 0;
+            p.thinking_tag_type = '';
             continue;
           }
           p.pending = pending_with_char;
@@ -1097,7 +1101,8 @@ export function parser_write(p, chunk) {
         }
 
         // Check if we're parsing a closing tag
-        if (p.pending.startsWith('</thinking') && p.pending.length < '</thinking>'.length) {
+        const expectedClosingTag = '</' + p.thinking_tag_type + '>';
+        if (p.pending.startsWith(expectedClosingTagWithoutBracket) && p.pending.length < expectedClosingTag.length) {
           p.pending = pending_with_char;
           continue;
         }
@@ -1139,16 +1144,18 @@ export function parser_write(p, chunk) {
 
         // Building the closing tag character by character
         if (p.pending.startsWith('</')) {
-          if ('</thinking>'.substring(0, p.pending.length + 1) === p.pending + char) {
+          const expectedClosingTag = '</' + p.thinking_tag_type + '>';
+          if (expectedClosingTag.substring(0, p.pending.length + 1) === p.pending + char) {
             p.pending = pending_with_char;
 
             // If we have the complete closing tag
-            if (p.pending === '</thinking>') {
+            if (p.pending === expectedClosingTag) {
               add_text(p);
               end_token(p); // End THINKING_CONTENT
               end_token(p); // End THINKING_BLOCK
               p.pending = '';
               p.thinking_state = 0;
+              p.thinking_tag_type = '';
               continue;
             }
             continue;
@@ -1380,13 +1387,14 @@ export function parser_write(p, chunk) {
           continue;
         }
         break;
-      /* <thinking> tag - Handle opening tags */
+      /* <thinking> and <think> tags - Handle opening tags */
       case '<':
-        // Complete opening tag
+        // Complete opening tag for <thinking>
         if (p.pending === '<thinking' && char === '>') {
           add_text(p);
           add_token(p, THINKING_BLOCK);
           p.renderer.set_attr(p.renderer.data, TYPE, 'thinking');
+          p.thinking_tag_type = 'thinking';
           add_token(p, THINKING_SUMMARY);
           p.text = '💭 Thinking';
           add_text(p);
@@ -1397,9 +1405,33 @@ export function parser_write(p, chunk) {
           continue;
         }
 
-        // Build opening tag character by character
+        // Complete opening tag for <think>
+        if (p.pending === '<think' && char === '>') {
+          add_text(p);
+          add_token(p, THINKING_BLOCK);
+          p.renderer.set_attr(p.renderer.data, TYPE, 'think');
+          p.thinking_tag_type = 'think';
+          add_token(p, THINKING_SUMMARY);
+          p.text = '💭 Thinking';
+          add_text(p);
+          end_token(p); // End THINKING_SUMMARY
+          add_token(p, THINKING_CONTENT);
+          p.thinking_state = 1; // Mark that we just entered thinking content
+          p.pending = '';
+          continue;
+        }
+
+        // Build opening tag character by character for <thinking>
         if ('<thinking'.startsWith(p.pending) && p.pending.length < '<thinking'.length) {
           if ('<thinking'[p.pending.length] === char) {
+            p.pending = pending_with_char;
+            continue;
+          }
+        }
+
+        // Build opening tag character by character for <think>
+        if ('<think'.startsWith(p.pending) && p.pending.length < '<think'.length) {
+          if ('<think'[p.pending.length] === char) {
             p.pending = pending_with_char;
             continue;
           }

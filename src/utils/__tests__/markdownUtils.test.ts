@@ -5,6 +5,8 @@ import {
 } from '../markdownUtils';
 import '@testing-library/jest-dom';
 
+// TODO: use these tests for streaming markdown logic in smd.js (no longer using transformThinkingTags)
+
 describe('processNestedCodeBlocks', () => {
   it('should handle nested code blocks', () => {
     const input = `\`\`\`markdown
@@ -73,8 +75,15 @@ console.log("world")
 });
 
 describe('transformThinkingTags', () => {
-  it('should transform thinking tags to details/summary', () => {
+  it('should transform <thinking> tags to details/summary', () => {
     const input = 'Before <thinking>Some thoughts</thinking> After';
+    const expected =
+      'Before <details type="thinking"><summary>💭 Thinking</summary>\n\nSome thoughts\n\n</details> After';
+    expect(transformThinkingTags(input)).toBe(expected);
+  });
+
+  it('should transform <think> tags to details/summary', () => {
+    const input = 'Before <think>Some thoughts</think> After';
     const expected =
       'Before <details type="thinking"><summary>💭 Thinking</summary>\n\nSome thoughts\n\n</details> After';
     expect(transformThinkingTags(input)).toBe(expected);
