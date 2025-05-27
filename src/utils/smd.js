@@ -1102,7 +1102,10 @@ export function parser_write(p, chunk) {
 
         // Check if we're parsing a closing tag
         const expectedClosingTag = '</' + p.thinking_tag_type + '>';
-        if (p.pending.startsWith(expectedClosingTagWithoutBracket) && p.pending.length < expectedClosingTag.length) {
+        if (
+          p.pending.startsWith(expectedClosingTagWithoutBracket) &&
+          p.pending.length < expectedClosingTag.length
+        ) {
           p.pending = pending_with_char;
           continue;
         }
@@ -1409,7 +1412,7 @@ export function parser_write(p, chunk) {
         if (p.pending === '<think' && char === '>') {
           add_text(p);
           add_token(p, THINKING_BLOCK);
-          p.renderer.set_attr(p.renderer.data, TYPE, 'think');
+          p.renderer.set_attr(p.renderer.data, TYPE, 'thinking');
           p.thinking_tag_type = 'think';
           add_token(p, THINKING_SUMMARY);
           p.text = '💭 Thinking';
@@ -1651,7 +1654,7 @@ export function default_add_token(data, type) {
     case THINKING_BLOCK:
       slot = document.createElement('details');
       slot.setAttribute('type', 'thinking');
-      slot.setAttribute('open', 'true'); // Always open by default
+      // slot.setAttribute('open', 'true'); // Always open by default
       break;
     case THINKING_SUMMARY:
       slot = document.createElement('summary');
