@@ -297,8 +297,8 @@ class ChatConfig:
             if (path / "workspace").exists():
                 workspace = (path / "workspace").resolve()
                 return cls(_logdir=path, workspace=workspace)
-            logger.warning(
-                f"Neither chat config nor workspace found at {path}, using default config."
+            logger.debug(
+                f"No existing config found at {path}, using default config for new conversation."
             )
             return cls(_logdir=path)
         try:
