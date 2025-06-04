@@ -109,6 +109,12 @@ Vue.js - The Progressive JavaScript Framework
 
 Scaffolding project in ./fancy-project...
 '''.strip()).to_output()}
+
+#### Proper quoting for complex content
+
+> User: add a comment with backticks and special characters
+> Assistant: When passing complex content with special characters, use single quotes to prevent shell interpretation:
+{ToolUse("shell", [], "echo 'Content with `backticks` and $variables that should not be interpreted' > example.txt").to_output(tool_format)}
 """.strip()
 
 
