@@ -293,37 +293,41 @@ Usage: gptme [OPTIONS] [PROMPTS]...
     /undo         Undo the last action
     /log          Show the conversation log
     /tools        Show available tools
+    /model        List or switch models
     /edit         Edit the conversation in your editor
     /rename       Rename the conversation
-    /fork         Create a copy of the conversation with a new name
+    /fork         Copy the conversation using a new name
     /summarize    Summarize the conversation
-    /replay       Re-execute codeblocks in the conversation, wont store output in log
+    /replay       Rerun tools in the conversation, won't store output
     /impersonate  Impersonate the assistant
     /tokens       Show the number of tokens used
-    /export       Export conversation as standalone HTML
+    /export       Export conversation as HTML
     /help         Show this help message
     /exit         Exit the program
 
   Keyboard shortcuts:
-    Ctrl+J        Insert a new line without executing the prompt
+    Ctrl+X Ctrl+E  Edit prompt in your editor
+    Ctrl+J         Insert a new line without executing the prompt
 
 Options:
-  -n, --name TEXT        Name of conversation. Defaults to generating a random
+  --name TEXT            Name of conversation. Defaults to generating a random
                          name.
   -m, --model TEXT       Model to use, e.g. openai/gpt-4o,
-                         anthropic/claude-3-5-sonnet-20240620. If only
-                         provider given, a default is used.
+                         anthropic/claude-3-7-sonnet-20250219. If only
+                         provider given then a default is used.
   -w, --workspace TEXT   Path to workspace directory. Pass '@log' to create a
                          workspace in the log directory.
   -r, --resume           Load last conversation
   -y, --no-confirm       Skips all confirmation prompts.
-  -n, --non-interactive  Force non-interactive mode. Implies --no-confirm.
+  -n, --non-interactive  Non-interactive mode. Implies --no-confirm.
   --system TEXT          System prompt. Can be 'full', 'short', or something
                          custom.
   -t, --tools TEXT       Comma-separated list of tools to allow. Available:
-                         read, save, append, patch, shell, subagent, tmux,
-                         browser, gh, chats, screenshot, vision, computer,
-                         python.
+                         append, browser, chats, computer, gh, ipython, patch,
+                         rag, read, save, screenshot, shell, subagent, tmux,
+                         vision.
+  --tool-format TEXT     Tool parsing method. Can be 'markdown', 'xml',
+                         'tool'. (experimental)
   --no-stream            Don't stream responses
   --show-hidden          Show hidden system messages.
   -v, --verbose          Show verbose output.
