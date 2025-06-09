@@ -63,7 +63,14 @@ def use_checks() -> bool:
             "GPTME_CHECK is enabled but no .pre-commit-config.yaml found in any parent directory"
         )
 
-    return explicit_enabled or has_config
+    enabled = explicit_enabled or has_config
+
+    # Check for pre-commit availability
+    if enabled and not shutil.which("pre-commit"):
+        logger.warning("pre-commit not found, disabling pre-commit checks")
+        return False
+
+    return enabled
 
 
 def file_to_display_path(f: Path, workspace: Path | None = None) -> Path:
