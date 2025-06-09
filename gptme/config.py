@@ -9,7 +9,7 @@ from dataclasses import (
 )
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import tomlkit
 from tomlkit import TOMLDocument
@@ -20,7 +20,7 @@ from typing_extensions import Self
 from .util import console, path_with_tilde
 
 if TYPE_CHECKING:
-    from .tools import ToolFormat
+    from .tools.base import ToolFormat
 
 logger = logging.getLogger(__name__)
 
@@ -549,6 +549,65 @@ def reload_config() -> Config:
         _thread_local.config = Config()
     assert _thread_local.config
     return _thread_local.config
+
+
+def setup_config_from_cli(
+    workspace: Path,
+    logdir: Path,
+    model: str | None = None,
+    tool_allowlist: str | None = None,
+    tool_format: "ToolFormat | None" = None,
+    stream: bool = True,
+    interactive: bool = True,
+) -> Config:
+    """
+    Initialize and return a complete config from CLI arguments and workspace.
+
+    Handles the precedence: CLI args -> env vars -> config files -> defaults
+    """
+    from .tools import get_toolchain
+
+    # Load base config from workspace
+    set_config_from_workspace(workspace)
+    config = get_config()
+
+    # Resolve configuration values with proper precedence
+    resolved_model = model or config.get_env("MODEL")
+
+    # Handle tool allowlist - convert string to list if needed
+    resolved_tool_allowlist: list[str] | None = None
+    if tool_allowlist is not None:
+        resolved_tool_allowlist = [tool.strip() for tool in tool_allowlist.split(",")]
+    elif tools_env := config.get_env("TOOLS"):
+        resolved_tool_allowlist = [tool.strip() for tool in tools_env.split(",")]
+
+    resolved_tool_format = (
+        tool_format or cast("ToolFormat", config.get_env("TOOL_FORMAT")) or "markdown"
+    )
+
+    # Create or load chat config with CLI overrides
+    logdir.mkdir(parents=True, exist_ok=True)
+    config.chat = ChatConfig.load_or_create(
+        logdir=logdir,
+        cli_config=ChatConfig(
+            model=resolved_model,
+            tool_format=resolved_tool_format,
+            stream=stream,
+            interactive=interactive,
+            workspace=workspace,
+        ),
+    )
+
+    # Set tools if not already set or if CLI override provided
+    if config.chat.tools is None or tool_allowlist is not None:
+        config.chat.tools = [
+            tool.name for tool in get_toolchain(resolved_tool_allowlist)
+        ]
+
+    # Save and set the final config
+    config.chat.save()
+    set_config(config)
+    return config
 
 
 if __name__ == "__main__":

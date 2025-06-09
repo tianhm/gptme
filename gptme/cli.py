@@ -14,10 +14,7 @@ from . import __version__
 from .chat import chat
 from .commands import _gen_help
 from .config import (
-    ChatConfig,
-    get_config,
-    set_config,
-    set_config_from_workspace,
+    setup_config_from_cli,
 )
 from .constants import MULTIPROMPT_SEPARATOR
 from .dirs import get_logs_dir
@@ -26,7 +23,11 @@ from .llm.models import get_recommended_model
 from .logmanager import ConversationMeta, get_user_conversations
 from .message import Message
 from .prompts import get_prompt
-from .tools import ToolFormat, get_available_tools, init_tools
+from .tools import (
+    ToolFormat,
+    get_available_tools,
+    init_tools,
+)
 from .util import epoch_to_age
 from .util.generate_name import generate_name
 from .util.interrupt import handle_keyboard_interrupt, set_interruptible
@@ -109,7 +110,6 @@ The interface provides user commands that can be used to interact with the syste
     "--tools",
     "tool_allowlist",
     default=None,
-    multiple=True,
     help=f"Comma-separated list of tools to allow. Available: {available_tool_names}.",
 )
 @click.option(
@@ -146,7 +146,7 @@ def main(
     prompt_system: str,
     name: str,
     model: str | None,
-    tool_allowlist: list[str] | None,
+    tool_allowlist: str | None,
     tool_format: ToolFormat | None,
     stream: bool,
     verbose: bool,
@@ -252,51 +252,32 @@ def main(
     else:
         workspace_path = Path(workspace) if workspace else Path.cwd()
 
-    # Parse tool allowlist cli argument.
-    if tool_allowlist:
-        # split comma-separated values
-        tool_allowlist = [tool for tools in tool_allowlist for tool in tools.split(",")]
-
-    # Load main config
-    set_config_from_workspace(workspace_path)
-    config = get_config()
-
-    # Load or create chat config, applying CLI overrides
-    logdir.mkdir(parents=True, exist_ok=True)
-    chat_config = ChatConfig.load_or_create(
+    # Setup complete configuration from CLI arguments and workspace
+    config = setup_config_from_cli(
+        workspace=workspace_path,
         logdir=logdir,
-        cli_config=ChatConfig(
-            model=model,
-            tools=tool_allowlist,
-            tool_format=tool_format,
-            stream=stream,
-            interactive=interactive,
-            workspace=workspace_path,
-        ),
-    ).save()
-
-    # Set chat config in main config
-    config.chat = chat_config
-    set_config(config)
-
-    model = model or config.get_env("MODEL")
-    selected_tool_format: ToolFormat = (
-        tool_format or config.get_env("TOOL_FORMAT") or "markdown"  # type: ignore
+        model=model,
+        tool_allowlist=tool_allowlist,
+        tool_format=tool_format,
+        stream=stream,
+        interactive=interactive,
     )
+    assert config.chat and config.chat.tool_format
 
     # early init tools to generate system prompt
     # We pass the tool_allowlist CLI argument. If it's not provided, init_tools
     # will load it from the environment variable TOOL_ALLOWLIST or the chat config.
-    tools = init_tools(tool_allowlist)
+    logger.debug(f"Using tools: {config.chat.tools}")
+    tools = init_tools(config.chat.tools)
 
     # get initial system prompt
     initial_msgs = [
         get_prompt(
             tools=tools,
             prompt=prompt_system,
-            interactive=interactive,
-            tool_format=selected_tool_format,
-            model=model,
+            interactive=config.chat.interactive,
+            tool_format=config.chat.tool_format,
+            model=config.chat.model,
         )
     ]
 
@@ -309,14 +290,14 @@ def main(
             prompt_msgs,
             initial_msgs,
             logdir,
-            chat_config.model,
-            chat_config.stream,
+            config.chat.model,
+            config.chat.stream,
             no_confirm,
-            chat_config.interactive,
+            config.chat.interactive,
             show_hidden,
-            chat_config.workspace,
-            chat_config.tools,
-            chat_config.tool_format,
+            config.chat.workspace,
+            config.chat.tools,
+            config.chat.tool_format,
         )
     except RuntimeError as e:
         if verbose:
