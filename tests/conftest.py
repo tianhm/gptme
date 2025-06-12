@@ -158,7 +158,9 @@ def setup_conversation(server_thread, tmp_path):
         json={
             "prompt": "You are an AI assistant for testing.",
             "config": {
-                "workspace": str(tmp_path),
+                "chat": {
+                    "workspace": str(tmp_path),
+                }
             },
         },
     )
