@@ -41,11 +41,13 @@ export function useConversation(conversationId: string) {
     const loadAndConnect = async () => {
       try {
         // Check if this is a demo conversation
-        const demoConv = demoConversations.find((conv) => conv.name === conversationId);
+        const demoConv = demoConversations.find((conv) => conv.id === conversationId);
         if (demoConv) {
           // Initialize with demo data
           updateConversation(conversationId, {
             data: {
+              id: conversationId,
+              name: demoConv.name,
               log: demoConv.messages,
               logfile: conversationId,
               branches: {},
