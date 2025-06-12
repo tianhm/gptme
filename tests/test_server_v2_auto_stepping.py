@@ -80,6 +80,9 @@ def test_auto_stepping(
         assert wait_for_event(event_listener, "tool_executing")
         assert wait_for_event(event_listener, "message_added")
 
+        # Wait for final assistant message
+        assert wait_for_event(event_listener, "message_added")
+
     # Verify conversation state
     resp = requests.get(
         f"http://localhost:{port}/api/v2/conversations/{conversation_id}"
@@ -89,11 +92,11 @@ def test_auto_stepping(
     messages = resp.json()["log"]
 
     # Verify message sequence
-    assert len(messages) == 7, f"Expected 7 messages, got {len(messages)}"
+    assert len(messages) == 8, f"Expected 8 messages, got {len(messages)}"
     assert messages[0]["role"] == "system" and "testing" in messages[0]["content"]
-    assert messages[1]["role"] == "user"
-    assert messages[2]["role"] == "assistant"
-    assert messages[3]["role"] == "system"
-    assert messages[4]["role"] == "assistant"
-    assert messages[5]["role"] == "system"
-    assert messages[6]["role"] == "assistant"
+    assert messages[2]["role"] == "user"
+    assert messages[3]["role"] == "assistant"
+    assert messages[4]["role"] == "system"
+    assert messages[5]["role"] == "assistant"
+    assert messages[6]["role"] == "system"
+    assert messages[7]["role"] == "assistant"
