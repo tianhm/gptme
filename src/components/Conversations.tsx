@@ -2,6 +2,7 @@ import { useMemo, useRef, type FC } from 'react';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { useCallback, useEffect } from 'react';
+import { WelcomeView } from '@/components/WelcomeView';
 import { setDocumentTitle } from '@/utils/title';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { LeftSidebar } from '@/components/LeftSidebar';
@@ -17,6 +18,7 @@ import {
   initializeConversations,
   selectedConversation$,
   initConversation,
+  conversations$,
 } from '@/stores/conversations';
 import {
   leftSidebarVisible$,
@@ -35,6 +37,7 @@ const Conversations: FC<Props> = ({ route }) => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const conversationParam = searchParams.get('conversation');
+  const stepParam = searchParams.get('step');
   const { api, isConnected$, connectionConfig } = useApi();
   const queryClient = useQueryClient();
   const isConnected = use$(isConnected$);
@@ -54,8 +57,43 @@ const Conversations: FC<Props> = ({ route }) => {
     // Handle initial conversation selection
     if (conversationParam) {
       selectedConversation$.set(conversationParam);
+    } else {
+      // Need to use empty string instead of null due to type constraints
+      selectedConversation$.set('');
     }
   }, [conversationParam]);
+
+  // Handle step parameter for auto-generation
+  useEffect(() => {
+    if (stepParam === 'true' && conversationParam && isConnected) {
+      console.log(`[Conversations] Step parameter detected for ${conversationParam}`);
+
+      // Watch for conversation to be connected
+      const checkAndStart = () => {
+        const conversation = conversations$.get(conversationParam);
+        if (conversation?.isConnected.get()) {
+          console.log(
+            `[Conversations] Conversation ${conversationParam} is connected, starting generation`
+          );
+
+          // Start generation
+          api.step(conversationParam).catch((error) => {
+            console.error('[Conversations] Failed to start generation:', error);
+          });
+
+          // Remove step parameter from URL
+          const newSearchParams = new URLSearchParams(searchParams);
+          newSearchParams.delete('step');
+          navigate(`${route}?${newSearchParams.toString()}`, { replace: true });
+        } else {
+          // Check again in 100ms
+          setTimeout(checkAndStart, 100);
+        }
+      };
+
+      checkAndStart();
+    }
+  }, [stepParam, conversationParam, isConnected, api, navigate, route, searchParams]);
 
   // Fetch conversations from API
   const {
@@ -150,8 +188,9 @@ const Conversations: FC<Props> = ({ route }) => {
 
   // Update conversation$ when available conversations change
   useEffect(() => {
-    const selected = selectedConversation$.get();
-    conversation$.set(allConversations.find((conv) => conv.name === selected));
+    const selectedId = selectedConversation$.get();
+    const selectedConversation = allConversations.find((conv) => conv.name === selectedId);
+    conversation$.set(selectedConversation);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allConversations]);
 
@@ -176,6 +215,14 @@ const Conversations: FC<Props> = ({ route }) => {
       setLeftPanelRef(null);
       setRightPanelRef(null);
     };
+  }, []);
+
+  // Hide sidebars by default when no conversation is selected
+  useEffect(() => {
+    if (!selectedConversation$.get()) {
+      leftPanelRef.current?.collapse();
+      rightPanelRef.current?.collapse();
+    }
   }, []);
 
   return (
@@ -215,7 +262,11 @@ const Conversations: FC<Props> = ({ route }) => {
                   isReadOnly={conversation.readonly}
                 />
               </div>
-            ) : null;
+            ) : (
+              <div className="flex h-full flex-1 items-center justify-center p-4">
+                <WelcomeView onToggleHistory={() => leftPanelRef.current?.expand()} />
+              </div>
+            );
           }}
         </Memo>
       </ResizablePanel>
