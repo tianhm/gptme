@@ -265,9 +265,10 @@ class ChatConfig:
         # Extract chat settings
         chat_data = config_data.pop("chat", {})
 
-        # Convert workspace to Path if present
+        # Convert workspace to Path if present and resolve to absolute path
         if "workspace" in chat_data:
-            chat_data["workspace"] = Path(chat_data["workspace"])
+            workspace_path = Path(chat_data["workspace"])
+            chat_data["workspace"] = workspace_path.resolve()
         # For old-style config, check if workspace is in the logdir
         elif _logdir and (_logdir / "workspace").exists():
             chat_data["workspace"] = (_logdir / "workspace").resolve()
