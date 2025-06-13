@@ -200,12 +200,12 @@ def document_prompt_function(*args, **kwargs):
     return decorator
 
 
-def path_with_tilde(path: Path) -> str:
+def path_with_tilde(path: Path) -> Path:
     home = str(Path.home())
     path_str = str(path)
     if path_str.startswith(home):
-        return path_str.replace(home, "~", 1)
-    return path_str
+        return Path(path_str.replace(home, "~", 1))
+    return path
 
 
 @functools.lru_cache

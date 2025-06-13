@@ -353,7 +353,7 @@ def test_chat_config_loaded_from_toml():
     assert config.tool_format == "markdown"
     assert config.stream is True
     assert config.interactive is True
-    assert config.workspace == Path("~/workspace")
+    assert config.workspace == Path.home() / "workspace"
     assert config.env == {"API_KEY": "your-key"}
     assert config.mcp is not None
     assert config.mcp.enabled is True
@@ -375,7 +375,7 @@ def test_chat_config_loaded_from_json():
     assert config.tool_format == "markdown"
     assert config.stream is True
     assert config.interactive is True
-    assert config.workspace == Path("~/workspace")
+    assert config.workspace == Path.home() / "workspace"
     assert config.env == {"API_KEY": "your-key"}
     assert config.mcp is not None
     assert config.mcp.enabled is True

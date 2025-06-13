@@ -267,8 +267,7 @@ class ChatConfig:
 
         # Convert workspace to Path if present and resolve to absolute path
         if "workspace" in chat_data:
-            workspace_path = Path(chat_data["workspace"])
-            chat_data["workspace"] = workspace_path.resolve()
+            chat_data["workspace"] = Path(chat_data["workspace"]).expanduser().resolve()
         # For old-style config, check if workspace is in the logdir
         elif _logdir and (_logdir / "workspace").exists():
             chat_data["workspace"] = (_logdir / "workspace").resolve()
@@ -354,7 +353,7 @@ class ChatConfig:
             result = {}
             for key, value in items:
                 if isinstance(value, Path):
-                    result[key] = str(value)
+                    result[key] = str(path_with_tilde(value))
                 else:
                     result[key] = value
             return result
