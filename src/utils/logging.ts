@@ -14,7 +14,17 @@ function forwardConsole(
 
     // Forward to Tauri logging
     const message = args
-      .map((arg) => (typeof arg === 'string' ? arg : (() => { try { return JSON.stringify(arg); } catch { return '[Unserializable]'; } })()))
+      .map((arg) =>
+        typeof arg === 'string'
+          ? arg
+          : (() => {
+              try {
+                return JSON.stringify(arg);
+              } catch {
+                return '[Unserializable]';
+              }
+            })()
+      )
       .join(' ');
 
     logger(message).catch((err) => original('Failed to forward to Tauri log:', err));
