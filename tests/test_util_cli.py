@@ -47,7 +47,7 @@ def test_chats_list(tmp_path, mocker):
     mocker.patch("gptme.logmanager.get_user_conversations", return_value=[])
 
     # Test empty list (should work now since we're using our empty logs_dir)
-    result = runner.invoke(main, ["chats", "ls"])
+    result = runner.invoke(main, ["chats", "list"])
     assert result.exit_code == 0
     assert "No conversations found" in result.output
 
@@ -92,7 +92,7 @@ def test_chats_list(tmp_path, mocker):
     mocker.patch("gptme.logmanager.get_user_conversations", return_value=[conv1, conv2])
 
     # Test with conversations
-    result = runner.invoke(main, ["chats", "ls"])
+    result = runner.invoke(main, ["chats", "list"])
     assert result.exit_code == 0
     assert "Chat One" in result.output
     assert "Chat Two" in result.output
