@@ -265,15 +265,14 @@ def main(
     tools = init_tools(config.chat.tools)
 
     # get initial system prompt
-    initial_msgs = [
-        get_prompt(
-            tools=tools,
-            prompt=prompt_system,
-            interactive=config.chat.interactive,
-            tool_format=config.chat.tool_format,
-            model=config.chat.model,
-        )
-    ]
+    initial_msgs = get_prompt(
+        tools=tools,
+        prompt=prompt_system,
+        interactive=config.chat.interactive,
+        tool_format=config.chat.tool_format,
+        model=config.chat.model,
+        workspace=workspace_path,
+    )
 
     # register a handler for Ctrl-C
     set_interruptible()  # prepare, user should be able to Ctrl+C until user prompt ready
@@ -284,12 +283,12 @@ def main(
             prompt_msgs,
             initial_msgs,
             logdir,
+            config.chat.workspace,
             config.chat.model,
             config.chat.stream,
             no_confirm,
             config.chat.interactive,
             show_hidden,
-            config.chat.workspace,
             config.chat.tools,
             config.chat.tool_format,
         )

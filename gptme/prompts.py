@@ -10,7 +10,7 @@ import platform
 import shutil
 import subprocess
 import time
-from collections.abc import Generator, Iterable
+from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -35,21 +35,39 @@ def get_prompt(
     prompt: PromptType | str = "full",
     interactive: bool = True,
     model: str | None = None,
-) -> Message:
+    workspace: Path | None = None,
+) -> list[Message]:
     """
     Get the initial system prompt.
-    """
-    msgs: Iterable
-    if prompt == "full":
-        msgs = prompt_full(interactive, tools, tool_format, model)
-    elif prompt == "short":
-        msgs = prompt_short(interactive, tools, tool_format)
-    else:
-        msgs = [Message("system", prompt)]
 
-    # combine all the system prompt messages into one,
-    # also hide them and pin them to the top
-    return _join_messages(list(msgs)).replace(hide=True, pinned=True)
+    Returns a list of messages: [core_system_prompt, workspace_prompt] (if workspace provided).
+    """
+    # Generate core system messages (without workspace context)
+    core_msgs: list[Message]
+    if prompt == "full":
+        core_msgs = list(prompt_full(interactive, tools, tool_format, model))
+    elif prompt == "short":
+        core_msgs = list(prompt_short(interactive, tools, tool_format))
+    else:
+        core_msgs = [Message("system", prompt)]
+
+    # Generate workspace messages separately
+    workspace_msgs = list(prompt_workspace(workspace))
+
+    # Combine core messages into one system prompt
+    result = []
+    if core_msgs:
+        core_prompt = _join_messages(core_msgs)
+        result.append(core_prompt)
+
+    # Add workspace messages separately
+    result.extend(workspace_msgs)
+
+    # Set hide=True, pinned=True for all messages
+    for i, msg in enumerate(result):
+        result[i] = msg.replace(hide=True, pinned=True)
+
+    return result
 
 
 def _join_messages(msgs: list[Message]) -> Message:
@@ -63,7 +81,10 @@ def _join_messages(msgs: list[Message]) -> Message:
 
 
 def prompt_full(
-    interactive: bool, tools: list[ToolSpec], tool_format: ToolFormat, model: str | None
+    interactive: bool,
+    tools: list[ToolSpec],
+    tool_format: ToolFormat,
+    model: str | None,
 ) -> Generator[Message, None, None]:
     """Full prompt to start the conversation."""
     yield from prompt_gptme(interactive, model)
@@ -76,7 +97,9 @@ def prompt_full(
 
 
 def prompt_short(
-    interactive: bool, tools: list[ToolSpec], tool_format: ToolFormat
+    interactive: bool,
+    tools: list[ToolSpec],
+    tool_format: ToolFormat,
 ) -> Generator[Message, None, None]:
     """Short prompt to start the conversation."""
     yield from prompt_gptme(interactive)
@@ -321,11 +344,13 @@ def get_tree_output(workspace: Path) -> str | None:
         return None
 
 
-def get_workspace_prompt(workspace: Path) -> str:
-    # NOTE: needs to run after the workspace is initialized (i.e. initial prompt is constructed)
+def prompt_workspace(workspace: Path | None = None) -> Generator[Message, None, None]:
     # TODO: update this prompt if the files change
     # TODO: include `git status -vv`, and keep it up-to-date
     sections = []
+
+    if workspace is None:
+        return
 
     if project := get_project_config(workspace):
         # files
@@ -361,9 +386,7 @@ def get_workspace_prompt(workspace: Path) -> str:
         sections.append(f"## Project Structure\n\n{md_codeblock('', tree_output)}\n\n")
 
     if sections:
-        return "# Workspace Context\n\n" + "\n\n".join(sections)
-    else:
-        return ""
+        yield Message("system", "# Workspace Context\n\n" + "\n\n".join(sections))
 
 
 def get_project_context_cmd_output(cmd: str, workspace: Path) -> str | None:

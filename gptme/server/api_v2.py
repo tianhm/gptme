@@ -26,7 +26,7 @@ import flask
 from dotenv import load_dotenv
 from flask import request
 from gptme.config import ChatConfig, Config, set_config
-from gptme.prompts import get_prompt, get_workspace_prompt
+from gptme.prompts import get_prompt
 
 from ..dirs import get_logs_dir
 from ..llm import _chat_complete, _stream
@@ -499,23 +499,22 @@ def api_conversation_put(conversation_id: str):
 
     req_json = flask.request.json or {}
 
+    # Create the log directory
+    logdir.mkdir(parents=True)
+
     # Load or create the chat config, overriding values from request config if provided
     request_config = ChatConfig.from_dict(req_json.get("config", {}))
     chat_config = ChatConfig.load_or_create(logdir, request_config)
     prompt = req_json.get("prompt", "full")
 
-    msgs = [
-        get_prompt(
-            tools=[t for t in get_toolchain(chat_config.tools)],
-            interactive=chat_config.interactive,
-            tool_format=chat_config.tool_format or "markdown",
-            model=chat_config.model,
-            prompt=prompt,
-        )
-    ]
-
-    if workspace_prompt := get_workspace_prompt(chat_config.workspace):
-        msgs += [Message("system", workspace_prompt, hide=True, quiet=True)]
+    msgs = get_prompt(
+        tools=[t for t in get_toolchain(chat_config.tools)],
+        interactive=chat_config.interactive,
+        tool_format=chat_config.tool_format or "markdown",
+        model=chat_config.model,
+        prompt=prompt,
+        workspace=chat_config.workspace,
+    )
 
     for msg in req_json.get("messages", []):
         timestamp: datetime = (
@@ -525,7 +524,7 @@ def api_conversation_put(conversation_id: str):
         )
         msgs.append(Message(msg["role"], msg["content"], timestamp=timestamp))
 
-    logdir.mkdir(parents=True)
+    logdir.mkdir(parents=True, exist_ok=True)
     log = LogManager.load(logdir=logdir, initial_msgs=msgs, create=True)
     log.write()
 
@@ -911,12 +910,20 @@ def api_conversation_config_patch(conversation_id: str):
     # Update system prompt with new tools
     manager = LogManager.load(conversation_id, lock=False)
     if len(manager.log.messages) >= 1 and manager.log.messages[0].role == "system":
-        manager.log.messages[0] = get_prompt(
-            tools=get_tools(),
+        # Remove existing system messages and replace with new ones
+        while manager.log.messages and manager.log.messages[0].role == "system":
+            manager.log.messages.pop(0)
+
+        # Insert new system messages at the beginning
+        new_system_msgs = get_prompt(
+            tools=tools,
             tool_format=chat_config.tool_format or "markdown",
             interactive=chat_config.interactive,
             model=chat_config.model,
+            workspace=chat_config.workspace,
         )
+        for i, msg in enumerate(new_system_msgs):
+            manager.log.messages.insert(i, msg)
     manager.write()
 
     return flask.jsonify(

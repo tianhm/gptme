@@ -3,6 +3,7 @@ from abc import abstractmethod
 
 from gptme import Message
 from gptme import chat as gptme_chat
+
 from gptme import get_prompt
 from gptme.cli import get_name
 from gptme.dirs import get_logs_dir
@@ -42,6 +43,7 @@ class GPTMe(Agent):
             raise FileExistsError(
                 f"Workspace directory {workspace_dir} already exists."
             )
+        workspace_dir.mkdir(parents=True)
 
         store = FileStore(working_dir=workspace_dir)
         if files:
@@ -52,15 +54,17 @@ class GPTMe(Agent):
 
         print("\n--- Start of generation ---")
         logger.debug(f"Working in {store.working_dir}")
-        prompt_sys = get_prompt(tools=tools)
-        prompt_sys = prompt_sys.replace(
-            content=prompt_sys.content
-            + "\n\nIf you have trouble and dont seem to make progress, stop trying."
-        )
+        prompt_sys_msgs = get_prompt(tools=tools, workspace=workspace_dir)
+        # Modify the first (core) system prompt to add eval-specific instruction
+        if prompt_sys_msgs:
+            prompt_sys_msgs[0] = prompt_sys_msgs[0].replace(
+                content=prompt_sys_msgs[0].content
+                + "\n\nIf you have trouble and dont seem to make progress, stop trying."
+            )
         try:
             gptme_chat(
                 [Message("user", prompt)],
-                [prompt_sys],
+                prompt_sys_msgs,
                 logdir=log_dir,
                 model=self.model,
                 no_confirm=True,
