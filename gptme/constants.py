@@ -19,13 +19,14 @@ MULTIPROMPT_SEPARATOR = "-"
 # Prompts
 ROLE_COLOR = {
     "user": "green",
-    "assistant": "green",
+    "assistant": os.environ.get("GPTME_AGENT_COLOR", "green"),
     "system": "grey42",
 }
 
+AGENT_NAME = os.environ.get("GPTME_AGENT_NAME", "Assistant")
 PROMPT_USER = f"[bold {ROLE_COLOR['user']}]User[/bold {ROLE_COLOR['user']}]"
 PROMPT_ASSISTANT = (
-    f"[bold {ROLE_COLOR['assistant']}]Assistant[/bold {ROLE_COLOR['assistant']}]"
+    f"[bold {ROLE_COLOR['assistant']}]{AGENT_NAME}[/bold {ROLE_COLOR['assistant']}]"
 )
 
 
