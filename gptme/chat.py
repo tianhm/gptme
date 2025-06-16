@@ -256,6 +256,14 @@ def step(
         or last_msg.pinned
         or not any(role == "user" for role in [m.role for m in log])
     ):  # pragma: no cover
+        # print diff between now and last user message timestamp
+        # has some issues (includes tool execution, wait for confirmation, etc.)
+        if os.environ.get("GPTME_SHOW_WORKED", "0") in ["1", "true"]:
+            last_user_msg = next((m for m in reversed(log) if m.role == "user"), None)
+            if last_user_msg:
+                diff = log[-1].timestamp - last_user_msg.timestamp
+                console.log(f"Worked for {diff.total_seconds():.2f} seconds")
+
         inquiry = prompt_user()
         msg = Message("user", inquiry, quiet=True)
         msg = include_paths(msg, workspace)
