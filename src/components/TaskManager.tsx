@@ -116,206 +116,214 @@ const TaskManager: FC<Props> = ({ className, selectedTaskId: selectedTaskIdProp 
   const archivedTasks = tasks.filter((t) => t.archived);
 
   return (
-    <div className={`flex h-full ${className}`}>
-      <div className="flex flex-1">
+    <div className={`flex flex-1 flex-col overflow-hidden ${className}`}>
+      <div className="flex flex-1 overflow-hidden">
         {/* Left Panel - Task List */}
-        <div className="w-96 overflow-y-auto border-r border-border p-4">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Tasks</h2>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => refetch()}
-                disabled={loading}
-                className="flex items-center gap-1"
-              >
-                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="sm"
-                    variant={showArchived ? 'default' : 'outline'}
-                    onClick={() => showArchived$.set(!showArchived)}
-                    className="flex items-center"
-                  >
-                    <Archive className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{showArchived ? 'Hide Archived' : 'Show Archived'}</TooltipContent>
-              </Tooltip>
-              <Button
-                size="sm"
-                onClick={() => setShowCreateDialog(true)}
-                className="flex items-center gap-1"
-              >
-                <Plus className="h-4 w-4" />
-                New Task
-              </Button>
+        <div className="flex w-96 flex-col border-r border-border">
+          <div className="flex-shrink-0 p-4">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Tasks</h2>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => refetch()}
+                  disabled={loading}
+                  className="flex items-center gap-1"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant={showArchived ? 'default' : 'outline'}
+                      onClick={() => showArchived$.set(!showArchived)}
+                      className="flex items-center"
+                    >
+                      <Archive className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {showArchived ? 'Hide Archived' : 'Show Archived'}
+                  </TooltipContent>
+                </Tooltip>
+                <Button
+                  size="sm"
+                  onClick={() => setShowCreateDialog(true)}
+                  className="flex items-center gap-1"
+                >
+                  <Plus className="h-4 w-4" />
+                  New Task
+                </Button>
+              </div>
             </div>
           </div>
 
-          {/* Error State */}
-          {error && (
-            <Card className="mb-4 border-red-200 bg-red-50">
-              <CardContent className="p-3">
-                <div className="flex items-center gap-2 text-red-700">
-                  <AlertCircle className="h-4 w-4" />
-                  <span className="text-sm font-medium">Error loading tasks</span>
+          <div className="flex-1 overflow-y-auto px-4 pb-2">
+            {/* Error State */}
+            {error && (
+              <Card className="mb-4 border-red-200 bg-red-50">
+                <CardContent className="p-3">
+                  <div className="flex items-center gap-2 text-red-700">
+                    <AlertCircle className="h-4 w-4" />
+                    <span className="text-sm font-medium">Error loading tasks</span>
+                  </div>
+                  <p className="mt-1 text-xs text-red-600">
+                    {error instanceof Error ? error.message : String(error)}
+                  </p>
+                  <Button size="sm" variant="outline" onClick={() => refetch()} className="mt-2">
+                    Retry
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Loading State */}
+            {loading && tasks.length === 0 && (
+              <div className="flex items-center justify-center py-8">
+                <div className="text-center">
+                  <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
+                  <p className="mt-2 text-sm text-muted-foreground">Loading tasks...</p>
                 </div>
-                <p className="mt-1 text-xs text-red-600">
-                  {error instanceof Error ? error.message : String(error)}
-                </p>
-                <Button size="sm" variant="outline" onClick={() => refetch()} className="mt-2">
-                  Retry
-                </Button>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Loading State */}
-          {loading && tasks.length === 0 && (
-            <div className="flex items-center justify-center py-8">
-              <div className="text-center">
-                <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
-                <p className="mt-2 text-sm text-muted-foreground">Loading tasks...</p>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Empty State */}
-          {!loading && !error && tasks.length === 0 && (
-            <div className="flex items-center justify-center py-8">
-              <div className="text-center">
-                <GitBranch className="mx-auto h-12 w-12 text-muted-foreground opacity-50" />
-                <p className="mt-2 text-lg font-medium">No tasks yet</p>
-                <p className="text-sm text-muted-foreground">
-                  Create your first task to get started
-                </p>
-                <Button className="mt-4" onClick={() => setShowCreateDialog(true)}>
-                  <Plus className="mr-1 h-4 w-4" />
-                  Create Task
-                </Button>
+            {/* Empty State */}
+            {!loading && !error && tasks.length === 0 && (
+              <div className="flex items-center justify-center py-8">
+                <div className="text-center">
+                  <GitBranch className="mx-auto h-12 w-12 text-muted-foreground opacity-50" />
+                  <p className="mt-2 text-lg font-medium">No tasks yet</p>
+                  <p className="text-sm text-muted-foreground">
+                    Create your first task to get started
+                  </p>
+                  <Button className="mt-4" onClick={() => setShowCreateDialog(true)}>
+                    <Plus className="mr-1 h-4 w-4" />
+                    Create Task
+                  </Button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Task Status Summary */}
-          {tasks.length > 0 && (
-            <>
-              <div className="mb-4 grid grid-cols-2 gap-2">
-                <Card className="p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Active</span>
-                    <span className="font-bold text-blue-600">{activeTasks.length}</span>
-                  </div>
-                </Card>
-                <Card className="p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Pending</span>
-                    <span className="font-bold text-yellow-600">{pendingTasks.length}</span>
-                  </div>
-                </Card>
+            {/* Task Status Summary */}
+            {tasks.length > 0 && (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-2">
+                  <Card className="p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Active</span>
+                      <span className="font-bold text-blue-600">{activeTasks.length}</span>
+                    </div>
+                  </Card>
+                  <Card className="p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Pending</span>
+                      <span className="font-bold text-yellow-600">{pendingTasks.length}</span>
+                    </div>
+                  </Card>
+                </div>
+
+                <Separator className="mb-4" />
+              </>
+            )}
+
+            {/* Active Tasks */}
+            {activeTasks.length > 0 && (
+              <div className="mb-4">
+                <h3 className="mb-2 text-sm font-medium text-muted-foreground">Active Tasks</h3>
+                {activeTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTask?.id === task.id}
+                    onClick={() => handleTaskSelect(task)}
+                    getStatusIcon={getStatusIcon}
+                    getStatusBadge={getStatusBadge}
+                    formatDate={formatDate}
+                  />
+                ))}
               </div>
+            )}
 
-              <Separator className="mb-4" />
-            </>
-          )}
+            {/* Pending Tasks */}
+            {pendingTasks.length > 0 && (
+              <div className="mb-4">
+                <h3 className="mb-2 text-sm font-medium text-muted-foreground">Pending Tasks</h3>
+                {pendingTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTask?.id === task.id}
+                    onClick={() => handleTaskSelect(task)}
+                    getStatusIcon={getStatusIcon}
+                    getStatusBadge={getStatusBadge}
+                    formatDate={formatDate}
+                  />
+                ))}
+              </div>
+            )}
 
-          {/* Active Tasks */}
-          {activeTasks.length > 0 && (
-            <div className="mb-4">
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground">Active Tasks</h3>
-              {activeTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTask?.id === task.id}
-                  onClick={() => handleTaskSelect(task)}
-                  getStatusIcon={getStatusIcon}
-                  getStatusBadge={getStatusBadge}
-                  formatDate={formatDate}
-                />
-              ))}
-            </div>
-          )}
+            {/* Completed Tasks */}
+            {completedTasks.length > 0 && (
+              <div className="mb-4">
+                <h3 className="mb-2 text-sm font-medium text-muted-foreground">
+                  Recently Completed
+                </h3>
+                {completedTasks.slice(0, 5).map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTask?.id === task.id}
+                    onClick={() => handleTaskSelect(task)}
+                    getStatusIcon={getStatusIcon}
+                    getStatusBadge={getStatusBadge}
+                    formatDate={formatDate}
+                  />
+                ))}
+              </div>
+            )}
 
-          {/* Pending Tasks */}
-          {pendingTasks.length > 0 && (
-            <div className="mb-4">
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground">Pending Tasks</h3>
-              {pendingTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTask?.id === task.id}
-                  onClick={() => handleTaskSelect(task)}
-                  getStatusIcon={getStatusIcon}
-                  getStatusBadge={getStatusBadge}
-                  formatDate={formatDate}
-                />
-              ))}
-            </div>
-          )}
+            {/* Failed Tasks */}
+            {failedTasks.length > 0 && (
+              <div className="mb-4">
+                <h3 className="mb-2 text-sm font-medium text-muted-foreground">Failed Tasks</h3>
+                {failedTasks.slice(0, 3).map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTask?.id === task.id}
+                    onClick={() => handleTaskSelect(task)}
+                    getStatusIcon={getStatusIcon}
+                    getStatusBadge={getStatusBadge}
+                    formatDate={formatDate}
+                  />
+                ))}
+              </div>
+            )}
 
-          {/* Completed Tasks */}
-          {completedTasks.length > 0 && (
-            <div className="mb-4">
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground">Recently Completed</h3>
-              {completedTasks.slice(0, 5).map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTask?.id === task.id}
-                  onClick={() => handleTaskSelect(task)}
-                  getStatusIcon={getStatusIcon}
-                  getStatusBadge={getStatusBadge}
-                  formatDate={formatDate}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Failed Tasks */}
-          {failedTasks.length > 0 && (
-            <div className="mb-4">
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground">Failed Tasks</h3>
-              {failedTasks.slice(0, 3).map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTask?.id === task.id}
-                  onClick={() => handleTaskSelect(task)}
-                  getStatusIcon={getStatusIcon}
-                  getStatusBadge={getStatusBadge}
-                  formatDate={formatDate}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Archived Tasks */}
-          {showArchived && archivedTasks.length > 0 && (
-            <div className="mb-4">
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground">Archived Tasks</h3>
-              {archivedTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isSelected={selectedTask?.id === task.id}
-                  onClick={() => handleTaskSelect(task)}
-                  getStatusIcon={getStatusIcon}
-                  getStatusBadge={getStatusBadge}
-                  formatDate={formatDate}
-                />
-              ))}
-            </div>
-          )}
+            {/* Archived Tasks */}
+            {showArchived && archivedTasks.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-medium text-muted-foreground">Archived Tasks</h3>
+                {archivedTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    isSelected={selectedTask?.id === task.id}
+                    onClick={() => handleTaskSelect(task)}
+                    getStatusIcon={getStatusIcon}
+                    getStatusBadge={getStatusBadge}
+                    formatDate={formatDate}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right Panel - Task Details */}
-        <div className="flex flex-1 flex-col overflow-y-auto">
+        <div className="flex flex-1 flex-col overflow-hidden">
           {selectedTask ? (
             <>
               <TaskDetails task={selectedTask} />

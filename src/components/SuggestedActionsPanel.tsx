@@ -33,6 +33,12 @@ const SuggestedActionsPanel: FC<Props> = ({ task }) => {
   const archiveTaskMutation = useArchiveTaskMutation();
   const unarchiveTaskMutation = useUnarchiveTaskMutation();
 
+  const getLatestConversationId = (): string | null => {
+    return task.conversation_ids.length > 0
+      ? task.conversation_ids[task.conversation_ids.length - 1]
+      : null;
+  };
+
   const getSuggestedActions = (task: Task): TaskAction[] => {
     const actions: TaskAction[] = [];
 
@@ -240,17 +246,22 @@ const SuggestedActionsPanel: FC<Props> = ({ task }) => {
       case 'start-task':
         // Start the task
         break;
-      case 'view-conversation':
-        // Navigate to conversation view using React Router
-        navigate(`/chat/${task.id}`);
-        break;
-      case 'open-workspace':
-        // Navigate to workspace explorer using the latest conversation ID
-        if (task.conversation_ids.length > 0) {
-          const conversationId = task.conversation_ids[task.conversation_ids.length - 1];
-          navigate(`/workspace/${conversationId}`);
+      case 'view-conversation': {
+        // Navigate to conversation view using the latest conversation ID
+        const conversationId = getLatestConversationId();
+        if (conversationId) {
+          navigate(`/chat/${conversationId}`);
         }
         break;
+      }
+      case 'open-workspace': {
+        // Navigate to workspace explorer using the latest conversation ID
+        const workspaceConversationId = getLatestConversationId();
+        if (workspaceConversationId) {
+          navigate(`/workspace/${workspaceConversationId}`);
+        }
+        break;
+      }
       case 'view-pr':
         if (task.git?.pr_url) {
           // Open the specific PR URL
@@ -263,13 +274,14 @@ const SuggestedActionsPanel: FC<Props> = ({ task }) => {
       case 'retry-task':
         // Restart the task
         break;
-      case 'debug-workspace':
+      case 'debug-workspace': {
         // Open workspace for debugging
-        if (task.conversation_ids.length > 0) {
-          const conversationId = task.conversation_ids[task.conversation_ids.length - 1];
-          navigate(`/workspace/${conversationId}`);
+        const debugConversationId = getLatestConversationId();
+        if (debugConversationId) {
+          navigate(`/workspace/${debugConversationId}`);
         }
         break;
+      }
       case 'edit-task':
         // Open edit dialog
         break;
