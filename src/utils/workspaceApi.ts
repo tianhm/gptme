@@ -11,11 +11,7 @@ export function useWorkspaceApi() {
       path?: string,
       showHidden = false
     ): Promise<FileType[]> {
-      const url = new URL(
-        `/api/v2/conversations/${conversationId}/workspace${path ? `/${encodeURIComponent(path)}` : ''}`,
-        api.baseUrl
-      );
-      url.searchParams.set('show_hidden', showHidden.toString());
+      const url = `${api.baseUrl}/api/v2/conversations/${conversationId}/workspace${path ? `/${encodeURIComponent(path)}` : ''}?show_hidden=${showHidden}`;
 
       const response = await fetch(url, {
         headers: api.authHeader ? { Authorization: api.authHeader } : undefined,
@@ -30,10 +26,7 @@ export function useWorkspaceApi() {
     }
 
     async function previewFile(conversationId: string, path: string): Promise<FilePreview> {
-      const url = new URL(
-        `/api/v2/conversations/${conversationId}/workspace/${path}/preview`,
-        api.baseUrl
-      );
+      const url = `${api.baseUrl}/api/v2/conversations/${conversationId}/workspace/${encodeURIComponent(path)}/preview`;
 
       const response = await fetch(url, {
         headers: api.authHeader ? { Authorization: api.authHeader } : undefined,
