@@ -245,8 +245,11 @@ const SuggestedActionsPanel: FC<Props> = ({ task }) => {
         navigate(`/chat/${task.id}`);
         break;
       case 'open-workspace':
-        // Navigate to workspace explorer
-        navigate(`/workspace/${task.id}`);
+        // Navigate to workspace explorer using the latest conversation ID
+        if (task.conversation_ids.length > 0) {
+          const conversationId = task.conversation_ids[task.conversation_ids.length - 1];
+          navigate(`/workspace/${conversationId}`);
+        }
         break;
       case 'view-pr':
         if (task.git?.pr_url) {
@@ -262,6 +265,10 @@ const SuggestedActionsPanel: FC<Props> = ({ task }) => {
         break;
       case 'debug-workspace':
         // Open workspace for debugging
+        if (task.conversation_ids.length > 0) {
+          const conversationId = task.conversation_ids[task.conversation_ids.length - 1];
+          navigate(`/workspace/${conversationId}`);
+        }
         break;
       case 'edit-task':
         // Open edit dialog
@@ -294,112 +301,81 @@ const SuggestedActionsPanel: FC<Props> = ({ task }) => {
   const destructiveActions = suggestedActions.filter((a) => a.type === 'destructive');
 
   return (
-    <div className="border-t border-border bg-muted/30">
-      <div className="space-y-6 p-6">
-        {/* Suggested Actions */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Suggested Next Actions</CardTitle>
-            <CardDescription>Actions based on the current task state</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Primary Actions */}
-            {primaryActions.length > 0 && (
-              <div className="space-y-2">
-                {primaryActions.map((action) => (
-                  <Button
-                    key={action.id}
-                    onClick={() => handleAction(action.id)}
-                    className="w-full justify-start"
-                    size="sm"
-                  >
-                    {getActionIcon(action.icon || 'Play')}
-                    <div className="ml-2 text-left">
-                      <div className="font-medium">{action.label}</div>
-                      <div className="text-xs opacity-80">{action.description}</div>
-                    </div>
-                  </Button>
-                ))}
-              </div>
-            )}
-
-            {/* Secondary Actions */}
-            {secondaryActions.length > 0 && (
-              <>
-                {primaryActions.length > 0 && <Separator />}
-                <div className="space-y-2">
-                  {secondaryActions.map((action) => (
-                    <Button
-                      key={action.id}
-                      onClick={() => handleAction(action.id)}
-                      variant="outline"
-                      className="w-full justify-start"
-                      size="sm"
-                    >
-                      {getActionIcon(action.icon || 'Play')}
-                      <div className="ml-2 text-left">
-                        <div className="font-medium">{action.label}</div>
-                        <div className="text-xs text-muted-foreground">{action.description}</div>
-                      </div>
-                    </Button>
-                  ))}
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">Suggested Next Actions</CardTitle>
+        <CardDescription>Actions based on the current task state</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Primary Actions */}
+        {primaryActions.length > 0 && (
+          <div className="space-y-2">
+            {primaryActions.map((action) => (
+              <Button
+                key={action.id}
+                onClick={() => handleAction(action.id)}
+                className="w-full justify-start"
+                size="sm"
+              >
+                {getActionIcon(action.icon || 'Play')}
+                <div className="ml-2 text-left">
+                  <div className="font-medium">{action.label}</div>
+                  <div className="text-xs opacity-80">{action.description}</div>
                 </div>
-              </>
-            )}
+              </Button>
+            ))}
+          </div>
+        )}
 
-            {/* Destructive Actions */}
-            {destructiveActions.length > 0 && (
-              <>
-                {(primaryActions.length > 0 || secondaryActions.length > 0) && <Separator />}
-                <div className="space-y-2">
-                  {destructiveActions.map((action) => (
-                    <Button
-                      key={action.id}
-                      onClick={() => handleAction(action.id)}
-                      variant="destructive"
-                      className="w-full justify-start"
-                      size="sm"
-                    >
-                      {getActionIcon(action.icon || 'Trash2')}
-                      <div className="ml-2 text-left">
-                        <div className="font-medium">{action.label}</div>
-                        <div className="text-xs opacity-80">{action.description}</div>
-                      </div>
-                    </Button>
-                  ))}
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Status-specific Tips */}
-        <Card className="border-blue-200 bg-blue-50/50">
-          <CardContent className="pt-4">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="mt-0.5 h-4 w-4 text-blue-600" />
-              <div className="text-sm">
-                <p className="font-medium text-blue-900">Tip:</p>
-                <p className="mt-1 text-blue-700">
-                  {task.status === 'pending' &&
-                    (task.git?.pr_url
-                      ? 'Task work is complete. The PR is open and waiting for review or merge.'
-                      : task.conversation_ids?.length
-                        ? 'Task is in progress. Check the conversation for current status.'
-                        : "Task is ready to start. Begin working on it when you're ready.")}
-                  {task.status === 'active' &&
-                    'You can view the conversation to see real-time progress and interact with the task.'}
-                  {task.status === 'completed' &&
-                    'Great job! Consider reviewing the results and creating follow-up tasks if needed.'}
-                  {task.status === 'failed' &&
-                    'Check the error details and workspace to understand what went wrong before retrying.'}
-                </p>
-              </div>
+        {/* Secondary Actions */}
+        {secondaryActions.length > 0 && (
+          <>
+            {primaryActions.length > 0 && <Separator />}
+            <div className="space-y-2">
+              {secondaryActions.map((action) => (
+                <Button
+                  key={action.id}
+                  onClick={() => handleAction(action.id)}
+                  variant="outline"
+                  className="w-full justify-start"
+                  size="sm"
+                >
+                  {getActionIcon(action.icon || 'Play')}
+                  <div className="ml-2 text-left">
+                    <div className="font-medium">{action.label}</div>
+                    <div className="text-xs text-muted-foreground">{action.description}</div>
+                  </div>
+                </Button>
+              ))}
             </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+          </>
+        )}
+
+        {/* Destructive Actions */}
+        {destructiveActions.length > 0 && (
+          <>
+            {(primaryActions.length > 0 || secondaryActions.length > 0) && <Separator />}
+            <div className="space-y-2">
+              {destructiveActions.map((action) => (
+                <Button
+                  key={action.id}
+                  onClick={() => handleAction(action.id)}
+                  variant="destructive"
+                  className="w-full justify-start"
+                  size="sm"
+                >
+                  {getActionIcon(action.icon || 'Trash2')}
+                  <div className="ml-2 text-left">
+                    <div className="font-medium">{action.label}</div>
+                    <div className="text-xs opacity-80">{action.description}</div>
+                  </div>
+                </Button>
+              ))}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 };
 

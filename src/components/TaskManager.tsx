@@ -18,7 +18,6 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { TaskCreationDialog } from './TaskCreationDialog';
 import { TaskDetails } from './TaskDetails';
-import { SuggestedActionsPanel } from './SuggestedActionsPanel';
 import { use$ } from '@legendapp/state/react';
 import {
   selectedTask$,
@@ -320,7 +319,6 @@ const TaskManager: FC<Props> = ({ className, selectedTaskId: selectedTaskIdProp 
           {selectedTask ? (
             <>
               <TaskDetails task={selectedTask} />
-              <SuggestedActionsPanel task={selectedTask} />
             </>
           ) : selectedTaskId && selectedTaskLoading ? (
             <div className="flex flex-1 items-center justify-center text-muted-foreground">

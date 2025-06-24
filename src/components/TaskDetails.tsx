@@ -17,6 +17,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
+import { SuggestedActionsPanel } from '@/components/SuggestedActionsPanel';
+import { SuggestedActionsTips } from '@/components/SuggestedActionsTips';
 import type { Task, TaskStatus } from '@/types/task';
 
 interface Props {
@@ -75,9 +77,10 @@ const TaskDetails: FC<Props> = ({ task }) => {
   };
 
   const openWorkspace = () => {
-    if (task.workspace) {
-      // Navigate to workspace explorer
-      navigate(`/workspace/${task.id}`);
+    if (task.workspace && task.conversation_ids.length > 0) {
+      // Navigate to workspace explorer using the latest conversation ID
+      const conversationId = task.conversation_ids[task.conversation_ids.length - 1];
+      navigate(`/workspace/${conversationId}`);
     }
   };
 
@@ -391,6 +394,8 @@ const TaskDetails: FC<Props> = ({ task }) => {
             </Card>
           )}
         </div>
+        <SuggestedActionsPanel task={task} />
+        <SuggestedActionsTips task={task} />
       </div>
     </div>
   );
