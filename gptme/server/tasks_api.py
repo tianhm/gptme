@@ -469,7 +469,9 @@ def get_git_status(workspace_path: Path) -> dict[str, Any]:
 
 def create_task_conversation(task: Task) -> str:
     """Create a conversation for a task."""
-    conversation_id = f"{task.id}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+    # Use simple incremental suffix instead of timestamp
+    suffix = len(task.conversation_ids)
+    conversation_id = f"{task.id}-{suffix}"
     logdir = get_logs_dir() / conversation_id
 
     # Create conversation directory (but not workspace subdirectory yet)
