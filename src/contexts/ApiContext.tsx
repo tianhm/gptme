@@ -36,7 +36,9 @@ interface ApiContextType {
 
 const ApiContext = createContext<ApiContextType | null>(null);
 
-const connectionConfig$ = observable(getConnectionConfigFromSources(window.location.hash.substring(1)));
+const connectionConfig$ = observable(
+  getConnectionConfigFromSources(window.location.hash.substring(1))
+);
 
 let api = createApiClient(
   connectionConfig$.baseUrl.get(),

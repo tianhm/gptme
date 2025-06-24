@@ -42,7 +42,8 @@ export default tseslint.config(
       ],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
-      'no-undef': 'error',
+      // Disable no-undef for TypeScript files since TS compiler handles this better
+      'no-undef': 'off',
       'no-unused-vars': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/consistent-type-imports': [

@@ -31,8 +31,7 @@ export function getConnectionConfigFromSources(hash?: string): ConnectionConfig 
   const storedUserToken = localStorage.getItem('gptme_userToken');
 
   return {
-    baseUrl:
-      fragmentBaseUrl || storedBaseUrl || import.meta.env.VITE_API_URL || DEFAULT_API_URL,
+    baseUrl: fragmentBaseUrl || storedBaseUrl || import.meta.env.VITE_API_URL || DEFAULT_API_URL,
     authToken: fragmentUserToken || storedUserToken || null,
     useAuthToken: Boolean(fragmentUserToken || storedUserToken),
   };

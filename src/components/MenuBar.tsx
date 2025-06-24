@@ -91,7 +91,10 @@ export const MenuBar: FC = () => {
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <Link to="/chat" className="flex items-center space-x-2 transition-opacity hover:opacity-80">
+          <Link
+            to="/chat"
+            className="flex items-center space-x-2 transition-opacity hover:opacity-80"
+          >
             <img src="https://gptme.org/media/logo.png" alt="gptme logo" className="w-4" />
             <span className="font-mono text-base font-semibold">gptme</span>
           </Link>
