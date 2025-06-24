@@ -6,10 +6,9 @@ import type {
   SendMessageRequest,
 } from '@/types/api';
 import type { ConversationSummary, Message, ToolUse } from '@/types/conversation';
+import { getApiBaseUrl } from '@/utils/connectionConfig';
 import { type Observable } from '@legendapp/state';
 import { observable } from '@legendapp/state';
-
-const DEFAULT_API_URL = 'http://127.0.0.1:5700';
 
 // Add DOM types
 type RequestInit = globalThis.RequestInit;
@@ -61,7 +60,7 @@ export class ApiClient {
   private eventSources: Map<string, EventSource> = new Map(); // Map conversation IDs to EventSource instances
   private isCleaningUp = false;
 
-  constructor(baseUrl: string = DEFAULT_API_URL, authHeader: string | null = null) {
+  constructor(baseUrl: string = getApiBaseUrl(), authHeader: string | null = null) {
     this.baseUrl = baseUrl;
     this.authHeader = authHeader;
     this.identifier = crypto.randomUUID();

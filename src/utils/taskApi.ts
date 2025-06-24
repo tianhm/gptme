@@ -1,11 +1,23 @@
 import type { Task, CreateTaskRequest, TaskAction } from '@/types/task';
+import { getApiBaseUrl, getAuthHeader } from '@/utils/connectionConfig';
 
-const DEFAULT_API_URL = 'http://127.0.0.1:5700';
+/**
+ * Helper function to add auth headers to fetch options
+ */
+const getFetchOptions = (options: RequestInit = {}): RequestInit => {
+  const authHeader = getAuthHeader();
+  const headers = {
+    ...options.headers,
+  };
 
-// Get the API base URL - could be configurable in the future
-const getApiBaseUrl = (): string => {
-  // For now, use the same default as the main API client
-  return DEFAULT_API_URL;
+  if (authHeader) {
+    (headers as Record<string, string>)['Authorization'] = authHeader;
+  }
+
+  return {
+    ...options,
+    headers,
+  };
 };
 
 /**
@@ -21,7 +33,7 @@ export const taskApi = {
       url.searchParams.set('include_archived', 'true');
     }
 
-    const response = await fetch(url.toString());
+    const response = await fetch(url.toString(), getFetchOptions());
     if (!response.ok) {
       throw new Error(`Failed to list tasks: ${response.statusText}`);
     }
@@ -32,13 +44,13 @@ export const taskApi = {
    * Create a new task and initial conversation.
    */
   async createTask(request: CreateTaskRequest): Promise<Task> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks`, getFetchOptions({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(request),
-    });
+    }));
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -52,7 +64,7 @@ export const taskApi = {
    * Get detailed information about a specific task.
    */
   async getTask(taskId: string): Promise<Task> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}`);
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}`, getFetchOptions());
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error(`Task not found: ${taskId}`);
@@ -66,13 +78,13 @@ export const taskApi = {
    * Update task metadata.
    */
   async updateTask(taskId: string, updates: Partial<CreateTaskRequest>): Promise<Task> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}`, getFetchOptions({
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(updates),
-    });
+    }));
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -86,9 +98,9 @@ export const taskApi = {
    * Archive a task (hide from active view but preserve data).
    */
   async archiveTask(taskId: string): Promise<void> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/archive`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/archive`, getFetchOptions({
       method: 'POST',
-    });
+    }));
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -100,9 +112,9 @@ export const taskApi = {
    * Unarchive a task (restore to active view).
    */
   async unarchiveTask(taskId: string): Promise<void> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/unarchive`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/unarchive`, getFetchOptions({
       method: 'POST',
-    });
+    }));
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -114,9 +126,9 @@ export const taskApi = {
    * Create a new conversation to continue work on a task.
    */
   async continueTask(taskId: string): Promise<{ conversation_id: string }> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/continue`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/continue`, getFetchOptions({
       method: 'POST',
-    });
+    }));
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }));
@@ -130,7 +142,7 @@ export const taskApi = {
    * Get suggested actions for a task based on its current status.
    */
   async getSuggestedActions(taskId: string): Promise<TaskAction[]> {
-    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/actions`);
+    const response = await fetch(`${getApiBaseUrl()}/api/v2/tasks/${taskId}/actions`, getFetchOptions());
     if (!response.ok) {
       throw new Error(`Failed to get task actions: ${response.statusText}`);
     }
@@ -212,7 +224,7 @@ export const taskApi = {
       // Create a session for this conversation (using existing v2 API)
       const sessionResponse = await fetch(
         `${getApiBaseUrl()}/api/v2/conversations/${conversationId}`,
-        {
+        getFetchOptions({
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -226,7 +238,7 @@ export const taskApi = {
               },
             },
           }),
-        }
+        })
       );
 
       if (!sessionResponse.ok) {
@@ -238,7 +250,7 @@ export const taskApi = {
       // Start a step (generation) in the conversation
       const stepResponse = await fetch(
         `${getApiBaseUrl()}/api/v2/conversations/${conversationId}/step`,
-        {
+        getFetchOptions({
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -248,7 +260,7 @@ export const taskApi = {
             auto_confirm: false,
             stream: true,
           }),
-        }
+        })
       );
 
       if (!stepResponse.ok) {
@@ -271,11 +283,11 @@ export const taskApi = {
    */
   async checkServerHealth(): Promise<boolean> {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/api/v2`, {
+      const response = await fetch(`${getApiBaseUrl()}/api/v2`, getFetchOptions({
         method: 'GET',
         // Add timeout
         signal: AbortSignal.timeout(5000),
-      });
+      }));
       return response.ok;
     } catch {
       return false;

@@ -1,5 +1,6 @@
 import { createApiClient } from '@/utils/api';
 import type { ApiClient } from '@/utils/api';
+import { getConnectionConfigFromSources, type ConnectionConfig } from '@/utils/connectionConfig';
 import { type Observable, observable } from '@legendapp/state';
 import { use$, useObserveEffect } from '@legendapp/state/react';
 import type { QueryClient } from '@tanstack/react-query';
@@ -7,12 +8,6 @@ import { createContext, useCallback, useContext, useEffect, type ReactNode } fro
 import { toast } from 'sonner';
 
 import { isTauriEnvironment } from '@/utils/tauri';
-
-interface ConnectionConfig {
-  baseUrl: string;
-  authToken: string | null;
-  useAuthToken: boolean;
-}
 
 interface ApiContextType {
   api: ApiClient;
@@ -41,39 +36,7 @@ interface ApiContextType {
 
 const ApiContext = createContext<ApiContextType | null>(null);
 
-export function connectionConfigFromHash(hash: string) {
-  const params = new URLSearchParams(hash);
-
-  // Get values from fragment
-  const fragmentBaseUrl = params.get('baseUrl');
-  const fragmentUserToken = params.get('userToken');
-
-  // Save fragment values to localStorage if present
-  if (fragmentBaseUrl) {
-    localStorage.setItem('gptme_baseUrl', fragmentBaseUrl);
-  }
-  if (fragmentUserToken) {
-    localStorage.setItem('gptme_userToken', fragmentUserToken);
-  }
-
-  // Clean fragment from URL if parameters were found
-  if (fragmentBaseUrl || fragmentUserToken) {
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
-  }
-
-  // Get stored values
-  const storedBaseUrl = localStorage.getItem('gptme_baseUrl');
-  const storedUserToken = localStorage.getItem('gptme_userToken');
-
-  return {
-    baseUrl:
-      fragmentBaseUrl || storedBaseUrl || import.meta.env.VITE_API_URL || 'http://127.0.0.1:5700',
-    authToken: fragmentUserToken || storedUserToken || null,
-    useAuthToken: Boolean(fragmentUserToken || storedUserToken),
-  };
-}
-
-const connectionConfig$ = observable(connectionConfigFromHash(window.location.hash.substring(1)));
+const connectionConfig$ = observable(getConnectionConfigFromSources(window.location.hash.substring(1)));
 
 let api = createApiClient(
   connectionConfig$.baseUrl.get(),
