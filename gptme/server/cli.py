@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 import click
+from click_default_group import DefaultGroup
 from gptme.config import set_config_from_workspace
 
 from ..init import init, init_logging
@@ -11,9 +12,8 @@ from .api import create_app
 logger = logging.getLogger(__name__)
 
 
-@click.group(invoke_without_command=True)
-@click.pass_context
-def main(ctx):
+@click.group(cls=DefaultGroup, default="serve", default_if_no_args=True)
+def main():
     """gptme server commands."""
     # if flask not installed, ask the user to install `server` extras
     try:
@@ -24,10 +24,6 @@ def main(ctx):
             "Install them with `pip install gptme[server]`"
         )
         exit(1)
-
-    # If no subcommand was provided, default to serve
-    if ctx.invoked_subcommand is None:
-        ctx.invoke(serve)
 
 
 @main.command("serve")

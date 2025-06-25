@@ -32,6 +32,7 @@ include = ["gptme/server/static/**/*", "media/logo.png"]
 [tool.poetry.dependencies]
 python = "^3.10"
 click = "^8.0"
+click-default-group = "^1.2.4"
 python-dotenv = "^1.0.0"
 rich = "^13.5.2"
 tabulate = "*"
