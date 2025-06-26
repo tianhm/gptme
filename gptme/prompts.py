@@ -27,6 +27,7 @@ from .util.context import md_codeblock
 # Default files to include in context when no gptme.toml is present or files list is empty
 DEFAULT_CONTEXT_FILES = [
     "README*",
+    "AGENTS.md",
     "CLAUDE.md",
     "GEMINI.md",
     ".cursor/rules/*.mdc",
