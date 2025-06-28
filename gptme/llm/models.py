@@ -192,6 +192,28 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
             "price_output": 10,
             "supports_vision": True,
         },
+        "gemini-2.5-flash-lite": {
+            "context": 1_000_000,
+            "max_output": 64_000,
+            "price_input": 0.1,
+            "price_output": 0.4,
+            "supports_vision": True,
+        },
+        "gemini-2.5-flash": {
+            "context": 1_048_576,
+            "max_output": 65_536,
+            "price_input": 0.3,
+            "price_output": 2.5,
+            "supports_vision": True,
+        },
+        "gemini-2.5-pro": {
+            "context": 1_048_576,
+            "max_output": 8192,
+            # NOTE: at >200k context price is 2x for input and 1.5x for output
+            "price_input": 1.25,
+            "price_output": 10,
+            "supports_vision": True,
+        },
     },
     # https://api-docs.deepseek.com/quick_start/pricing
     "deepseek": {
@@ -331,9 +353,9 @@ def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
     elif provider == "openrouter":
         return "meta-llama/llama-3.1-405b-instruct"
     elif provider == "gemini":
-        return "gemini-1.5-flash-latest"
+        return "gemini-2.5-pro"
     elif provider == "anthropic":
-        return "claude-3-7-sonnet-20250219"
+        return "claude-sonnet-4-20250514"
     else:
         raise ValueError(f"Provider {provider} did not have a recommended model")
 
@@ -344,7 +366,7 @@ def get_summary_model(provider: Provider) -> str:  # pragma: no cover
     elif provider == "openrouter":
         return "meta-llama/llama-3.1-8b-instruct"
     elif provider == "gemini":
-        return "gemini-1.5-flash-latest"
+        return "gemini-2.5-flash"
     elif provider == "anthropic":
         return "claude-3-haiku-20240307"
     elif provider == "deepseek":
