@@ -1,6 +1,4 @@
-.env*
-.clean
-
+# venvs
 venv
 .venv
 
@@ -24,6 +22,7 @@ logs*
 scripts/build_changelog.py
 
 # build/test/prof/cache
+build
 dist
 prof
 tests/output
@@ -34,6 +33,11 @@ htmlcov
 junit.xml
 __pycache__
 .*cache
+.cursor
+
+# secrets
+.env*
+*.env
 
 # filetypes
 *.csv
@@ -42,7 +46,8 @@ __pycache__
 *.cast
 *.png
 .aider*
-.env
+.clean
+
 
 # if you choose to keep ~/.config/gptme/config.toml in the repo
 config.toml

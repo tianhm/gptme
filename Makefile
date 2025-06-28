@@ -84,9 +84,10 @@ check-rst:
 
 check-openapi: ## Validate OpenAPI specification
 	@echo "Generating OpenAPI spec..."
-	poetry run gptme-server openapi -o openapi.json
+	@mkdir -p build
+	poetry run gptme-server openapi -o build/openapi.json
 	@echo "Validating OpenAPI spec..."
-	poetry run openapi-spec-validator openapi.json
+	poetry run openapi-spec-validator build/openapi.json
 	@echo "✅ OpenAPI spec is valid!"
 
 docs/.clean: docs/conf.py

@@ -6,9 +6,17 @@ gptme.toml
 venv
 .venv
 
+# worktrees
+dev
+
 # Logs
 *.log
 *logs*
+
+# Outputs
+build
+outputs
+screenshot_*
 
 # Build scripts
 scripts
@@ -33,7 +41,7 @@ __pycache__
 docs
 demos
 projects
-eval_results
+eval_results*
 
 # Specific filetypes
 *.csv
