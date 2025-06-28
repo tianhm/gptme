@@ -156,8 +156,6 @@ export const MenuBar: FC<MenuBarProps> = ({ showRightSidebar = false }) => {
           </TooltipProvider>
         </div>
 
-
-
         {showRightSidebar && (
           <TooltipProvider>
             <Tooltip>
