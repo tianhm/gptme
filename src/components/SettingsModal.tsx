@@ -1,4 +1,4 @@
-import { type FC, useState } from 'react';
+import { type FC, useState, forwardRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -20,7 +20,7 @@ interface SettingsModalProps {
   children?: React.ReactNode;
 }
 
-export const SettingsModal: FC<SettingsModalProps> = ({ children }) => {
+export const SettingsModal = forwardRef<HTMLButtonElement, SettingsModalProps>(({ children }, ref) => {
   const { settings, updateSettings, resetSettings } = useSettings();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
@@ -128,4 +128,6 @@ export const SettingsModal: FC<SettingsModalProps> = ({ children }) => {
       </DialogContent>
     </Dialog>
   );
-};
+});
+
+SettingsModal.displayName = 'SettingsModal';
