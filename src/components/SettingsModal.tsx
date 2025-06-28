@@ -10,13 +10,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+
 import { Separator } from '@/components/ui/separator';
 import { Settings, Volume2, Palette } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -57,22 +51,31 @@ export const SettingsModal: FC<SettingsModalProps> = ({ children }) => {
               <Label className="text-sm font-medium">Appearance</Label>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="theme-select" className="text-sm text-muted-foreground">
+              <Label className="text-sm text-muted-foreground">
                 Theme
               </Label>
-              <Select
-                value={theme}
-                onValueChange={(value: 'light' | 'dark' | 'system') => setTheme(value)}
-              >
-                <SelectTrigger id="theme-select">
-                  <SelectValue placeholder="Select theme" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="light">Light</SelectItem>
-                  <SelectItem value="dark">Dark</SelectItem>
-                  <SelectItem value="system">System</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex items-center space-x-1 rounded-md bg-muted/50 p-1">
+                {[
+                  { value: 'light', label: 'Light' },
+                  { value: 'dark', label: 'Dark' },
+                  { value: 'system', label: 'System' },
+                ].map((option) => {
+                  const isActive = theme === option.value;
+                  return (
+                    <Button
+                      key={option.value}
+                      variant={isActive ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className={`flex-1 text-sm ${
+                        isActive ? 'bg-background shadow-sm' : 'hover:bg-background/60'
+                      }`}
+                      onClick={() => setTheme(option.value as 'light' | 'dark' | 'system')}
+                    >
+                      {option.label}
+                    </Button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 

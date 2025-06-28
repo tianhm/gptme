@@ -1,4 +1,3 @@
-import { ThemeToggle } from './ThemeToggle';
 import { ConnectionButton } from './ConnectionButton';
 import { SettingsModal } from './SettingsModal';
 import { Button } from './ui/button';
@@ -10,6 +9,7 @@ import {
   MessageSquare,
   Kanban,
   Menu,
+  User,
 } from 'lucide-react';
 import {
   leftSidebarVisible$,
@@ -132,7 +132,20 @@ export const MenuBar: FC<MenuBarProps> = ({ showRightSidebar = false }) => {
 
         <div className="hidden sm:flex sm:items-center sm:gap-4">
           <ConnectionButton />
-          <ThemeToggle />
+          {import.meta.env.VITE_EMBEDDED_MODE === 'true' && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Link to="/account">
+                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <User className="h-4 w-4" />
+                    </Button>
+                  </Link>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Dashboard</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -143,10 +156,7 @@ export const MenuBar: FC<MenuBarProps> = ({ showRightSidebar = false }) => {
           </TooltipProvider>
         </div>
 
-        {/* Mobile menu for settings etc */}
-        <div className="flex items-center gap-1 sm:hidden">
-          <ThemeToggle />
-        </div>
+
 
         {showRightSidebar && (
           <TooltipProvider>
