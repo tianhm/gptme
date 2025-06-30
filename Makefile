@@ -1,4 +1,4 @@
-.PHONY: docs help check-rst
+.PHONY: docs help check-rst install-completions
 
 # set default shell
 SHELL := $(shell which bash)
@@ -148,6 +148,13 @@ release: version dist/CHANGELOG.md
 		read -p "Press enter to continue" && \
 		git push origin master $${VERSION} && \
 		gh release create $${VERSION} -t $${VERSION} -F dist/CHANGELOG.md
+
+install-completions: ## Install shell completions (Fish)
+	@echo "Installing shell completions..."
+	@mkdir -p ~/.config/fish/completions
+	@ln -sf $(PWD)/scripts/completions/gptme.fish ~/.config/fish/completions/gptme.fish
+	@echo "✅ Fish completions installed to ~/.config/fish/completions/"
+	@echo "Restart your shell or run 'exec fish' to enable completions"
 
 clean: clean-docs clean-site clean-test clean-build
 
