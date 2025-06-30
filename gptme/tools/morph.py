@@ -12,8 +12,7 @@ import difflib
 from collections.abc import Generator
 from pathlib import Path
 
-from ..llm import list_available_providers
-from ..llm import reply as llm_reply
+from ..llm import _chat_complete, list_available_providers
 from ..message import Message
 from ..util.ask_execute import execute_with_confirmation
 from .base import (
@@ -112,14 +111,51 @@ def execute_morph_impl(
         raise ValueError("No file path provided")
 
     try:
+        # Read original content first to compare
+        with open(path) as f:
+            original_content = f.read()
+
+        # Check if content actually changed
+        if content == original_content:
+            yield Message("system", f"Morph edit resulted in no changes to {path}")
+            return
+
+        # Generate diff for feedback
+        diff_lines = list(
+            difflib.unified_diff(
+                original_content.splitlines(),
+                content.splitlines(),
+                fromfile=str(path),
+                tofile=str(path),
+                lineterm="",
+            )
+        )
+
         # Write the edited content back to file
         with open(path, "w") as f:
             f.write(content)
 
-        yield Message("system", f"File successfully edited using Morph: {path}")
+        # Provide detailed success message with diff
+        if diff_lines:
+            diff_str = "\n".join(diff_lines)
+            yield Message(
+                "system",
+                f"Morph edit successfully applied to {path}\n\nDiff:\n{diff_str}",
+            )
+        else:
+            # This shouldn't happen if we checked for changes above, but just in case
+            yield Message("system", f"Morph edit applied to {path} (no diff available)")
 
+    except FileNotFoundError:
+        raise ValueError(
+            f"Morph failed: No such file or directory '{path}' (pwd: {Path.cwd()})"
+        ) from None
+    except PermissionError:
+        raise ValueError(
+            f"Morph failed: Permission denied when writing to '{path}'"
+        ) from None
     except Exception as e:
-        raise ValueError(f"Failed to write file: {str(e)}") from e
+        raise ValueError(f"Morph failed: {str(e)}") from e
 
 
 def execute_morph(
@@ -149,6 +185,9 @@ def execute_morph(
     except FileNotFoundError:
         yield Message("system", f"Error: File not found: {file_path}")
         return
+    except PermissionError:
+        yield Message("system", f"Error: Permission denied reading file: {file_path}")
+        return
 
     # Format the prompt for Morph
     morph_prompt = f"<code>{original_content}</code><update>{code}</update>"
@@ -159,10 +198,13 @@ def execute_morph(
     # Call Morph via OpenRouter
     try:
         # Use the openrouter/morph/morph-v2 model
-        response = llm_reply(
-            messages, "openrouter/morph/morph-v2", stream=False, tools=None
-        )
-        edited_content = response.content.strip()
+        response = _chat_complete(messages, "openrouter/morph/morph-v2", tools=None)
+        edited_content = response.strip()
+
+        # Check if Morph actually returned edited content
+        if not edited_content:
+            yield Message("system", "Error: Morph returned empty content")
+            return
 
         # Use execute_with_confirmation with the edited content
         yield from execute_with_confirmation(
