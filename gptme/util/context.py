@@ -76,6 +76,7 @@ def use_checks() -> bool:
 def file_to_display_path(f: Path, workspace: Path | None = None) -> Path:
     """
     Determine how to display the path:
+
     - If file and pwd is in workspace, show path relative to pwd
     - Otherwise, show absolute path
     """
@@ -355,6 +356,64 @@ def run_precommit_checks() -> str | None:
         logger.info(
             f"Pre-commit checks completed in {time.monotonic() - start_time:.2f}s"
         )
+
+
+def autocommit() -> Message:
+    """
+    Auto-commit changes made by gptme.
+
+    Returns a message asking the LLM to review changes and create a commit.
+    """
+    try:
+        # Get current git status
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
+        )
+
+        if not status_result.stdout.strip():
+            return Message("system", "No changes to commit.")
+
+        # Get git diff to show what changed
+        diff_result = subprocess.run(
+            ["git", "diff", "HEAD"], capture_output=True, text=True, check=True
+        )
+
+        # Create a message for the LLM to handle the commit
+        commit_prompt = f"""# Git Commit Request
+
+The following changes have been made:
+
+```git status --porcelain
+{status_result.stdout}
+```
+
+```git diff HEAD
+{diff_result.stdout}
+```
+
+Please review these changes and create an appropriate commit:
+
+1. Stage the relevant files using `git add`
+2. Create the commit using the HEREDOC format to avoid escaping issues:
+
+```shell
+git add example.txt
+git commit -m "$(cat <<'EOF'
+Your commit message here
+EOF
+)"
+```
+"""
+
+        return Message("user", commit_prompt)
+
+    except subprocess.CalledProcessError as e:
+        return Message(
+            "system", f"Git operation failed: {e.stderr or e.stdout or str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Autocommit failed: {e}")
+        return Message("system", f"Autocommit failed: {e}")
 
 
 def enrich_messages_with_context(
