@@ -161,11 +161,14 @@ export const ChatMessage: FC<Props> = ({
   const isAssistant$ = useObservable(() => message$.role.get() === 'assistant');
   const isSystem$ = useObservable(() => message$.role.get() === 'system');
   const isError$ = useObservable(() => previousContent$.get().startsWith('Error'));
-  const isSuccess$ = useObservable(
-    () =>
-      previousContent$.get().startsWith('Patch successfully') ||
-      previousContent$.get().startsWith('Saved')
-  );
+  const isSuccess$ = useObservable(() => {
+    const content = previousContent$.get().toLowerCase();
+    const firstThreeWords = content.split(/\s+/).slice(0, 3);
+    return (
+      content.startsWith('saved') ||
+      firstThreeWords.some((word) => word.includes('success') || word.includes('successfully'))
+    );
+  });
 
   const chainType$ = useMessageChainType(message$, previousMessage$, nextMessage$);
   const messageClasses$ = useObservable(
