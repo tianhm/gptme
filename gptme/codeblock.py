@@ -68,8 +68,19 @@ def _extract_codeblocks(markdown: str) -> Generator[Codeblock, None, None]:
 
     This handles nested cases where ``` appears inside string literals or other content.
     """
+    # dont extract codeblocks from thinking blocks
+    # (since claude sometimes forgets to close codeblocks in its thinking)
+    think_end = markdown.find("</think>")
+    if think_end != -1:
+        # remove anything before and including </think> if it exists
+        markdown = markdown[think_end + len("</think>") :]
+    else:
+        # if start <think> tag but no end, early exit
+        if "<think>" in markdown:
+            return
+
     # speed check (early exit): check if message contains a code block
-    if "```" not in markdown:
+    if markdown.count("```") < 2:
         return
 
     lines = markdown.split("\n")
