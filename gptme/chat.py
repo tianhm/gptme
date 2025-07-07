@@ -239,9 +239,7 @@ def _process_message_conversation(
     _check_and_handle_modifications(manager)
 
 
-def _check_and_handle_modifications(
-    manager: LogManager,
-) -> None:
+def _check_and_handle_modifications(manager: LogManager) -> None:
     """Check for modifications and handle autocommit/pre-commit after conversation is done."""
     global _recently_interrupted
 
@@ -253,19 +251,19 @@ def _check_and_handle_modifications(
         try:
             set_interruptible()
 
-            if failed_check_message := check_changes():
+            success, failed_check_message = check_changes()
+            if success:
+                if get_config().get_env("GPTME_AUTOCOMMIT") in ["true", "1"]:
+                    autocommit_msg = autocommit()
+                    manager.append(autocommit_msg)
+                    return
+            elif failed_check_message:
                 manager.append(Message("system", failed_check_message, quiet=False))
-                return
-
-            if get_config().get_env("GPTME_AUTOCOMMIT") in ["true", "1"]:
-                autocommit_msg = autocommit()
-                manager.append(autocommit_msg)
                 return
 
         except KeyboardInterrupt:
             console.log("Interrupted during pre-commit/autocommit.")
             _recently_interrupted = True
-            # manager.append(Message("system", INTERRUPT_CONTENT))
         finally:
             clear_interruptible()
 
@@ -448,6 +446,6 @@ def check_for_modifications(log: Log) -> bool:
     return has_modifications
 
 
-def check_changes() -> str | None:
+def check_changes() -> tuple[bool, str | None]:
     """Run lint/pre-commit checks after file modifications."""
     return run_precommit_checks()

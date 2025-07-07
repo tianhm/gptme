@@ -250,7 +250,8 @@ def gather_fresh_context(
     sections = []
 
     # Add pre-commit check results if there are issues
-    if precommit_output := run_precommit_checks():
+    success, precommit_output = run_precommit_checks()
+    if not success and precommit_output:
         sections.append(precommit_output)
 
     if git and (git_status_output := git_status()):
@@ -306,16 +307,22 @@ def get_changed_files() -> list[Path]:
         return []
 
 
-def run_precommit_checks() -> str | None:
+def run_precommit_checks() -> tuple[bool, str | None]:
     """Run pre-commit checks on modified files and return output if there are issues.
 
     Pre-commit checks will run if either:
     1. GPTME_CHECK=true is set explicitly, or
     2. A .pre-commit-config.yaml file exists in any parent directory
+
+    Returns:
+        A tuple (True, None) if no issues found,
+        or (False, output) if issues found,
+        or (False, None) if interrupted.
+        If pre-commit checks are not enabled, returns (False, None).
     """
     if not use_checks():
         logger.debug("Pre-commit checks not enabled")
-        return None
+        return False, None
 
     # cmd = "pre-commit run --files $(git ls-files -m)"
     cmd = "pre-commit run --all-files"
@@ -323,16 +330,16 @@ def run_precommit_checks() -> str | None:
     logger.info(f"Running pre-commit checks: {cmd}")
     try:
         subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
-        return None  # No issues found
+        return True, None  # No issues found
     except subprocess.CalledProcessError as e:
         # if exit code is 130, it means the user interrupted the process
         if e.returncode == 130:
             logger.info("Pre-commit checks interrupted by user")
-            return None
+            return False, None
         # If no pre-commit config found
         # Can happen in nested git repos, since we check parent dirs but pre-commit only checks the current repo.
         if ".pre-commit-config.yaml is not a file" in e.stdout:
-            return None
+            return False, None
 
         logger.error(f"Pre-commit checks failed: {e}")
         output = "Pre-commit checks failed\n\n"
@@ -351,7 +358,7 @@ def run_precommit_checks() -> str | None:
         else:
             output += "Note: The above issues require manual fixes as they were not automatically resolved."
 
-        return output.strip()
+        return False, output.strip()
     finally:
         logger.info(
             f"Pre-commit checks completed in {time.monotonic() - start_time:.2f}s"
