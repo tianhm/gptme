@@ -461,6 +461,13 @@ class ChatConfig:
                 # logger.info(f"Overriding {field_name} with CLI value: {cli_value}")
                 config = replace(config, **{field_name: cli_value})
 
+        # Auto-detect agent if not explicitly set
+        if config.agent is None:
+            project_config = get_project_config(config.workspace)
+            if project_config and project_config.agent:
+                config = replace(config, agent=config.workspace)
+                logger.debug(f"Auto-detected agent workspace: {config.workspace}")
+
         return config
 
 
@@ -618,6 +625,7 @@ def setup_config_from_cli(
     tool_format: "ToolFormat | None" = None,
     stream: bool = True,
     interactive: bool = True,
+    agent_path: Path | None = None,
 ) -> Config:
     """
     Initialize and return a complete config from CLI arguments and workspace.
@@ -654,6 +662,7 @@ def setup_config_from_cli(
             stream=stream,
             interactive=interactive,
             workspace=workspace,
+            agent=agent_path,
         ),
     )
 

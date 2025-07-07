@@ -263,6 +263,7 @@ def main(
         tool_format=tool_format,
         stream=stream,
         interactive=interactive,
+        agent_path=Path(agent_path) if agent_path else None,
     )
     assert config.chat and config.chat.tool_format
 
@@ -280,7 +281,7 @@ def main(
         tool_format=config.chat.tool_format,
         model=config.chat.model,
         workspace=workspace_path,
-        agent_path=Path(agent_path) if agent_path else None,
+        agent_path=config.chat.agent,
     )
 
     # register a handler for Ctrl-C
