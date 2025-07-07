@@ -23,11 +23,13 @@ ROLE_COLOR = {
     "system": "grey42",
 }
 
-AGENT_NAME = os.environ.get("GPTME_AGENT_NAME", "Assistant")
 PROMPT_USER = f"[bold {ROLE_COLOR['user']}]User[/bold {ROLE_COLOR['user']}]"
-PROMPT_ASSISTANT = (
-    f"[bold {ROLE_COLOR['assistant']}]{AGENT_NAME}[/bold {ROLE_COLOR['assistant']}]"
-)
+
+
+def prompt_assistant(name: str | None) -> str:
+    if not name:
+        name = os.environ.get("GPTME_AGENT_NAME", "Assistant")
+    return f"[bold {ROLE_COLOR['assistant']}]{name}[/bold {ROLE_COLOR['assistant']}]"
 
 
 INTERRUPT_CONTENT = "Interrupted by user"

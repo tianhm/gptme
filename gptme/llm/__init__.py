@@ -9,7 +9,7 @@ from typing import cast
 from rich import print as rprint
 
 from ..config import get_config
-from ..constants import PROMPT_ASSISTANT
+from ..constants import prompt_assistant
 from ..message import Message, format_msgs, len_tokens
 from ..tools import ToolSpec, ToolUse
 from ..util import console
@@ -44,6 +44,11 @@ def init_llm(provider: Provider):
         logger.debug(f"Provider {provider} already initialized or unknown")
 
 
+def _get_agent_name(config) -> str | None:
+    agent_config = config.chat.agent_config
+    return agent_config.name if agent_config and agent_config.name else None
+
+
 def reply(
     messages: list[Message],
     model: str,
@@ -51,18 +56,21 @@ def reply(
     tools: list[ToolSpec] | None = None,
 ) -> Message:
     init_llm(get_provider_from_model(model))
+    config = get_config()
+    agent_name = _get_agent_name(config)
     if stream:
-        config = get_config()
         break_on_tooluse = config.get_env("GPTME_BREAK_ON_TOOLUSE", "true") in [
             "1",
             "true",
         ]
-        return _reply_stream(messages, model, tools, break_on_tooluse)
+        return _reply_stream(
+            messages, model, tools, break_on_tooluse, agent_name=agent_name
+        )
     else:
-        rprint(f"{PROMPT_ASSISTANT}: Thinking...", end="\r")
+        rprint(f"{prompt_assistant(agent_name)}: Thinking...", end="\r")
         response = _chat_complete(messages, model, tools)
         rprint(" " * shutil.get_terminal_size().columns, end="\r")
-        rprint(f"{PROMPT_ASSISTANT}: {response}")
+        rprint(f"{prompt_assistant(agent_name)}: {response}")
         return Message("assistant", response)
 
 
@@ -112,8 +120,9 @@ def _reply_stream(
     model: str,
     tools: list[ToolSpec] | None,
     break_on_tooluse: bool = True,
+    agent_name: str | None = None,
 ) -> Message:
-    rprint(f"{PROMPT_ASSISTANT}: Thinking...", end="\r")
+    rprint(f"{prompt_assistant(agent_name)}: Thinking...", end="\r")
 
     def print_clear(length: int = 0):
         length = length or shutil.get_terminal_size().columns
@@ -130,7 +139,7 @@ def _reply_stream(
             if not output:  # first character
                 first_token_time = time.time()
                 print_clear()
-                rprint(f"{PROMPT_ASSISTANT}: \n", end="")
+                rprint(f"{prompt_assistant(agent_name)}: \n", end="")
 
             # Check for thinking tags before printing a newline
             if char == "\n" or not output:

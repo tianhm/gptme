@@ -259,7 +259,7 @@ def set_config_value(key: str, value: str) -> None:  # pragma: no cover
     reload_config()
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=4)
 def get_project_config(workspace: Path | None) -> ProjectConfig | None:
     """
     Get a cached copy of or load the project configuration from a gptme.toml file in the workspace or .github directory.
@@ -309,6 +309,16 @@ class ChatConfig:
 
     env: dict = field(default_factory=dict)
     mcp: MCPConfig | None = None
+
+    @property
+    def agent_config(self) -> AgentConfig | None:
+        """Get the agent configuration if available."""
+        if not self.agent:
+            return None
+        agent_project_config = get_project_config(self.agent)
+        if agent_project_config and agent_project_config.agent:
+            return agent_project_config.agent
+        return None
 
     @classmethod
     def from_dict(cls, config_data: dict) -> Self:
