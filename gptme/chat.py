@@ -129,7 +129,7 @@ def chat(
 
                 # Process the message and get response
                 _process_message_conversation(
-                    manager, msg, stream, confirm_func, tool_format, workspace, model
+                    manager, stream, confirm_func, tool_format, workspace, model
                 )
             else:
                 # Get user input or exit if non-interactive
@@ -149,7 +149,6 @@ def chat(
                         # Process existing log without adding new message
                         _process_message_conversation(
                             manager,
-                            None,
                             stream,
                             confirm_func,
                             tool_format,
@@ -170,7 +169,6 @@ def chat(
                     # Process the message and get response
                     _process_message_conversation(
                         manager,
-                        msg,
                         stream,
                         confirm_func,
                         tool_format,
@@ -189,7 +187,6 @@ def chat(
 
 def _process_message_conversation(
     manager: LogManager,
-    msg: Message | None,  # Can be None when generating response directly
     stream: bool,
     confirm_func: ConfirmFunc,
     tool_format: ToolFormat,
@@ -239,18 +236,11 @@ def _process_message_conversation(
             break
 
     # After all tools are executed, check for modifications and run autocommit/pre-commit
-    _check_and_handle_modifications(
-        manager, stream, confirm_func, tool_format, workspace, model
-    )
+    _check_and_handle_modifications(manager)
 
 
 def _check_and_handle_modifications(
     manager: LogManager,
-    stream: bool,
-    confirm_func: ConfirmFunc,
-    tool_format: ToolFormat,
-    workspace: Path,
-    model: str | None,
 ) -> None:
     """Check for modifications and handle autocommit/pre-commit after conversation is done."""
     global _recently_interrupted
@@ -275,7 +265,7 @@ def _check_and_handle_modifications(
         except KeyboardInterrupt:
             console.log("Interrupted during pre-commit/autocommit.")
             _recently_interrupted = True
-            manager.append(Message("system", INTERRUPT_CONTENT))
+            # manager.append(Message("system", INTERRUPT_CONTENT))
         finally:
             clear_interruptible()
 

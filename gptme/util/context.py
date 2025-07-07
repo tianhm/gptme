@@ -379,9 +379,7 @@ def autocommit() -> Message:
         )
 
         # Create a message for the LLM to handle the commit
-        commit_prompt = f"""# Git Commit Request
-
-The following changes have been made:
+        commit_prompt = f"""Pre-commit checks have passed and the following changes have been made:
 
 ```git status --porcelain
 {status_result.stdout}
@@ -391,10 +389,11 @@ The following changes have been made:
 {diff_result.stdout}
 ```
 
-Please review these changes and create an appropriate commit:
+This is a good time to review these changes and consider creating an appropriate commit:
 
-1. Stage the relevant files using `git add`
-2. Create the commit using the HEREDOC format to avoid escaping issues:
+1. Review the changes, decide which changes to include in the commit
+2. Stage the relevant files using `git add`, never use `git add .` or `git add -A` to avoid adding unintended files
+3. Create the commit using the HEREDOC format to avoid escaping issues. Both stage and commit in one go.
 
 ```shell
 git add example.txt
@@ -405,7 +404,7 @@ EOF
 ```
 """
 
-        return Message("user", commit_prompt)
+        return Message("system", commit_prompt)
 
     except subprocess.CalledProcessError as e:
         return Message(
