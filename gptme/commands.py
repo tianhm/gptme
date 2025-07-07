@@ -2,6 +2,7 @@ import logging
 import re
 import sys
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from pathlib import Path
 from time import sleep
 from typing import Literal
@@ -70,16 +71,25 @@ COMMANDS = list(action_descriptions.keys())
 
 # Command registry
 
+
+@dataclass
+class CommandContext:
+    """Context object containing all command handler parameters."""
+
+    args: list[str]
+    full_args: str
+    manager: LogManager
+    confirm: ConfirmFunc
+
+
 # Original handler type (before decoration)
 OriginalCommandHandler = (
-    Callable[[list[str], str, LogManager, ConfirmFunc], Generator[Message, None, None]]
-    | Callable[[list[str], str, LogManager, ConfirmFunc], None]
+    Callable[[CommandContext], Generator[Message, None, None]]
+    | Callable[[CommandContext], None]
 )
 
 # Wrapped handler type (after decoration - always returns generator)
-CommandHandler = Callable[
-    [list[str], str, LogManager, ConfirmFunc], Generator[Message, None, None]
-]
+CommandHandler = Callable[[CommandContext], Generator[Message, None, None]]
 
 _command_registry: dict[str, CommandHandler] = {}
 
@@ -88,10 +98,8 @@ def command(name: str, aliases: list[str] | None = None):
     """Decorator to register command handlers."""
 
     def decorator(func: OriginalCommandHandler) -> OriginalCommandHandler:
-        def wrapper(
-            args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-        ) -> Generator[Message, None, None]:
-            result = func(args, full_args, manager, confirm)
+        def wrapper(ctx: CommandContext) -> Generator[Message, None, None]:
+            result = func(ctx)
             if result is not None:
                 # It's a generator, yield from it
                 yield from result
@@ -107,123 +115,101 @@ def command(name: str, aliases: list[str] | None = None):
 
 
 @command("log")
-def cmd_log(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_log(ctx: CommandContext) -> None:
     """Show the conversation log."""
-    manager.undo(1, quiet=True)
-    manager.log.print(show_hidden="--hidden" in args)
+    ctx.manager.undo(1, quiet=True)
+    ctx.manager.log.print(show_hidden="--hidden" in ctx.args)
 
 
 @command("rename")
-def cmd_rename(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_rename(ctx: CommandContext) -> None:
     """Rename the conversation."""
-    manager.undo(1, quiet=True)
-    manager.write()
+    ctx.manager.undo(1, quiet=True)
+    ctx.manager.write()
     # rename the conversation
     print("Renaming conversation")
-    if args:
-        new_name = args[0]
+    if ctx.args:
+        new_name = ctx.args[0]
     else:
         print("(enter empty name to auto-generate)")
         new_name = input("New name: ").strip()
-    rename(manager, new_name, confirm)
+    rename(ctx.manager, new_name, ctx.confirm)
 
 
 @command("fork")
-def cmd_fork(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_fork(ctx: CommandContext) -> None:
     """Fork the conversation."""
-    new_name = args[0] if args else input("New name: ")
-    manager.fork(new_name)
+    new_name = ctx.args[0] if ctx.args else input("New name: ")
+    ctx.manager.fork(new_name)
 
 
 @command("summarize")
-def cmd_summarize(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_summarize(ctx: CommandContext) -> None:
     """Summarize the conversation."""
-    manager.undo(1, quiet=True)
-    msgs = prepare_messages(manager.log.messages)
+    ctx.manager.undo(1, quiet=True)
+    msgs = prepare_messages(ctx.manager.log.messages)
     msgs = [m for m in msgs if not m.hide]
     print_msg(llm.summarize(msgs))
 
 
 @command("edit")
-def cmd_edit(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> Generator[Message, None, None]:
+def cmd_edit(ctx: CommandContext) -> Generator[Message, None, None]:
     """Edit previous messages."""
     # first undo the '/edit' command itself
-    manager.undo(1, quiet=True)
-    yield from edit(manager)
+    ctx.manager.undo(1, quiet=True)
+    yield from edit(ctx.manager)
 
 
 @command("undo")
-def cmd_undo(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_undo(ctx: CommandContext) -> None:
     """Undo the last action(s)."""
     # undo the '/undo' command itself
-    manager.undo(1, quiet=True)
+    ctx.manager.undo(1, quiet=True)
     # if int, undo n messages
-    n = int(args[0]) if args and args[0].isdigit() else 1
-    manager.undo(n)
+    n = int(ctx.args[0]) if ctx.args and ctx.args[0].isdigit() else 1
+    ctx.manager.undo(n)
 
 
 @command("exit")
-def cmd_exit(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_exit(ctx: CommandContext) -> None:
     """Exit the program."""
-    manager.undo(1, quiet=True)
-    manager.write()
+    ctx.manager.undo(1, quiet=True)
+    ctx.manager.write()
     sys.exit(0)
 
 
 @command("replay")
-def cmd_replay(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_replay(ctx: CommandContext) -> None:
     """Replay the conversation."""
-    manager.undo(1, quiet=True)
-    manager.write()
+    ctx.manager.undo(1, quiet=True)
+    ctx.manager.write()
     print("Replaying conversation...")
-    for msg in manager.log:
+    for msg in ctx.manager.log:
         if msg.role == "assistant":
-            for reply_msg in execute_msg(msg, confirm):
+            for reply_msg in execute_msg(msg, ctx.confirm):
                 print_msg(reply_msg, oneline=False)
 
 
 @command("impersonate")
-def cmd_impersonate(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> Generator[Message, None, None]:
+def cmd_impersonate(ctx: CommandContext) -> Generator[Message, None, None]:
     """Impersonate the assistant."""
-    content = full_args if full_args else input("[impersonate] Assistant: ")
+    content = ctx.full_args if ctx.full_args else input("[impersonate] Assistant: ")
     msg = Message("assistant", content)
     yield msg
     yield from execute_msg(msg, confirm=lambda _: True)
 
 
 @command("tokens")
-def cmd_tokens(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_tokens(ctx: CommandContext) -> None:
     """Show token usage."""
-    manager.undo(1, quiet=True)
-    log_costs(manager.log.messages)
+    ctx.manager.undo(1, quiet=True)
+    log_costs(ctx.manager.log.messages)
 
 
 @command("tools")
-def cmd_tools(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_tools(ctx: CommandContext) -> None:
     """Show available tools."""
-    manager.undo(1, quiet=True)
+    ctx.manager.undo(1, quiet=True)
     print("Available tools:")
     for tool in get_tools():
         print(
@@ -235,14 +221,12 @@ def cmd_tools(
 
 
 @command("model", aliases=["models"])
-def cmd_model(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_model(ctx: CommandContext) -> None:
     """List or switch models."""
-    manager.undo(1, quiet=True)
-    if args:
-        set_default_model(args[0])
-        print(f"Set model to {args[0]}")
+    ctx.manager.undo(1, quiet=True)
+    if ctx.args:
+        set_default_model(ctx.args[0])
+        print(f"Set model to {ctx.args[0]}")
     else:
         model = get_default_model()
         assert model
@@ -259,37 +243,35 @@ def cmd_model(
 
 
 @command("export")
-def cmd_export(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_export(ctx: CommandContext) -> None:
     """Export conversation as HTML."""
-    manager.undo(1, quiet=True)
-    manager.write()
+    ctx.manager.undo(1, quiet=True)
+    ctx.manager.write()
     # Get output path from args or use default
-    output_path = Path(args[0]) if args else Path(f"{manager.logfile.parent.name}.html")
+    output_path = (
+        Path(ctx.args[0])
+        if ctx.args
+        else Path(f"{ctx.manager.logfile.parent.name}.html")
+    )
     # Export the chat
-    export_chat_to_html(manager.name, manager.log, output_path)
+    export_chat_to_html(ctx.manager.name, ctx.manager.log, output_path)
     print(f"Exported conversation to {output_path}")
 
 
 @command("commit")
-def cmd_commit(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> Generator[Message, None, None]:
+def cmd_commit(ctx: CommandContext) -> Generator[Message, None, None]:
     """Commit staged changes to git."""
-    manager.undo(1, quiet=True)
+    ctx.manager.undo(1, quiet=True)
     from .util.context import autocommit
 
     yield autocommit()
 
 
 @command("help")
-def cmd_help(
-    args: list[str], full_args: str, manager: LogManager, confirm: ConfirmFunc
-) -> None:
+def cmd_help(ctx: CommandContext) -> None:
     """Show help message."""
-    manager.undo(1, quiet=True)
-    manager.write()
+    ctx.manager.undo(1, quiet=True)
+    ctx.manager.write()
     help()
 
 
@@ -319,7 +301,10 @@ def handle_cmd(
 
     # Check if command is registered
     if name in _command_registry:
-        yield from _command_registry[name](args, full_args, manager, confirm)
+        ctx = CommandContext(
+            args=args, full_args=full_args, manager=manager, confirm=confirm
+        )
+        yield from _command_registry[name](ctx)
         return
 
     # Fallback to tool execution
