@@ -162,10 +162,13 @@ export const ChatMessage: FC<Props> = ({
   const isSystem$ = useObservable(() => message$.role.get() === 'system');
   const isError$ = useObservable(() => previousContent$.get().startsWith('Error'));
   const isSuccess$ = useObservable(() => {
+    // The equivalent pattern for this in gptme-core exists in gptme/message.py
+    // Keep these in sync for consistency
     const content = previousContent$.get().toLowerCase();
     const firstThreeWords = content.split(/\s+/).slice(0, 3);
     return (
       content.startsWith('saved') ||
+      content.startsWith('appended') ||
       firstThreeWords.some((word) => word.includes('success') || word.includes('successfully'))
     );
   });
