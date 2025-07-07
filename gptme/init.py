@@ -74,6 +74,7 @@ def init_logging(verbose):
         format="%(message)s",
         datefmt="[%X]",
         handlers=[handler],
+        force=True,  # Override any previous logging configuration
     )
 
     # anthropic spams debug logs for every request

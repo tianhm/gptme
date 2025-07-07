@@ -467,7 +467,7 @@ def get_project_context_cmd_output(cmd: str, workspace: Path) -> str | None:
             text=True,
             timeout=10,
         )
-        logger.info(f"Context command took {time.time() - start:.2f}s")
+        logger.debug(f"Context command took {time.time() - start:.2f}s")
         if result.returncode == 0:
             return md_codeblock(cmd, result.stdout)
         else:
