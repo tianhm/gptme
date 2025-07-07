@@ -8,7 +8,7 @@ from typing import cast
 
 from rich import print as rprint
 
-from ..config import get_config
+from ..config import Config, get_config
 from ..constants import prompt_assistant
 from ..message import Message, format_msgs, len_tokens
 from ..tools import ToolSpec, ToolUse
@@ -44,8 +44,8 @@ def init_llm(provider: Provider):
         logger.debug(f"Provider {provider} already initialized or unknown")
 
 
-def _get_agent_name(config) -> str | None:
-    agent_config = config.chat.agent_config
+def _get_agent_name(config: Config) -> str | None:
+    agent_config = config.chat and config.chat.agent_config
     return agent_config.name if agent_config and agent_config.name else None
 
 
