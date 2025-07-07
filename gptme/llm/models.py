@@ -375,6 +375,111 @@ def get_summary_model(provider: Provider) -> str:  # pragma: no cover
         raise ValueError(f"Provider {provider} did not have a summary model")
 
 
+def _get_models_for_provider(
+    provider: Provider, dynamic_fetch: bool = True
+) -> list[ModelMeta]:
+    """Get models for a specific provider, with optional dynamic fetching."""
+    models_to_show = []
+
+    # Try dynamic fetching first for supported providers
+    if dynamic_fetch and provider == "openrouter":
+        try:
+            from . import get_available_models
+
+            dynamic_models = get_available_models(provider)
+            models_to_show = dynamic_models
+        except Exception:
+            # Fall back to static models
+            static_models = [
+                get_model(f"{provider}/{name}") for name in MODELS[provider]
+            ]
+            models_to_show = static_models
+    else:
+        # Use static models
+        if MODELS[provider]:
+            static_models = [
+                get_model(f"{provider}/{name}") for name in MODELS[provider]
+            ]
+            models_to_show = static_models
+
+    return models_to_show
+
+
+def _apply_model_filters(
+    models: list[ModelMeta], vision_only: bool = False, reasoning_only: bool = False
+) -> list[ModelMeta]:
+    """Apply vision and reasoning filters to models."""
+    filtered_models = []
+    for model in models:
+        if vision_only and not model.supports_vision:
+            continue
+        if reasoning_only and not model.supports_reasoning:
+            continue
+        filtered_models.append(model)
+    return filtered_models
+
+
+def _print_simple_format(models: list[ModelMeta]) -> None:
+    """Print models in simple format (one per line)."""
+    for model in models:
+        print(f"{model.provider}/{model.model}")
+
+
+def _format_model_details(model: ModelMeta, show_pricing: bool = False) -> str:
+    """Format model details for display."""
+    info_parts = [f"  {model.model}"]
+
+    # Context window
+    if model.context:
+        context_k = model.context // 1000
+        info_parts.append(f"{context_k}k ctx")
+
+    # Max output
+    if model.max_output:
+        output_k = model.max_output // 1000
+        info_parts.append(f"{output_k}k out")
+
+    # Vision support
+    if model.supports_vision:
+        info_parts.append("vision")
+
+    # Reasoning support
+    if model.supports_reasoning:
+        info_parts.append("reasoning")
+
+    # Pricing
+    if show_pricing and (model.price_input or model.price_output):
+        price_str = f"${model.price_input:.2f}/${model.price_output:.2f}/1M"
+        info_parts.append(price_str)
+
+    return " | ".join(info_parts)
+
+
+def _print_detailed_format(
+    provider: Provider,
+    models: list[ModelMeta],
+    show_pricing: bool = False,
+    dynamic_fetch: bool = True,
+) -> None:
+    """Print models in detailed format with provider grouping."""
+    print(f"\n{provider}:")
+
+    if dynamic_fetch and provider == "openrouter" and len(models) > 0:
+        print(f"  ({len(models)} models available via API)")
+
+    # Show up to 10 models with details
+    for model in models[:10]:
+        print(_format_model_details(model, show_pricing))
+
+    # Show count if more than 10
+    if len(models) > 10:
+        print(f"  ... ({len(models) - 10} more)")
+
+    # Show empty message if no models configured
+    if not models and not MODELS[provider]:
+        print("  (no models configured)")
+
+
 def list_models(
     provider_filter: str | None = None,
     show_pricing: bool = False,
@@ -397,90 +502,29 @@ def list_models(
     if not simple_format:
         print("Available models:")
 
+    all_models = []
+
     for provider in MODELS:
         if provider_filter and provider != provider_filter:
             continue
 
         # Get models for this provider
-        models_to_show = []
-
-        # Try dynamic fetching first for supported providers
-        if dynamic_fetch and provider == "openrouter":
-            try:
-                from . import get_available_models
-
-                dynamic_models = get_available_models(provider)
-                models_to_show = dynamic_models
-            except Exception as e:
-                if not simple_format:
-                    print(f"  (failed to fetch dynamic models: {e})")
-                # Fall back to static models
-                static_models = [
-                    get_model(f"{provider}/{name}") for name in MODELS[provider]
-                ]
-                models_to_show = static_models
-        else:
-            # Use static models
-            if MODELS[provider]:
-                static_models = [
-                    get_model(f"{provider}/{name}") for name in MODELS[provider]
-                ]
-                models_to_show = static_models
+        models = _get_models_for_provider(provider, dynamic_fetch)
 
         # Apply filters
-        filtered_models = []
-        for model in models_to_show:
-            if vision_only and not model.supports_vision:
-                continue
-            if reasoning_only and not model.supports_reasoning:
-                continue
-            filtered_models.append(model)
+        filtered_models = _apply_model_filters(models, vision_only, reasoning_only)
 
         if not filtered_models:
             continue
 
         # Output models
         if simple_format:
-            for model in filtered_models:
-                print(f"{model.provider}/{model.model}")
+            all_models.extend(filtered_models)
         else:
-            print(f"\n{provider}:")
-            if dynamic_fetch and provider == "openrouter" and len(filtered_models) > 0:
-                print(f"  ({len(filtered_models)} models available via API)")
+            _print_detailed_format(
+                provider, filtered_models, show_pricing, dynamic_fetch
+            )
 
-            # Show up to 10 models with details
-            for model in filtered_models[:10]:
-                info_parts = [f"  {model.model}"]
-
-                # Context window
-                if model.context:
-                    context_k = model.context // 1000
-                    info_parts.append(f"{context_k}k ctx")
-
-                # Max output
-                if model.max_output:
-                    output_k = model.max_output // 1000
-                    info_parts.append(f"{output_k}k out")
-
-                # Vision support
-                if model.supports_vision:
-                    info_parts.append("vision")
-
-                # Reasoning support
-                if model.supports_reasoning:
-                    info_parts.append("reasoning")
-
-                # Pricing
-                if show_pricing and (model.price_input or model.price_output):
-                    price_str = f"${model.price_input:.2f}/${model.price_output:.2f}/1M"
-                    info_parts.append(price_str)
-
-                print(" | ".join(info_parts))
-
-            # Show count if more than 10
-            if len(filtered_models) > 10:
-                print(f"  ... ({len(filtered_models) - 10} more)")
-
-            # Show empty message if no models configured
-            if not filtered_models and not MODELS[provider]:
-                print("  (no models configured)")
+    # Print all models in simple format at the end
+    if simple_format:
+        _print_simple_format(all_models)

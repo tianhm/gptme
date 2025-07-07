@@ -391,10 +391,9 @@ def api_doc(
     return decorator
 
 
-def generate_openapi_spec() -> dict[str, Any]:
-    """Generate OpenAPI spec from documented endpoints and dataclasses."""
-
-    spec: dict[str, Any] = {
+def _create_base_spec() -> dict[str, Any]:
+    """Create the base OpenAPI specification structure."""
+    return {
         "openapi": "3.0.3",
         "info": {
             "title": "gptme API",
@@ -411,7 +410,9 @@ def generate_openapi_spec() -> dict[str, Any]:
         "components": {"schemas": {}},
     }
 
-    # Automatically collect all Pydantic models used in endpoint documentation
+
+def _collect_models_from_endpoints() -> set[type[BaseModel]]:
+    """Collect all Pydantic models used in endpoint documentation."""
     model_classes_set: set[type[BaseModel]] = set()
 
     def collect_models_from_type(type_hint: Any) -> None:
@@ -435,10 +436,11 @@ def generate_openapi_spec() -> dict[str, Any]:
             if response_type:
                 collect_models_from_type(response_type)
 
-    # Convert back to list for existing code compatibility
-    model_classes = list(model_classes_set)
+    return model_classes_set
 
-    # Generate schemas and collect all definitions
+
+def _generate_schemas(model_classes: set[type[BaseModel]]) -> dict[str, Any]:
+    """Generate schemas for all collected models."""
     all_schemas: dict[str, Any] = {}
 
     for cls in model_classes:
@@ -461,7 +463,12 @@ def generate_openapi_spec() -> dict[str, Any]:
         except Exception as e:
             print(f"Warning: Could not generate schema for {cls.__name__}: {e}")
 
-    # Update all references to point to components/schemas
+    return all_schemas
+
+
+def _update_schema_refs(all_schemas: dict[str, Any]) -> dict[str, Any]:
+    """Update all references to point to components/schemas."""
+
     def update_refs(obj: Any) -> Any:
         if isinstance(obj, dict):
             if "$ref" in obj and obj["$ref"].startswith("#/$defs/"):
@@ -474,73 +481,163 @@ def generate_openapi_spec() -> dict[str, Any]:
         return obj
 
     # Apply reference updates to all schemas
+    updated_schemas = {}
     for schema_name, schema in all_schemas.items():
-        all_schemas[schema_name] = update_refs(schema)
+        updated_schemas[schema_name] = update_refs(schema)
 
-    # Convert Pydantic's anyOf nullable patterns to OpenAPI 3.0 nullable format
-    def convert_to_openapi_nullable(schema: dict) -> dict:
-        """Recursively convert Pydantic's anyOf nullable patterns to OpenAPI 3.0 format."""
-        if isinstance(schema, dict):
-            # Handle anyOf nullable patterns
-            if "anyOf" in schema:
-                any_of_items = schema["anyOf"]
-                if isinstance(any_of_items, list) and len(any_of_items) == 2:
-                    # Check for type + null pattern
-                    type_item = None
-                    null_item = None
-                    for item in any_of_items:
-                        if isinstance(item, dict):
-                            if item.get("type") == "null":
-                                null_item = item
-                            elif "type" in item:
-                                type_item = item
-                            elif "$ref" in item:
-                                type_item = item
+    return updated_schemas
 
-                    if null_item and type_item:
-                        # Convert to OpenAPI 3.0 nullable format
-                        new_schema = {k: v for k, v in schema.items() if k != "anyOf"}
-                        new_schema.update(type_item)
-                        new_schema["nullable"] = True
 
-                        # If field has enum, add null to the allowed values
-                        if "enum" in new_schema and None not in new_schema["enum"]:
-                            new_schema["enum"] = new_schema["enum"] + [None]
+def _convert_to_openapi_nullable(schema: dict) -> dict:
+    """Recursively convert Pydantic's anyOf nullable patterns to OpenAPI 3.0 format."""
+    if isinstance(schema, dict):
+        # Handle anyOf nullable patterns
+        if "anyOf" in schema:
+            any_of_items = schema["anyOf"]
+            if isinstance(any_of_items, list) and len(any_of_items) == 2:
+                # Check for type + null pattern
+                type_item = None
+                null_item = None
+                for item in any_of_items:
+                    if isinstance(item, dict):
+                        if item.get("type") == "null":
+                            null_item = item
+                        elif "type" in item:
+                            type_item = item
+                        elif "$ref" in item:
+                            type_item = item
 
-                        return new_schema
+                if null_item and type_item:
+                    # Convert to OpenAPI 3.0 nullable format
+                    new_schema = {k: v for k, v in schema.items() if k != "anyOf"}
+                    new_schema.update(type_item)
+                    new_schema["nullable"] = True
 
-            # Handle direct nullable patterns (type + default: null)
-            elif (
-                "type" in schema
-                and "default" in schema
-                and schema["default"] is None
-                and "nullable" not in schema
-                and schema["type"] != "null"
-            ):
-                # This is a field with default: null but not explicitly nullable
-                new_schema = schema.copy()
-                new_schema["nullable"] = True
+                    # If field has enum, add null to the allowed values
+                    if "enum" in new_schema and None not in new_schema["enum"]:
+                        new_schema["enum"] = new_schema["enum"] + [None]
 
-                # If field has enum, add null to the allowed values
-                if "enum" in new_schema and None not in new_schema["enum"]:
-                    new_schema["enum"] = new_schema["enum"] + [None]
+                    return new_schema
 
-                return new_schema
+        # Handle direct nullable patterns (type + default: null)
+        elif (
+            "type" in schema
+            and "default" in schema
+            and schema["default"] is None
+            and "nullable" not in schema
+            and schema["type"] != "null"
+        ):
+            # This is a field with default: null but not explicitly nullable
+            new_schema = schema.copy()
+            new_schema["nullable"] = True
 
-            # Recursively process all dictionary values
-            return {k: convert_to_openapi_nullable(v) for k, v in schema.items()}
-        elif isinstance(schema, list):
-            return [convert_to_openapi_nullable(item) for item in schema]
+            # If field has enum, add null to the allowed values
+            if "enum" in new_schema and None not in new_schema["enum"]:
+                new_schema["enum"] = new_schema["enum"] + [None]
+
+            return new_schema
+
+        # Recursively process all dictionary values
+        return {k: _convert_to_openapi_nullable(v) for k, v in schema.items()}
+    elif isinstance(schema, list):
+        return [_convert_to_openapi_nullable(item) for item in schema]
+    else:
+        return schema
+
+
+def _process_route_parameters(
+    view_func: Callable, rule_string: str, doc: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Process and merge route parameters from inference and manual specification."""
+    # Always infer path parameters, then merge with manual parameters
+    inferred_parameters = _infer_parameters(view_func, rule_string)
+    manual_parameters = doc["parameters"] or []
+
+    # Merge parameters, with manual parameters taking precedence
+    final_parameters = []
+    manual_param_names = {p["name"] for p in manual_parameters}
+
+    # Add inferred path parameters that aren't manually overridden
+    for param in inferred_parameters:
+        if param["name"] not in manual_param_names:
+            final_parameters.append(param)
+
+    # Add manual parameters
+    final_parameters.extend(manual_parameters)
+
+    return final_parameters
+
+
+def _create_method_spec(
+    doc: dict[str, Any], method: str, final_parameters: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Create OpenAPI method specification for a single HTTP method."""
+    method_spec: dict[str, Any] = {
+        "summary": doc["summary"],
+        "description": doc["description"],
+        "tags": doc["tags"],
+        "responses": {},
+    }
+
+    # Add responses with better descriptions
+    for code, response_type in doc["responses"].items():
+        if response_type:
+            # Get description from response model if available
+            response_description = (
+                getattr(response_type, "__doc__", None) or f"HTTP {code}"
+            )
+            method_spec["responses"][str(code)] = {
+                "description": response_description,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": f"#/components/schemas/{response_type.__name__}"
+                        }
+                    }
+                },
+            }
         else:
-            return schema
+            # Handle non-JSON responses (like file downloads)
+            if code == 200:
+                method_spec["responses"][str(code)] = {
+                    "description": "File download or binary content",
+                    "content": {
+                        "application/octet-stream": {
+                            "schema": {"type": "string", "format": "binary"}
+                        }
+                    },
+                }
+            else:
+                method_spec["responses"][str(code)] = {
+                    "description": f"HTTP {code} response"
+                }
 
-    # Apply nullable conversion to all schemas
-    for schema_name in list(all_schemas.keys()):
-        all_schemas[schema_name] = convert_to_openapi_nullable(all_schemas[schema_name])
+    # Add request body with better validation
+    if doc["request_body"] and method.lower() in ["post", "put", "patch"]:
+        request_description = (
+            getattr(doc["request_body"], "__doc__", None) or "Request body"
+        )
+        method_spec["requestBody"] = {
+            "description": request_description,
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "$ref": f"#/components/schemas/{doc['request_body'].__name__}"
+                    }
+                }
+            },
+        }
 
-    # Add all schemas to spec
-    spec["components"]["schemas"].update(all_schemas)  # type: ignore
+    # Add parameters (inferred or manual)
+    if final_parameters:
+        method_spec["parameters"] = final_parameters
 
+    return method_spec
+
+
+def _add_flask_routes_to_spec(spec: dict[str, Any]) -> None:
+    """Add Flask routes to the OpenAPI specification."""
     # Add documented endpoints
     for rule in current_app.url_map.iter_rules():
         if rule.endpoint.startswith("static") or rule.endpoint.startswith(
@@ -562,93 +659,42 @@ def generate_openapi_spec() -> dict[str, Any]:
         path = _convert_flask_path_to_openapi(rule.rule)
         methods = (rule.methods or set()) - {"HEAD", "OPTIONS"}
 
-        # Always infer path parameters, then merge with manual parameters
-        inferred_parameters = _infer_parameters(view_func, rule.rule)
-        manual_parameters = doc["parameters"] or []
-
-        # Merge parameters, with manual parameters taking precedence
-        final_parameters = []
-        manual_param_names = {p["name"] for p in manual_parameters}
-
-        # Add inferred path parameters that aren't manually overridden
-        for param in inferred_parameters:
-            if param["name"] not in manual_param_names:
-                final_parameters.append(param)
-
-        # Add manual parameters
-        final_parameters.extend(manual_parameters)
+        final_parameters = _process_route_parameters(view_func, rule.rule, doc)
 
         paths_dict = spec["paths"]  # type: ignore
         if path not in paths_dict:
             paths_dict[path] = {}
 
         for method in methods:
-            method_spec: dict[str, Any] = {
-                "summary": doc["summary"],
-                "description": doc["description"],
-                "tags": doc["tags"],
-                "responses": {},
-            }
-
-            # Add responses with better descriptions
-            for code, response_type in doc["responses"].items():
-                if response_type:
-                    # Get description from response model if available
-                    response_description = (
-                        getattr(response_type, "__doc__", None) or f"HTTP {code}"
-                    )
-                    method_spec["responses"][str(code)] = {
-                        "description": response_description,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": f"#/components/schemas/{response_type.__name__}"
-                                }
-                            }
-                        },
-                    }
-                else:
-                    # Handle non-JSON responses (like file downloads)
-                    if code == 200:
-                        method_spec["responses"][str(code)] = {
-                            "description": "File download or binary content",
-                            "content": {
-                                "application/octet-stream": {
-                                    "schema": {"type": "string", "format": "binary"}
-                                }
-                            },
-                        }
-                    else:
-                        method_spec["responses"][str(code)] = {
-                            "description": f"HTTP {code} response"
-                        }
-
-            # Add request body with better validation
-            if doc["request_body"] and method.lower() in ["post", "put", "patch"]:
-                request_description = (
-                    getattr(doc["request_body"], "__doc__", None) or "Request body"
-                )
-                method_spec["requestBody"] = {
-                    "description": request_description,
-                    "required": True,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": f"#/components/schemas/{doc['request_body'].__name__}"
-                            }
-                        }
-                    },
-                }
-
-            # Add parameters (inferred or manual)
-            if final_parameters:
-                method_spec["parameters"] = final_parameters
-
+            method_spec = _create_method_spec(doc, method, final_parameters)
             paths_dict[path][method.lower()] = method_spec  # type: ignore
+
+
+def generate_openapi_spec() -> dict[str, Any]:
+    """Generate OpenAPI spec from documented endpoints and dataclasses."""
+    # Create base specification
+    spec = _create_base_spec()
+
+    # Collect and process models
+    model_classes_set = _collect_models_from_endpoints()
+    all_schemas = _generate_schemas(model_classes_set)
+    all_schemas = _update_schema_refs(all_schemas)
+
+    # Apply nullable conversion to all schemas
+    for schema_name in list(all_schemas.keys()):
+        all_schemas[schema_name] = _convert_to_openapi_nullable(
+            all_schemas[schema_name]
+        )
+
+    # Add all schemas to spec
+    spec["components"]["schemas"].update(all_schemas)  # type: ignore
+
+    # Add Flask routes
+    _add_flask_routes_to_spec(spec)
 
     # Apply conversion to parameter schemas in paths (after paths are populated)
     if "paths" in spec:
-        spec["paths"] = convert_to_openapi_nullable(spec["paths"])
+        spec["paths"] = _convert_to_openapi_nullable(spec["paths"])
 
     return spec
 
