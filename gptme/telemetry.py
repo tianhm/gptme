@@ -4,8 +4,6 @@ OpenTelemetry integration for gptme performance monitoring.
 This module provides tracing and metrics collection to measure:
 - Parsing speeds
 - Server tokens/second
-- CPU usage (excluding stream waiting)
-- Memory usage
 - Tool execution times
 - LLM response times
 """
@@ -34,7 +32,7 @@ TELEMETRY_IMPORT_ERROR = None
 
 try:
     from opentelemetry import metrics, trace  # fmt: skip
-    from opentelemetry.exporter import otlp  # fmt: skip
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter  # fmt: skip
     from opentelemetry.exporter.prometheus import PrometheusMetricReader  # fmt: skip
     from opentelemetry.instrumentation.flask import FlaskInstrumentor  # fmt: skip
     from opentelemetry.instrumentation.requests import RequestsInstrumentor  # fmt: skip
@@ -56,8 +54,6 @@ def is_telemetry_enabled() -> bool:
 
 def init_telemetry(
     service_name: str = "gptme",
-    jaeger_endpoint: str | None = None,
-    prometheus_port: int = 8000,
     enable_flask_instrumentation: bool = True,
     enable_requests_instrumentation: bool = True,
 ) -> None:
@@ -85,24 +81,13 @@ def init_telemetry(
         _tracer = trace.get_tracer(service_name)
 
         # Set up OTLP exporter if endpoint provided (for Jaeger or other OTLP-compatible backends)
-        if (
-            jaeger_endpoint
-            or os.getenv("JAEGER_ENDPOINT")
-            or os.getenv("OTLP_ENDPOINT")
-        ):
-            # OTLP uses different default ports: 4317 for gRPC, 4318 for HTTP
-            otlp_endpoint = (
-                jaeger_endpoint
-                or os.getenv("OTLP_ENDPOINT")
-                or f"http://{os.getenv('JAEGER_ENDPOINT', 'localhost')}:4317"
-            )
-            otlp_exporter = otlp.grpc.trace_exporter.OTLPSpanExporter(
-                endpoint=otlp_endpoint
-            )
-            span_processor = BatchSpanProcessor(otlp_exporter)
-            tracer_provider = trace.get_tracer_provider()
-            if hasattr(tracer_provider, "add_span_processor"):
-                tracer_provider.add_span_processor(span_processor)  # type: ignore
+        # OTLP uses different default ports: 4317 for gRPC, 4318 for HTTP
+        otlp_endpoint = os.getenv("OTLP_ENDPOINT") or "http://localhost:4317"
+        otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+        span_processor = BatchSpanProcessor(otlp_exporter)
+        tracer_provider = trace.get_tracer_provider()
+        if hasattr(tracer_provider, "add_span_processor"):
+            tracer_provider.add_span_processor(span_processor)  # type: ignore
 
         # Initialize metrics
         prometheus_reader = PrometheusMetricReader()
@@ -130,24 +115,13 @@ def init_telemetry(
             RequestsInstrumentor().instrument()
 
         _telemetry_enabled = True
-        logger.info("OpenTelemetry telemetry initialized successfully")
 
         # Import console for user-visible messages
         from .util import console  # fmt: skip
 
         # Log to console so users know telemetry is active
         console.log("📊 Telemetry enabled - performance metrics will be collected")
-        if (
-            jaeger_endpoint
-            or os.getenv("JAEGER_ENDPOINT")
-            or os.getenv("OTLP_ENDPOINT")
-        ):
-            otlp_endpoint = (
-                jaeger_endpoint
-                or os.getenv("OTLP_ENDPOINT")
-                or f"http://{os.getenv('JAEGER_ENDPOINT', 'localhost')}:4317"
-            )
-            console.log(f"🔍 Traces will be sent via OTLP to {otlp_endpoint}")
+        console.log(f"🔍 Traces will be sent via OTLP to {otlp_endpoint}")
 
     except Exception as e:
         logger.error(f"Failed to initialize telemetry: {e}")
