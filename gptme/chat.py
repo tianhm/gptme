@@ -24,12 +24,12 @@ from .tools import (
     set_tool_format,
 )
 from .tools.tts import (
-    audio_queue,
     speak,
     stop,
     tts_request_queue,
 )
-from .util import console, path_with_tilde, print_bell
+from .util import console, path_with_tilde
+from .util.sound import print_bell, wait_for_audio
 from .util.ask_execute import ask_execute
 from .util.context import autocommit, include_paths, run_precommit_checks
 from .util.cost import log_costs
@@ -255,7 +255,7 @@ def _check_and_handle_modifications(manager: LogManager) -> None:
 
             success, failed_check_message = check_changes()
             if success:
-                if get_config().get_env("GPTME_AUTOCOMMIT") in ["true", "1"]:
+                if get_config().get_env_bool("GPTME_AUTOCOMMIT"):
                     autocommit_msg = autocommit()
                     manager.append(autocommit_msg)
                     return
@@ -305,7 +305,7 @@ def _get_user_input(log: Log, workspace: Path | None) -> Message | None:
         return None
 
     # print diff between now and last user message timestamp
-    if os.environ.get("GPTME_SHOW_WORKED", "0") in ["1", "true"]:
+    if get_config().get_env_bool("GPTME_SHOW_WORKED"):
         last_user_msg = next((m for m in reversed(log) if m.role == "user"), None)
         if last_user_msg and log:
             diff = log[-1].timestamp - last_user_msg.timestamp
@@ -333,8 +333,8 @@ def _wait_for_tts_if_enabled() -> None:
             tts_request_queue.join()
             logger.info("tts request queue joined")
             # Then wait for all audio to finish playing
-            audio_queue.join()
-            logger.info("audio queue joined")
+            wait_for_audio()
+            logger.info("audio playback finished")
         except KeyboardInterrupt:
             logger.info("Interrupted while waiting for TTS")
             stop()
@@ -371,7 +371,7 @@ def step(
         # generate response
         with terminal_state_title("🤔 generating"):
             msg_response = reply(msgs, get_model(model).full, stream, tools)
-            if os.environ.get("GPTME_COSTS") in ["1", "true"]:
+            if get_config().get_env_bool("GPTME_COSTS"):
                 log_costs(msgs + [msg_response])
 
         # speak if TTS tool is available
