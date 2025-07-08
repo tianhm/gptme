@@ -20,7 +20,12 @@ from gptme.prompts import get_prompt
 from ..dirs import get_logs_dir
 from ..logmanager import LogManager
 from ..tools import get_toolchain
-from .openapi_docs import ErrorResponse, api_doc
+from .openapi_docs import (
+    AgentCreateRequest,
+    AgentCreateResponse,
+    ErrorResponse,
+    api_doc,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +36,8 @@ agents_api = flask.Blueprint("agents_api", __name__)
 @api_doc(
     summary="Create a new agent",
     description="Create a new agent by cloning a template repository and setting up workspace",
-    request_body=dict,  # TODO: Create proper request model
-    responses={200: dict, 400: ErrorResponse, 500: ErrorResponse},
+    request_body=AgentCreateRequest,
+    responses={200: AgentCreateResponse, 400: ErrorResponse, 500: ErrorResponse},
     tags=["agents"],
 )
 def api_agents_put():

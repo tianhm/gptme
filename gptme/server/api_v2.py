@@ -24,9 +24,11 @@ from .api_v2_common import msg2dict
 from .api_v2_sessions import SessionManager, sessions_api
 from .api_v2_agents import agents_api
 from .openapi_docs import (
+    ConversationCreateRequest,
     ConversationListResponse,
     ConversationResponse,
     ErrorResponse,
+    MessageCreateRequest,
     SessionResponse,
     StatusResponse,
     api_doc,
@@ -109,7 +111,7 @@ def api_conversation(conversation_id: str):
 @api_doc(
     summary="Create conversation (V2)",
     description="Create a new conversation with initial configuration and messages using the V2 API",
-    request_body=dict,  # TODO: Create proper request model
+    request_body=ConversationCreateRequest,
     responses={200: SessionResponse, 409: ErrorResponse, 400: ErrorResponse},
     parameters=[
         {
@@ -191,7 +193,7 @@ def api_conversation_put(conversation_id: str):
 @api_doc(
     summary="Add message to conversation (V2)",
     description="Add a new message to an existing conversation using the V2 API",
-    request_body=dict,  # TODO: Use proper message request model
+    request_body=MessageCreateRequest,
     responses={200: StatusResponse, 400: ErrorResponse, 404: ErrorResponse},
     parameters=[
         {

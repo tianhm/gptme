@@ -158,6 +158,27 @@ class InterruptRequest(BaseModel):
     session_id: str = Field(..., description="Session ID")
 
 
+class AgentCreateRequest(BaseModel):
+    """Request to create a new agent."""
+
+    name: str = Field(..., description="Agent name")
+    template_repo: str = Field(..., description="Template repository URL")
+    template_branch: str = Field(..., description="Template repository branch")
+    fork_command: str = Field(..., description="Fork command to execute")
+    path: str = Field(..., description="Path where the agent will be created")
+    project_config: dict | None = Field(
+        None, description="Optional project configuration"
+    )
+
+
+class AgentCreateResponse(BaseModel):
+    """Response from agent creation."""
+
+    status: str = Field(..., description="Operation status")
+    message: str = Field(..., description="Success message")
+    initial_conversation_id: str = Field(..., description="Initial conversation ID")
+
+
 class ChatConfig(BaseModel):
     """Chat configuration."""
 
