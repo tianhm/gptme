@@ -343,9 +343,9 @@ def _format_shell_output(
 
     # Add output
     if stdout:
-        msg += _format_block_smart("", stdout, "stdout") + "\n\n"
+        msg += _format_block_smart("", stdout, "stdout").lstrip() + "\n\n"
     if stderr:
-        msg += _format_block_smart("", stderr, "stderr") + "\n\n"
+        msg += _format_block_smart("", stderr, "stderr").lstrip() + "\n\n"
     if not stdout and not stderr:
         if interrupted:
             msg += "No output before interruption\n"
