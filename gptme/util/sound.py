@@ -35,6 +35,8 @@ audio_queue: queue.Queue[tuple[Any, int] | None] = queue.Queue()
 playback_thread: threading.Thread | None = None
 current_volume = 0.7
 
+media_path = Path(__file__).parent.parent.parent / "media"
+
 
 def is_audio_available() -> bool:
     """Check if audio playback is available."""
@@ -345,7 +347,7 @@ def play_ding():
     """Play the UI ding sound."""
     log.info("Playing ding sound")
     # Get the bell sound file from the package
-    bell_path = Path(__file__).parent.parent / "media" / "bell.wav"
+    bell_path = media_path / "bell.wav"
 
     if bell_path.exists():
         play_sound_file(bell_path, block=False)
@@ -373,7 +375,7 @@ def play_tool_sound(sound_type: str):
         return
 
     # Get the sound file from the package
-    sound_path = Path(__file__).parent.parent / "media" / f"{sound_type}.wav"
+    sound_path = media_path / f"{sound_type}.wav"
 
     if sound_path.exists():
         log.debug(f"Playing tool sound: {sound_type}")

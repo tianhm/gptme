@@ -345,7 +345,7 @@ class ToolUse:
             # NOTE: special case
             args = (
                 codeblock.lang.split(" ")[1:]
-                if tool.name not in ["save", "append", "patch", "morph"]
+                if tool.name not in ["save", "append", "patch"]
                 else [codeblock.lang]
             )
             return ToolUse(tool.name, args, codeblock.content, start=codeblock.start)
