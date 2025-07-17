@@ -1,11 +1,12 @@
 import base64
 import json
 import logging
-import requests
 from collections.abc import Generator, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+import requests
 
 from ..config import Config, get_config
 from ..constants import TEMPERATURE, TOP_P
@@ -21,13 +22,6 @@ if TYPE_CHECKING:
 # Dictionary to store clients for each provider
 clients: dict[Provider, "OpenAI"] = {}
 logger = logging.getLogger(__name__)
-
-
-# Shows in rankings on openrouter.ai
-openrouter_headers = {
-    "HTTP-Referer": "https://github.com/gptme/gptme",
-    "X-Title": "gptme",
-}
 
 # TODO: improve provider routing for openrouter: https://openrouter.ai/docs/provider-routing
 # TODO: set required-parameters: https://openrouter.ai/docs/provider-routing#required-parameters-_beta_
@@ -182,7 +176,8 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
         temperature=TEMPERATURE if not is_reasoner else NOT_GIVEN,
         top_p=TOP_P if not is_reasoner else NOT_GIVEN,
         tools=tools_dict if tools_dict else NOT_GIVEN,
-        extra_headers=(openrouter_headers if provider == "openrouter" else {}),
+        extra_headers=extra_headers(provider),
+        extra_body=extra_body(provider),
     )
     choice = response.choices[0]
     result = []
@@ -202,6 +197,30 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
     assert result
     return "\n".join(result)
+
+
+def extra_headers(provider: Provider) -> dict[str, str]:
+    """Return extra headers for the OpenAI API based on the model."""
+    if provider == "openrouter":
+        # Shows in rankings on openrouter.ai
+        return {
+            "HTTP-Referer": "https://github.com/gptme/gptme",
+            "X-Title": "gptme",
+        }
+    return {}
+
+
+def extra_body(provider: Provider) -> dict[str, Any]:
+    """Return extra body for the OpenAI API based on the model."""
+    if provider == "openrouter":
+        return {
+            # "provider": {
+            #     "order": ["groq"],
+            #     "sort": "throughput",
+            #     "allow_fallbacks": False,
+            # }
+        }
+    return {}
 
 
 def stream(
@@ -227,7 +246,8 @@ def stream(
         top_p=TOP_P if not is_reasoner else NOT_GIVEN,
         stream=True,
         tools=tools_dict if tools_dict else NOT_GIVEN,
-        extra_headers=(openrouter_headers if provider == "openrouter" else {}),
+        extra_headers=extra_headers(provider),
+        extra_body=extra_body(provider),
     ):
         from openai.types.chat import ChatCompletionChunk  # fmt: skip
         from openai.types.chat.chat_completion_chunk import (  # fmt: skip
@@ -541,7 +561,6 @@ def get_available_models(provider: Provider) -> list[ModelMeta]:
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        **openrouter_headers,
     }
 
     try:
