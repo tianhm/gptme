@@ -53,6 +53,8 @@ RUN useradd -m appuser && \
     chown -R appuser:appuser /workspace
 
 USER appuser
+RUN pipx ensurepath
+
 WORKDIR /workspace
 
 ENTRYPOINT ["gptme"]
