@@ -11,6 +11,9 @@ RUN pip install -r /tmp/requirements-server.txt && rm /tmp/requirements-server.t
 # Switch back to non-root user
 USER appuser
 
+# Install extra dependencies (without root)
+RUN pipx install uv
+
 # Set the working directory
 WORKDIR /workspace
 
