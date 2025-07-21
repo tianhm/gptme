@@ -1,7 +1,7 @@
 """
 RAG (Retrieval-Augmented Generation) tool for context-aware assistance.
 
-The RAG tool provides context-aware assistance by indexing and searching project documentation.
+The RAG tool provides context-aware assistance by indexing and semantically searching text files.
 
 .. rubric:: Installation
 
@@ -52,7 +52,7 @@ from .base import ToolSpec, ToolUse
 logger = logging.getLogger(__name__)
 
 instructions = """
-Use RAG to index and search project documentation.
+Use RAG to index and semantically search through text files such as documentation and code.
 """
 
 
