@@ -89,6 +89,7 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.extlinks",
     "sphinx.ext.autosectionlabel",
+    "sphinxcontrib.mermaid",
     "sphinx_click",
     "sphinxcontrib.programoutput",
     "sphinxcontrib.asciinema",
