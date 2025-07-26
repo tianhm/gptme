@@ -137,7 +137,7 @@ Usage
 
 .. note::
 
-    We are working on a graphical way to create and manage agents using the gptme web interface. Try it out using :ref:`server:gptme-webui <gptme-webui>`.
+    We are working on a graphical way to create and interact with agents using the :ref:`gptme web interface <server:gptme-webui>`. Try it out and let us know what you think! Soon coming as a managed service.
 
 **Creating an Agent:**
 
