@@ -217,10 +217,18 @@ metrics:
 	@echo "Largest Files (>300 SLOC):"
 	@poetry run radon raw ${SRCFILES} | awk '/^[^ ]/ {file=$$0} /SLOC:/ {if ($$2 > 300) printf "  %4d %s\n", $$2, file}' | sort -nr
 	@echo
+	@make metrics-duplicates
+
+metrics-duplicates:
 	@echo "Most Duplicated Files:"
 	@npx jscpd gptme/** docs/**.{md,rst} scripts/**.{sh,py} | perl -pe 's/\e\[[0-9;]*m//g'
 
-bench-importtime:
-	time poetry run python -X importtime -m gptme --model openai --non-interactive 2>&1 | grep "import time" | cut -d'|' -f 2- | sort -n
+bench-import:
+	@echo "Benchmarking import time for gptme"
+	time poetry run python -X importtime -m gptme --model openai --non-interactive 2>&1 | grep "import time" | cut -d'|' -f 2- | sort -n | tail -n 10
 	@#time poetry run python -X importtime -m gptme --model openrouter --non-interactive 2>&1 | grep "import time" | cut -d'|' -f 2- | sort -n
 	@#time poetry run python -X importtime -m gptme --model anthropic --non-interactive 2>&1 | grep "import time" | cut -d'|' -f 2- | sort -n
+
+bench-startup:
+	@echo "Benchmarking startup time for gptme"
+	hyperfine "gptme '/exit'" -M 5

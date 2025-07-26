@@ -28,7 +28,7 @@ jobs:
 
       - name: Install apt/dpkg dependencies
         run: |
-          sudo apt-get install -y cloc
+          sudo apt-get install -y cloc hyperfine
           # pandoc in ubuntu repos is from 2018...
           wget https://github.com/jgm/pandoc/releases/download/3.3/pandoc-3.3-1-amd64.deb
           sudo dpkg -i pandoc-3.3-1-amd64.deb
