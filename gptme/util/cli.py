@@ -110,7 +110,6 @@ def tokens_count(text: str | None, model: str, file: str | None):
         enc = tiktoken.encoding_for_model(model)
     except KeyError:
         print(f"Error: Model '{model}' not supported by tiktoken.")
-        print("Supported models include: gpt-4, gpt-3.5-turbo, text-davinci-003")
         sys.exit(1)
 
     # Count tokens
