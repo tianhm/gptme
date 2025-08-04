@@ -55,6 +55,11 @@ RUN useradd -m appuser && \
 USER appuser
 RUN pipx ensurepath
 
+# pipx ensurepath is not working for the entrypoint which bypasses bash
+# so if we want to extend Dockerfile with pipx-installed entrypoints,
+# we need to manually add the pipx bin directory to PATH.
+ENV PATH="/home/appuser/.local/bin:${PATH}"
+
 WORKDIR /workspace
 
 ENTRYPOINT ["gptme"]
