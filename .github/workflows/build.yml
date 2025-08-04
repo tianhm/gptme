@@ -19,10 +19,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
         driver: docker
+
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       if: env.SHOULD_PUSH == 'true'
@@ -30,6 +32,7 @@ jobs:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Set environment variables
       run: |
         echo "OWNER_LC=${OWNER,,}" >>${GITHUB_ENV}
@@ -110,29 +113,39 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Install poetry
       run: pipx install poetry
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python_version }}
         cache: 'poetry'
+        cache-dependency-path: |
+          pyproject.toml
+          poetry.lock
+
     - name: Install dependencies
       run: |
         make build
         poetry install --extras server --with dev
+
     - name: Build PyInstaller executable
       run: make build-server-exe
+
     - name: Test executable (Unix)
       if: runner.os != 'Windows'
       run: |
         ./dist/gptme-server --help
         echo "✅ gptme-server --help executed successfully"
+
     - name: Test executable (Windows)
       if: runner.os == 'Windows'
       run: |
         .\dist\gptme-server.exe --help
         echo "✅ gptme-server.exe --help executed successfully"
+
     - name: Upload executable artifact
       uses: actions/upload-artifact@v4
       with:
