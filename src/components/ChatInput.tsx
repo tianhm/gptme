@@ -271,7 +271,7 @@ export const ChatInput: FC<Props> = ({
 
   const autoFocus = use$(autoFocus$);
   const conversation = conversationId ? use$(conversations$.get(conversationId)) : undefined;
-  const isGenerating = conversation?.isGenerating || false;
+  const isGenerating = conversation?.isGenerating || !!conversation?.executingTool;
   const hasSession = use$(hasSession$);
 
   const placeholder = isReadOnly
