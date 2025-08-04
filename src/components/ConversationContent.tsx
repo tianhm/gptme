@@ -6,6 +6,7 @@ import { useConversation } from '@/hooks/useConversation';
 import { Checkbox } from './ui/checkbox';
 import { Label } from './ui/label';
 import { InlineToolConfirmation } from './InlineToolConfirmation';
+import { InlineToolExecution } from './InlineToolExecution';
 import { For, Memo, useObservable, useObserveEffect } from '@legendapp/state/react';
 import { getObservableIndex } from '@legendapp/state';
 import { useApi } from '@/contexts/ApiContext';
@@ -241,6 +242,9 @@ export const ConversationContent: FC<Props> = ({ conversationId, isReadOnly }) =
           onSkip={handleSkipTool}
           onAuto={handleAutoConfirmTool}
         />
+
+        {/* Inline Tool Execution */}
+        <InlineToolExecution executingTool$={conversation$?.executingTool} />
 
         {/* Add padding at the bottom to account for the floating input */}
         <div className="mb-40" />

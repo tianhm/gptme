@@ -8,6 +8,11 @@ export interface PendingTool {
   tooluse: ToolUse;
 }
 
+export interface ExecutingTool {
+  id: string;
+  tooluse: ToolUse;
+}
+
 export interface ConversationState {
   // The conversation data
   data: ConversationResponse;
@@ -17,6 +22,8 @@ export interface ConversationState {
   isConnected: boolean;
   // Any pending tool
   pendingTool: PendingTool | null;
+  // Any executing tool
+  executingTool: ExecutingTool | null;
   // Last received message
   lastMessage?: Message;
   // Whether to show the initial system message
@@ -40,6 +47,7 @@ export function updateConversation(id: string, update: Partial<ConversationState
       isGenerating: false,
       isConnected: false,
       pendingTool: null,
+      executingTool: null,
       showInitialSystem: false,
       chatConfig: null,
     });
@@ -68,6 +76,12 @@ export function setPendingTool(id: string, toolId: string | null, tooluse: ToolU
   });
 }
 
+export function setExecutingTool(id: string, toolId: string | null, tooluse: ToolUse | null) {
+  updateConversation(id, {
+    executingTool: toolId && tooluse ? { id: toolId, tooluse } : null,
+  });
+}
+
 // Initialize a new conversation in the store
 export function initConversation(id: string, data?: ConversationResponse) {
   const initial: ConversationState = {
@@ -82,6 +96,7 @@ export function initConversation(id: string, data?: ConversationResponse) {
     isGenerating: false,
     isConnected: false,
     pendingTool: null,
+    executingTool: null,
     showInitialSystem: false,
     chatConfig: null,
   };

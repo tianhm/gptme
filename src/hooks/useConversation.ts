@@ -11,6 +11,7 @@ import {
   setGenerating,
   setConnected,
   setPendingTool,
+  setExecutingTool,
   addMessage,
   initConversation,
   selectedConversation$,
@@ -91,6 +92,7 @@ export function useConversation(conversationId: string) {
           onMessageStart: () => {
             console.log('[useConversation] Generation started');
             setGenerating(conversationId, true);
+            setExecutingTool(conversationId, null, null); // Clear executing tool when starting new generation
             messageJustCompleted.current = false;
 
             // Add empty message placeholder if needed
@@ -181,10 +183,27 @@ export function useConversation(conversationId: string) {
               });
             }
           },
+          onToolExecuting: (toolId) => {
+            console.log('[useConversation] Tool executing:', { toolId });
+
+            // Get the pending tool to move it to executing state
+            const pendingTool = conversation$?.pendingTool.get();
+            if (pendingTool && pendingTool.id === toolId) {
+              // Move from pending to executing (generating stays false - tools can't be interrupted)
+              setPendingTool(conversationId, null, null);
+              setExecutingTool(conversationId, toolId, pendingTool.tooluse);
+            } else {
+              console.warn(
+                '[useConversation] No matching pending tool found for executing tool:',
+                toolId
+              );
+            }
+          },
           onInterrupted: () => {
             console.log('[useConversation] Generation interrupted');
             setGenerating(conversationId, false);
             setPendingTool(conversationId, null, null);
+            setExecutingTool(conversationId, null, null);
             messageJustCompleted.current = false;
 
             // Mark the last message as interrupted
@@ -237,11 +256,16 @@ export function useConversation(conversationId: string) {
 
     console.log('[useConversation] Sending message:', { message, options });
 
-    // Clear any pending tool confirmation when sending a new message
+    // Clear any pending or executing tool when sending a new message
     const pendingTool = conversation$?.pendingTool.get();
+    const executingTool = conversation$?.executingTool.get();
     if (pendingTool) {
       console.log('[useConversation] Clearing pending tool due to new message');
       setPendingTool(conversationId, null, null);
+    }
+    if (executingTool) {
+      console.log('[useConversation] Clearing executing tool due to new message');
+      setExecutingTool(conversationId, null, null);
     }
 
     // Create user message
@@ -281,20 +305,49 @@ export function useConversation(conversationId: string) {
       return;
     }
 
-    try {
-      // Clear pending tool state immediately
-      setPendingTool(conversationId, null, null);
+    const confirmWithRetry = async (attempt: number): Promise<void> => {
+      try {
+        await api.confirmTool(conversationId, pendingTool.id, action, options);
+        // Only clear pending tool state for 'skip' action
+        // For 'confirm', 'edit', and 'auto', let onToolExecuting handle the transition
+        if (action === 'skip') {
+          setPendingTool(conversationId, null, null);
+        }
+      } catch (error) {
+        console.error(`Error confirming tool (attempt ${attempt}):`, error);
 
-      // Confirm the tool
-      await api.confirmTool(conversationId, pendingTool.id, action, options);
-    } catch (error) {
-      console.error('Error confirming tool:', error);
-      toast({
-        variant: 'destructive',
-        title: 'Error',
-        description: 'Failed to confirm tool',
-      });
-    }
+        // Check if it's the specific "Tool not found" 404 error
+        const is404ToolNotFound =
+          error instanceof Error &&
+          error.message.includes('Tool not found') &&
+          error.message.includes('404');
+
+        if (is404ToolNotFound && attempt < 3) {
+          console.log(`Retrying tool confirmation in 500ms (attempt ${attempt + 1}/3)`);
+          // Small delay to let any server-side initialization complete
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          return confirmWithRetry(attempt + 1);
+        }
+
+        // Clear pending tool state on final failure, but only for actions that won't execute
+        if (action === 'skip') {
+          setPendingTool(conversationId, null, null);
+        }
+
+        toast({
+          variant: 'destructive',
+          title: 'Error',
+          description:
+            attempt > 1
+              ? `Failed to confirm tool after ${attempt} attempts`
+              : 'Failed to confirm tool',
+        });
+
+        throw error;
+      }
+    };
+
+    await confirmWithRetry(1);
   };
 
   const interruptGeneration = async () => {
