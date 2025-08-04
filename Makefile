@@ -231,4 +231,4 @@ bench-import:
 
 bench-startup:
 	@echo "Benchmarking startup time for gptme"
-	hyperfine "gptme '/exit'" -M 5
+	hyperfine "poetry run gptme '/exit'" -M 5
