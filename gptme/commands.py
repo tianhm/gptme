@@ -142,8 +142,10 @@ def cmd_rename(ctx: CommandContext) -> None:
 @command("fork")
 def cmd_fork(ctx: CommandContext) -> None:
     """Fork the conversation."""
+    ctx.manager.undo(1, quiet=True)
     new_name = ctx.args[0] if ctx.args else input("New name: ")
     ctx.manager.fork(new_name)
+    print(f"✅ Forked conversation to: {ctx.manager.logdir}")
 
 
 @command("summarize")

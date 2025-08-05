@@ -315,8 +315,9 @@ class LogManager:
         """
         self.write()
         logsdir = get_logs_dir()
-        shutil.copytree(self.logfile.parent, logsdir / name)
+        shutil.copytree(self.logfile.parent, logsdir / name, symlinks=True)
         self.logdir = logsdir / name
+        self.chat_id = name
         self.write()
 
     def to_dict(self, branches=False) -> dict:
