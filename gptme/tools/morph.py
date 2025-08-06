@@ -142,8 +142,9 @@ def execute_morph(
 
     # Call Morph via OpenRouter
     try:
-        # Use the openrouter/morph/morph-v2 model
-        response = _chat_complete(messages, "openrouter/morph/morph-v2", tools=None)
+        response = _chat_complete(
+            messages, "openrouter/morph/morph-v3-fast", tools=None
+        )
     except Exception as e:
         yield Message("system", f"Error: failed Morph API call: {str(e)}")
         return
