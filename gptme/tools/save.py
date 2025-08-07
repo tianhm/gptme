@@ -5,6 +5,7 @@ Gives the assistant the ability to save whole files, or append to them.
 import re
 from collections.abc import Generator
 from pathlib import Path
+from typing import Literal
 
 from ..message import Message
 from ..util.ask_execute import execute_with_confirmation
@@ -168,6 +169,57 @@ def execute_append_impl(
     yield Message("system", f"Appended to {path_display}")
 
 
+def _validate_and_execute(
+    code: str | None,
+    args: list[str] | None,
+    kwargs: dict[str, str] | None,
+    confirm: ConfirmFunc,
+    operation: Literal["save", "append"],
+) -> Generator[Message, None, None]:
+    """Common validation and execution logic for save and append operations."""
+    if not code:
+        yield Message("system", "No content provided")
+        return
+
+    if check_for_placeholders(code):
+        action = "Save" if operation == "save" else "Append"
+        yield Message(
+            "system",
+            f"{action} aborted: Content contains placeholder lines (e.g. '# ...' or '// ...'). "
+            "Please provide the complete content"
+            + (
+                ""
+                if operation == "append"
+                else " or use the patch tool for partial changes"
+            )
+            + ".",
+        )
+        return
+
+    path = get_path(code, args, kwargs)
+    if not path:
+        yield Message("system", "No path provided")
+        return
+
+    preview_lang = "diff" if path.exists() else None
+    confirm_msg = f"Save to {path}?" if operation == "save" else f"Append to {path}?"
+    execute_fn = execute_save_impl if operation == "save" else execute_append_impl
+    preview_fn = preview_save if operation == "save" else preview_append
+
+    yield from execute_with_confirmation(
+        code,
+        args,
+        kwargs,
+        confirm,
+        execute_fn=execute_fn,
+        get_path_fn=get_path,
+        preview_fn=preview_fn,
+        preview_lang=preview_lang,
+        confirm_msg=confirm_msg,
+        allow_edit=True,
+    )
+
+
 def execute_save(
     code: str | None,
     args: list[str] | None,
@@ -175,31 +227,7 @@ def execute_save(
     confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Save code to a file."""
-    if not code:
-        yield Message("system", "No content provided")
-        return
-
-    if check_for_placeholders(code):
-        yield Message(
-            "system",
-            "Save aborted: Content contains placeholder lines (e.g. '# ...' or '// ...'). "
-            "Please provide the complete content or use the patch tool for partial changes.",
-        )
-        return
-
-    # Only proceed with confirmation if no placeholders were found
-    yield from execute_with_confirmation(
-        code,
-        args,
-        kwargs,
-        confirm,
-        execute_fn=execute_save_impl,
-        get_path_fn=get_path,
-        preview_fn=preview_save,
-        preview_lang="diff" if get_path(code, args, kwargs).exists() else None,
-        confirm_msg=f"Save to {get_path(code, args, kwargs)}?",
-        allow_edit=True,
-    )
+    yield from _validate_and_execute(code, args, kwargs, confirm, "save")
 
 
 def execute_append(
@@ -209,36 +237,7 @@ def execute_append(
     confirm: ConfirmFunc,
 ) -> Generator[Message, None, None]:
     """Append code to a file."""
-    if not code:
-        yield Message("system", "No content provided")
-        return
-
-    if check_for_placeholders(code):
-        yield Message(
-            "system",
-            "Append aborted: Content contains placeholder lines (e.g. '# ...' or '// ...'). "
-            "Please provide the complete content to append.",
-        )
-        return
-
-    path = get_path(code, args, kwargs)
-    if not path:
-        yield Message("system", "No path provided")
-        return
-
-    # Only proceed with confirmation if no placeholders were found
-    yield from execute_with_confirmation(
-        code,
-        args,
-        kwargs,
-        confirm,
-        execute_fn=execute_append_impl,
-        get_path_fn=get_path,
-        preview_fn=preview_append,
-        preview_lang="diff" if path.exists() else None,  # Only show diff if file exists
-        confirm_msg=f"Append to {path}?",
-        allow_edit=True,
-    )
+    yield from _validate_and_execute(code, args, kwargs, confirm, "append")
 
 
 tool_save = ToolSpec(
