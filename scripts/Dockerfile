@@ -59,7 +59,8 @@ RUN pipx ensurepath
 # pipx ensurepath is not working for the entrypoint which bypasses bash
 # so if we want to extend Dockerfile with pipx-installed entrypoints,
 # we need to manually add the pipx bin directory to PATH.
-ENV PATH="/home/appuser/.local/bin:${PATH}"
+# Priority to the system PATH to avoid overriding of system commands/entrypoint.
+ENV PATH="${PATH}:/home/appuser/.local/bin"
 
 RUN git config --global user.name "gptme.ai"
 RUN git config --global user.email "noreply@gptme.ai"
