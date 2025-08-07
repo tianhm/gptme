@@ -11,10 +11,20 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from collections.abc import Generator
 from pathlib import Path
 
 import bashlex
+
+# ANSI escape sequence pattern for stripping terminal formatting
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Strip ANSI escape sequences from text."""
+    return ANSI_ESCAPE_PATTERN.sub("", text)
+
 
 from ..message import Message
 from ..util import get_installed_programs, get_tokenizer
@@ -77,6 +87,12 @@ is_macos = sys.platform == "darwin"
 instructions = f"""
 The given command will be executed in a stateful bash shell.
 The shell tool will respond with the output of the execution.
+
+Shell commands can be configured to timeout by setting the GPTME_SHELL_TIMEOUT environment variable.
+- Set GPTME_SHELL_TIMEOUT=30 for a 30-second timeout
+- Set GPTME_SHELL_TIMEOUT=0 to disable timeout
+- Invalid values default to 60 seconds
+- If not set, commands run without timeout
 
 These programs are available, among others:
 {shell_programs_str}
@@ -175,13 +191,15 @@ class ShellSession:
         # make Python output unbuffered by default for better UX
         self.run("export PYTHONUNBUFFERED=1")
 
-    def run(self, code: str, output=True) -> tuple[int | None, str, str]:
+    def run(
+        self, code: str, output=True, timeout: float | None = None
+    ) -> tuple[int | None, str, str]:
         """Runs a command in the shell and returns the output."""
         commands = split_commands(code)
         res_code: int | None = None
         res_stdout, res_stderr = "", ""
         for cmd in commands:
-            res_cur = self._run(cmd, output=output)
+            res_cur = self._run(cmd, output=output, timeout=timeout)
             res_code = res_cur[0]
             res_stdout += res_cur[1]
             res_stderr += res_cur[2]
@@ -189,7 +207,9 @@ class ShellSession:
                 return res_code, res_stdout, res_stderr
         return res_code, res_stdout, res_stderr
 
-    def _run(self, command: str, output=True, tries=0) -> tuple[int | None, str, str]:
+    def _run(
+        self, command: str, output=True, tries=0, timeout: float | None = None
+    ) -> tuple[int | None, str, str]:
         assert self.process.stdin
 
         # run the command, redirect stdin to /dev/null to prevent commands from
@@ -219,7 +239,9 @@ class ShellSession:
                 # log warning and restart, once
                 logger.warning("Warning: shell process died, restarting")
                 self.restart()
-                return self._run(command, output=output, tries=tries + 1)
+                return self._run(
+                    command, output=output, tries=tries + 1, timeout=timeout
+                )
             else:
                 raise
 
@@ -228,10 +250,46 @@ class ShellSession:
         stdout: list[str] = []
         stderr: list[str] = []
         return_code: int | None = None
+        start_time = time.time() if timeout else None
 
         try:
             while True:
-                rlist, _, _ = select.select([self.stdout_fd, self.stderr_fd], [], [])
+                # Calculate remaining timeout
+                select_timeout = None
+                if timeout and start_time:
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout:
+                        # Timeout exceeded
+                        logger.info(f"Command timed out after {timeout} seconds")
+                        # Terminate the command gracefully
+                        try:
+                            self.process.send_signal(signal.SIGTERM)
+                            time.sleep(0.1)  # Give it a moment to terminate
+                            if self.process.poll() is None:
+                                self.process.kill()
+                        except Exception as e:
+                            logger.warning(f"Error terminating timed-out process: {e}")
+
+                        partial_stdout = "".join(stdout).strip()
+                        partial_stderr = "".join(stderr).strip()
+                        return (
+                            -124,
+                            partial_stdout,
+                            partial_stderr,
+                        )  # Use timeout exit code (124)
+
+                    select_timeout = min(
+                        1.0, timeout - elapsed
+                    )  # Check at least every second
+
+                rlist, _, _ = select.select(
+                    [self.stdout_fd, self.stderr_fd], [], [], select_timeout
+                )
+
+                # Handle timeout in select
+                if not rlist and timeout and start_time:
+                    continue  # Will be caught by timeout check above
+
                 for fd in rlist:
                     assert fd in [self.stdout_fd, self.stderr_fd]
                     # We use a higher value, because there is a bug which leads to spaces at the boundary
@@ -344,14 +402,26 @@ def _format_shell_output(
     allowlisted: bool,
     pwd_changed: bool,
     current_cwd: str,
+    timed_out: bool = False,
+    timeout_value: float | None = None,
 ) -> str:
     """Format shell command output into a message."""
+    # Strip ANSI escape sequences from output
+    stdout = strip_ansi_codes(stdout)
+    stderr = strip_ansi_codes(stderr)
+
     # Apply shortening logic
     stdout = _shorten_stdout(stdout, pre_tokens=2000, post_tokens=8000)
     stderr = _shorten_stdout(stderr, pre_tokens=2000, post_tokens=2000)
 
     # Format header
-    if interrupted:
+    if timed_out:
+        header = (
+            f"Command timed out (after {timeout_value}s)"
+            if timeout_value
+            else "Command timed out"
+        )
+    elif interrupted:
         header = "Command interrupted"
     else:
         header = f"Ran {'allowlisted ' if allowlisted else ''}command"
@@ -364,7 +434,9 @@ def _format_shell_output(
     if stderr:
         msg += _format_block_smart("", stderr, "stderr").lstrip() + "\n\n"
     if not stdout and not stderr:
-        if interrupted:
+        if timed_out:
+            msg += "No output before timeout\n"
+        elif interrupted:
             msg += "No output before interruption\n"
         else:
             msg += "No output\n"
@@ -385,7 +457,7 @@ def _format_shell_output(
 
 
 def execute_shell_impl(
-    cmd: str, _: Path | None, confirm: ConfirmFunc
+    cmd: str, _: Path | None, confirm: ConfirmFunc, timeout: float | None = None
 ) -> Generator[Message, None, None]:
     """Execute shell command and format output."""
     shell = get_shell()
@@ -393,8 +465,9 @@ def execute_shell_impl(
     prev_cwd = os.getcwd()
 
     try:
-        returncode, stdout, stderr = shell.run(cmd)
+        returncode, stdout, stderr = shell.run(cmd, timeout=timeout)
         interrupted = False
+        timed_out = returncode == -124  # Our timeout return code
     except KeyboardInterrupt as e:
         # Extract partial output and handle subprocess termination
         stdout = stderr = ""
@@ -420,6 +493,7 @@ def execute_shell_impl(
 
         returncode = shell.process.returncode
         interrupted = True
+        timed_out = False
     except Exception as e:
         raise ValueError(f"Shell error: {e}") from None
 
@@ -436,6 +510,8 @@ def execute_shell_impl(
         allowlisted,
         pwd_changed,
         current_cwd,
+        timed_out,
+        timeout_value=timeout,
     )
     yield Message("system", msg)
 
@@ -456,16 +532,36 @@ def execute_shell(
     """Executes a shell command and returns the output."""
     cmd = get_shell_command(code, args, kwargs)
 
+    # Check for timeout from environment variable
+    timeout = None
+    timeout_env = os.environ.get("GPTME_SHELL_TIMEOUT")
+    if timeout_env is not None:
+        try:
+            timeout = float(timeout_env) if timeout_env else 60.0
+            if timeout <= 0:
+                timeout = None  # Disable timeout if set to 0 or negative
+        except ValueError:
+            logger.warning(
+                f"Invalid GPTME_SHELL_TIMEOUT value: {timeout_env}, using default 60s"
+            )
+            timeout = 60.0
+
     # Skip confirmation for allowlisted commands
     if is_allowlisted(cmd):
-        yield from execute_shell_impl(cmd, None, lambda _: True)
+        yield from execute_shell_impl(cmd, None, lambda _: True, timeout=timeout)
     else:
+        # Create a wrapper function that passes timeout to execute_shell_impl
+        def execute_fn(
+            cmd: str, path: Path | None, confirm: ConfirmFunc
+        ) -> Generator[Message, None, None]:
+            return execute_shell_impl(cmd, path, confirm, timeout=timeout)
+
         yield from execute_with_confirmation(
             cmd,
             args,
             kwargs,
             confirm,
-            execute_fn=execute_shell_impl,
+            execute_fn=execute_fn,
             get_path_fn=get_path_fn,
             preview_fn=preview_shell,
             preview_lang="bash",
