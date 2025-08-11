@@ -679,14 +679,16 @@ def split_commands(script: str) -> list[str]:
 def _preprocess_quoted_heredocs(script: str) -> str:
     """Convert quoted heredoc delimiters to unquoted ones for bashlex parsing."""
     # Match heredoc operators with quoted delimiters: <<'DELIMITER' or <<"DELIMITER"
-    heredoc_pattern = re.compile(r'<<(["\'])([^"\'\s]+)\1')
+    # Allow optional whitespace between << and the quoted delimiter
+    heredoc_pattern = re.compile(r'<<\s*(["\'])([^"\'\s]+)\1')
     return heredoc_pattern.sub(r"<<\2", script)
 
 
 def _restore_quoted_heredocs(command: str, original_script: str) -> str:
     """Restore quoted heredoc delimiters in the processed command."""
     # If the original script had quoted heredocs, restore them
-    heredoc_pattern = re.compile(r'<<(["\'])([^"\'\s]+)\1')
+    # Allow optional whitespace between << and the quoted delimiter
+    heredoc_pattern = re.compile(r'<<\s*(["\'])([^"\'\s]+)\1')
     original_matches = heredoc_pattern.findall(original_script)
 
     if not original_matches:
