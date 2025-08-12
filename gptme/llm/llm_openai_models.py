@@ -12,8 +12,26 @@ OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
         "price_input": 1.25,  # $0.13 for cached inputs
         "price_output": 10,
         "supports_vision": True,
-        "knowledge_cutoff": datetime(2024, 9, 30),
         "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 9, 30),
+    },
+    "gpt-5-mini": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 0.25,  # $0.025 for cached inputs
+        "price_output": 2,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 5, 31),
+    },
+    "gpt-5-nano": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 0.05,  # $0.005 for cached inputs
+        "price_output": 0.4,
+        "supports_vision": True,
+        "supports_reasoning": True,
+        "knowledge_cutoff": datetime(2024, 5, 31),
     },
     # GPT-4o
     "gpt-4o": {
