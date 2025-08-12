@@ -5219,4 +5219,4 @@ youtube = ["youtube_transcript_api"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "a4443cc396e0fa8205e194c820b9738a2963c3ba6652efca5216167b4a2aba40"
+content-hash = "f918ffab9e975a21e8bcdb055f0c022e6ea353e9b1261f5d8b6fe95fd8dcbe9c"

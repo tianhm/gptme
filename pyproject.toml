@@ -135,7 +135,9 @@ youtube = ["youtube_transcript_api"]
 tts = ["sounddevice", "scipy", "numpy"]
 pyinstaller = ["pyinstaller"]
 telemetry = [
-    "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-requests", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
+    "opentelemetry-api", "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
+    "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-requests",
     "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-openai-v2",
 ]
 all = [
@@ -152,7 +154,9 @@ all = [
     # tts
     "sounddevice", "scipy", "numpy",
     # telemetry
-    "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-requests", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
+    "opentelemetry-api", "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
+    "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-requests",
     "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-openai-v2",
 ]
 
