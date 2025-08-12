@@ -5,6 +5,16 @@ if TYPE_CHECKING:
     from .models import _ModelDictMeta  # fmt: skip
 
 OPENAI_MODELS: dict[str, "_ModelDictMeta"] = {
+    # GPT-5
+    "gpt-5": {
+        "context": 400_000,
+        "max_output": 128_000,
+        "price_input": 1.25,  # $0.13 for cached inputs
+        "price_output": 10,
+        "supports_vision": True,
+        "knowledge_cutoff": datetime(2024, 9, 30),
+        "supports_reasoning": True,
+    },
     # GPT-4o
     "gpt-4o": {
         "context": 128_000,

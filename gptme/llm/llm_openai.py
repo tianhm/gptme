@@ -157,7 +157,8 @@ def _prep_deepseek_reasoner(msgs: list[Message]) -> Generator[Message, None, Non
 def _is_reasoner(base_model: str) -> bool:
     is_o1 = any(base_model.startswith(om) for om in ["o1", "o3", "o4"])
     is_deepseek_reasoner = base_model == "deepseek-reasoner"
-    return is_o1 or is_deepseek_reasoner
+    is_gpt5 = base_model.startswith("gpt-5")
+    return is_o1 or is_deepseek_reasoner or is_gpt5
 
 
 @lru_cache(maxsize=2)
