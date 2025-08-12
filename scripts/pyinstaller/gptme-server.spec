@@ -17,6 +17,14 @@ datas = [
 
 # Hidden imports - modules that PyInstaller might miss
 hiddenimports = [
+    # Built-in modules that PyInstaller sometimes misses
+    '_struct',
+    'struct',
+    '_socket',
+    '_ssl',
+    '_hashlib',
+    '_json',
+    # gptme modules
     'gptme.server.cli',
     'gptme.server.api',
     'gptme.server.api_v2',
@@ -42,6 +50,7 @@ hiddenimports = [
     'gptme.llm.llm_anthropic',
     'gptme.llm.models',
     'gptme.mcp.client',
+    # Flask and dependencies
     'flask',
     'flask_cors',
     'werkzeug',
@@ -52,6 +61,7 @@ hiddenimports = [
     'blinker',
     'importlib_metadata',
     'platformdirs',
+    # tiktoken
     'tiktoken_ext.openai_public',
     'tiktoken_ext',
 ]
