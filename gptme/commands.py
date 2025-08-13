@@ -64,15 +64,12 @@ action_descriptions: dict[Actions, str] = {
     "impersonate": "Impersonate the assistant",
     "tokens": "Show the number of tokens used",
     "export": "Export conversation as HTML",
-    "commit": "Commit staged changes to git",
+    "commit": "Ask assistant to git commit",
     "setup": "Setup gptme with completions and configuration",
     "help": "Show this help message",
     "exit": "Exit the program",
 }
 COMMANDS = list(action_descriptions.keys())
-
-
-# Command registry
 
 
 @dataclass
@@ -94,6 +91,7 @@ OriginalCommandHandler = (
 # Wrapped handler type (after decoration - always returns generator)
 CommandHandler = Callable[[CommandContext], Generator[Message, None, None]]
 
+# Command registry
 _command_registry: dict[str, CommandHandler] = {}
 
 

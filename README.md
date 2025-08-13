@@ -71,11 +71,11 @@ An unconstrained local <a href="https://gptme.org/docs/alternatives.html">altern
 ## 🎥 Demos
 
 > [!NOTE]
-> These demos are very out of date and do not reflect the latest capabilities. We hope to update them soon!
+> These demos are very out of date (2023) and do not reflect the latest capabilities.
 
 <table>
   <tr>
-    <th>Fibonacci (old)</th>
+    <th>Fibonacci</th>
     <th>Snake with curses</th>
   </tr>
   <tr>
@@ -306,6 +306,8 @@ Usage: gptme [OPTIONS] [PROMPTS]...
     /impersonate  Impersonate the assistant
     /tokens       Show the number of tokens used
     /export       Export conversation as HTML
+    /commit       Ask assistant to git commit
+    /setup        Setup gptme with completions and configuration
     /help         Show this help message
     /exit         Exit the program
 
@@ -316,22 +318,22 @@ Usage: gptme [OPTIONS] [PROMPTS]...
 Options:
   --name TEXT            Name of conversation. Defaults to generating a random
                          name.
-  -m, --model TEXT       Model to use, e.g. openai/gpt-4o,
-                         anthropic/claude-3-7-sonnet-20250219. If only
-                         provider given then a default is used.
+  -m, --model TEXT       Model to use, e.g. openai/gpt-5, anthropic/claude-
+                         sonnet-4-20250514. If only provider given then a
+                         default is used.
   -w, --workspace TEXT   Path to workspace directory. Pass '@log' to create a
                          workspace in the log directory.
-  -r, --resume           Load last conversation
-  -y, --no-confirm       Skips all confirmation prompts.
+  --agent-path TEXT      Path to agent workspace directory.
+  -r, --resume           Load most recent conversation.
+  -y, --no-confirm       Skip all confirmation prompts.
   -n, --non-interactive  Non-interactive mode. Implies --no-confirm.
-  --system TEXT          System prompt. Can be 'full', 'short', or something
+  --system TEXT          System prompt. Options: 'full', 'short', or something
                          custom.
-  -t, --tools TEXT       Comma-separated list of tools to allow. Available:
-                         append, browser, chats, computer, gh, ipython, patch,
-                         rag, read, save, screenshot, shell, subagent, tmux,
-                         vision.
-  --tool-format TEXT     Tool parsing method. Can be 'markdown', 'xml',
-                         'tool'. (experimental)
+  -t, --tools TEXT       Tools to allow as comma-separated list. Available:
+                         append, browser, chats, choice, computer, gh,
+                         ipython, morph, patch, rag, read, save, screenshot,
+                         shell, subagent, tmux, tts, vision, youtube.
+  --tool-format TEXT     Tool format to use. Options: markdown, xml, tool
   --no-stream            Don't stream responses
   --show-hidden          Show hidden system messages.
   -v, --verbose          Show verbose output.

@@ -85,13 +85,13 @@ The interface provides user commands that can be used to interact with the syste
     "-r",
     "--resume",
     is_flag=True,
-    help="Load last conversation",
+    help="Load most recent conversation.",
 )
 @click.option(
     "-y",
     "--no-confirm",
     is_flag=True,
-    help="Skips all confirmation prompts.",
+    help="Skip all confirmation prompts.",
 )
 @click.option(
     "-n",
@@ -105,20 +105,20 @@ The interface provides user commands that can be used to interact with the syste
     "--system",
     "prompt_system",
     default="full",
-    help="System prompt. Can be 'full', 'short', or something custom.",
+    help="System prompt. Options: 'full', 'short', or something custom.",
 )
 @click.option(
     "-t",
     "--tools",
     "tool_allowlist",
     default=None,
-    help=f"Comma-separated list of tools to allow. Available: {available_tool_names}.",
+    help=f"Tools to allow as comma-separated list. Available: {available_tool_names}.",
 )
 @click.option(
     "--tool-format",
     "tool_format",
     default=None,
-    help="Tool parsing method. Can be 'markdown', 'xml', 'tool'. (experimental)",
+    help="Tool format to use. Options: markdown, xml, tool",
 )
 @click.option(
     "--no-stream",
