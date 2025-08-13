@@ -137,15 +137,8 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
     model_meta = get_model(f"anthropic/{model}")
     use_thinking = _should_use_thinking(model_meta, tools)
-    # Consider making this configurable via environment variable
     thinking_budget = int(os.environ.get("GPTME_THINKING_BUDGET", "16000"))
-    # We add thinking_budget to max_output to ensure the model can always
-    # produce its full output capacity even when using the full thinking budget.
-    # Note: If thinking uses fewer tokens than budgeted, the model may output
-    # more than model.max_output (which is generally desirable for completeness).
-    max_tokens = (model_meta.max_output or 4096) + (
-        thinking_budget if use_thinking else 0
-    )
+    max_tokens = model_meta.max_output or 4096
 
     response = _anthropic.messages.create(
         model=api_model,
@@ -195,13 +188,7 @@ def stream(
     use_thinking = _should_use_thinking(model_meta, tools)
     # Use the same configurable thinking budget as chat()
     thinking_budget = int(os.environ.get("GPTME_THINKING_BUDGET", "16000"))
-    # We add thinking_budget to max_output to ensure the model can always
-    # produce its full output capacity even when using the full thinking budget.
-    # Note: If thinking uses fewer tokens than budgeted, the model may output
-    # more than model.max_output (which is generally desirable for completeness).
-    max_tokens = (model_meta.max_output or 4096) + (
-        thinking_budget if use_thinking else 0
-    )
+    max_tokens = model_meta.max_output or 4096
 
     with _anthropic.messages.stream(
         model=api_model,
