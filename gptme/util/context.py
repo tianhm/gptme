@@ -18,6 +18,12 @@ from ..config import get_config
 from ..message import Message
 from ..tools import has_tool
 from ..tools.browser import read_url
+from .gh import (
+    get_github_issue_content,
+    get_github_pr_content,
+    parse_github_url,
+    transform_github_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -621,15 +627,34 @@ def _resource_to_codeblock(prompt: str) -> str | None:
     for path in paths:
         result += _resource_to_codeblock(path) or ""
 
-    if not has_tool("browser"):
-        logger.warning("Browser tool not available, skipping URL read")
-    else:
-        for url in urls:
+    for url in urls:
+        content = None
+
+        # First try to handle GitHub issues/PRs with specialized tools
+        github_info = parse_github_url(url)
+        if github_info:
+            if github_info["type"] == "issues":
+                content = get_github_issue_content(
+                    github_info["owner"], github_info["repo"], github_info["number"]
+                )
+            elif github_info["type"] == "pull":
+                content = get_github_pr_content(url)
+
+        # If GitHub handling failed or not a GitHub issue/PR, fall back to browser
+        if not content and has_tool("browser"):
             try:
-                content = read_url(url)
-                result += f"```{url}\n{content}\n```"
+                # Transform GitHub blob URLs to raw URLs
+                transformed_url = transform_github_url(url)
+                if transformed_url != url:
+                    logger.debug(f"Transformed GitHub URL: {url} -> {transformed_url}")
+                content = read_url(transformed_url)
             except Exception as e:
                 logger.warning(f"Failed to read URL {url}: {e}")
+        elif not content and not has_tool("browser"):
+            logger.warning("Browser tool not available, skipping URL read")
+
+        if content:
+            result += f"```{url}\n{content}\n```"
 
     return result
 
