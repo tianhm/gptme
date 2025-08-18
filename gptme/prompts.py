@@ -83,7 +83,9 @@ def get_prompt(
     )
 
     # Generate workspace context from agent if provided
-    agent_msgs = list(prompt_workspace(agent_path, title="Agent Workspace Files"))
+    agent_msgs = list(
+        prompt_workspace(agent_path, title="Agent Workspace", include_path=True)
+    )
 
     # Combine core messages into one system prompt
     result = []
@@ -319,7 +321,12 @@ def prompt_systeminfo() -> Generator[Message, None, None]:
         os_info = "unknown"
         os_version = ""
 
-    prompt = f"## System Information\n\n**OS:** {os_info} {os_version}".strip()
+    # Get current working directory
+    from pathlib import Path
+
+    pwd = Path.cwd()
+
+    prompt = f"## System Information\n\n**OS:** {os_info} {os_version}\n**Current Directory:** {pwd}".strip()
 
     yield Message(
         "system",
@@ -391,7 +398,9 @@ def get_tree_output(workspace: Path) -> str | None:
 
 
 def prompt_workspace(
-    workspace: Path | None = None, title="Project Workspace Files"
+    workspace: Path | None = None,
+    title="Project Workspace",
+    include_path: bool = False,
 ) -> Generator[Message, None, None]:
     # TODO: update this prompt if the files change
     # TODO: include `git status -vv`, and keep it up-to-date
@@ -399,6 +408,10 @@ def prompt_workspace(
 
     if workspace is None:
         return
+
+    # Add workspace path if requested
+    if include_path:
+        sections.append(f"**Workspace Path:** {workspace}")
 
     project = get_project_config(workspace)
 
@@ -435,6 +448,10 @@ def prompt_workspace(
                     f"File glob '{fileglob}' specified in project config does not match any files."
                 )
 
+    # Get tree output if enabled
+    if tree_output := get_tree_output(workspace):
+        sections.append(f"## Project Structure\n\n{md_codeblock('', tree_output)}\n\n")
+
     files_str = []
     for file in files:
         if file.exists():
@@ -453,10 +470,6 @@ def prompt_workspace(
         )
     ):
         sections.append("## Computed context\n\n" + cmd_output)
-
-    # Get tree output if enabled
-    if tree_output := get_tree_output(workspace):
-        sections.append(f"## Project Structure\n\n{md_codeblock('', tree_output)}\n\n")
 
     if sections:
         yield Message("system", f"# {title}\n\n" + "\n\n".join(sections))
