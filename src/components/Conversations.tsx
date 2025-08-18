@@ -24,10 +24,11 @@ import {
 import {
   leftSidebarVisible$,
   rightSidebarVisible$,
-  rightSidebarCollapsed$,
+  rightSidebarActiveTab$,
   setLeftPanelRef,
   setRightPanelRef,
 } from '@/stores/sidebar';
+import { RightSidebarContent } from '@/components/RightSidebarContent';
 
 interface Props {
   className?: string;
@@ -87,7 +88,6 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
   // Sidebar state
   const leftVisible = use$(leftSidebarVisible$);
   const rightVisible = use$(rightSidebarVisible$);
-  const rightCollapsed = use$(rightSidebarCollapsed$);
 
   // Handle step parameter for auto-generation
   useEffect(() => {
@@ -234,23 +234,12 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
   useEffect(() => {
     // Only manipulate panels in desktop mode
     if (!isMobile) {
-      // Always hide right sidebar by default
-      rightPanelRef.current?.collapse();
       // Hide left sidebar by default when no conversation is selected
       if (!selectedConversation$.get()) {
         leftPanelRef.current?.collapse();
       }
     }
   }, [isMobile]);
-
-  // Handle right sidebar collapsed state changes
-  useEffect(() => {
-    if (!isMobile && rightPanelRef.current && rightVisible) {
-      // Only resize if the panel is visible
-      const targetSize = rightCollapsed ? 16 : 4;
-      rightPanelRef.current.resize(targetSize);
-    }
-  }, [rightCollapsed, rightVisible, isMobile]);
 
   if (isMobile) {
     return (
@@ -317,13 +306,34 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
           }}
         >
           <SheetContent side="right" className="h-full w-full p-0 sm:max-w-md">
-            <div className="h-full">
-              <Memo>
-                {() => {
-                  const conversation = conversation$.get();
-                  return conversation ? <RightSidebar conversationId={conversation.id} /> : null;
-                }}
-              </Memo>
+            <div className="flex h-full">
+              {/* Content area */}
+              <div className="flex-1">
+                <Memo>
+                  {() => {
+                    const activeTab = use$(rightSidebarActiveTab$);
+                    const conversation = conversation$.get();
+
+                    return activeTab && conversation ? (
+                      <RightSidebarContent conversationId={conversation.id} activeTab={activeTab} />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-muted-foreground">
+                        Select a tab to view content
+                      </div>
+                    );
+                  }}
+                </Memo>
+              </div>
+
+              {/* Navigation icons */}
+              <div className="w-12 flex-shrink-0">
+                <Memo>
+                  {() => {
+                    const conversation = conversation$.get();
+                    return conversation ? <RightSidebar conversationId={conversation.id} /> : null;
+                  }}
+                </Memo>
+              </div>
             </div>
           </SheetContent>
         </Sheet>
@@ -381,25 +391,42 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
         </Memo>
       </ResizablePanel>
 
-      <ResizableHandle />
+      {/* Conditional content area - only shows when a tab is selected */}
+      <Memo>
+        {() => {
+          const rightVisible = use$(rightSidebarVisible$);
+          const activeTab = use$(rightSidebarActiveTab$);
+          const conversation = conversation$.get();
 
-      <ResizablePanel
-        ref={rightPanelRef}
-        defaultSize={rightCollapsed ? 16 : 4}
-        minSize={rightCollapsed ? 12 : 3}
-        maxSize={40}
-        collapsible
-        collapsedSize={0}
-        onCollapse={() => rightSidebarVisible$.set(false)}
-        onExpand={() => rightSidebarVisible$.set(true)}
-      >
+          return rightVisible && activeTab && conversation ? (
+            <>
+              <ResizableHandle />
+              <ResizablePanel
+                ref={rightPanelRef}
+                defaultSize={25}
+                minSize={15}
+                maxSize={40}
+                collapsible
+                collapsedSize={0}
+                onCollapse={() => rightSidebarVisible$.set(false)}
+                onExpand={() => rightSidebarVisible$.set(true)}
+              >
+                <RightSidebarContent conversationId={conversation.id} activeTab={activeTab} />
+              </ResizablePanel>
+            </>
+          ) : null;
+        }}
+      </Memo>
+
+      {/* Fixed navigation icons - always visible */}
+      <div className="w-12 flex-shrink-0">
         <Memo>
           {() => {
             const conversation = conversation$.get();
             return conversation ? <RightSidebar conversationId={conversation.id} /> : null;
           }}
         </Memo>
-      </ResizablePanel>
+      </div>
     </ResizablePanelGroup>
   );
 };

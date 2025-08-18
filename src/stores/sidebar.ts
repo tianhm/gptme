@@ -5,6 +5,7 @@ import type { ImperativePanelHandle } from 'react-resizable-panels';
 export const leftSidebarVisible$ = observable(true);
 export const rightSidebarVisible$ = observable(true);
 export const rightSidebarCollapsed$ = observable(false);
+export const rightSidebarActiveTab$ = observable<string | null>(null);
 
 // Selected workspace for filtering conversations
 export const selectedWorkspace$ = observable<string | null>(null);
