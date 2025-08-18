@@ -115,7 +115,7 @@ export const MenuBar: FC<MenuBarProps> = ({ showRightSidebar = false }) => {
             to="/chat"
             className="flex items-center space-x-1 transition-opacity hover:opacity-80 sm:space-x-2"
           >
-            <img src="https://gptme.org/media/logo.png" alt="gptme logo" className="w-4" />
+            <img src="/logo.png" alt="gptme logo" className="w-4" />
             <span className="font-mono text-sm font-semibold sm:text-base">gptme</span>
           </Link>
         </div>
