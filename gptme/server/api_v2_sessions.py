@@ -206,11 +206,11 @@ def step(
     config.chat = chat_config
     set_config(config)
 
-    # Initialize tools in this thread
-    init_tools(chat_config.tools)
-
     # Load .env file if present
     load_dotenv(dotenv_path=workspace / ".env")
+
+    # Initialize tools in this thread
+    init_tools(chat_config.tools)
 
     # Load conversation
     manager = LogManager.load(
@@ -222,13 +222,13 @@ def step(
     # TODO: This is not the best way to manage the chdir state, since it's
     # essentially a shared global across chats (bad), but the fix at least
     # addresses the issue where chats don't start in the directory they should.
-    # If we are attempting to make a step in a conversation without any user
+    # If we are attempting to make a step in a conversation with only one or fewer user
     # messages, make sure we first chdir to the workspace directory (so that
     # the conversation starts in the right folder).
     user_messages = [msg for msg in manager.log.messages if msg.role == "user"]
-    if not user_messages:
+    if len(user_messages) <= 1:
         logger.debug(
-            f"No user messages found, changing directory to workspace: {workspace}"
+            f"One or fewer user messages found, changing directory to workspace: {workspace}"
         )
         os.chdir(workspace)
 
