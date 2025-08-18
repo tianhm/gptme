@@ -326,7 +326,7 @@ def prompt_systeminfo() -> Generator[Message, None, None]:
 
     pwd = Path.cwd()
 
-    prompt = f"## System Information\n\n**OS:** {os_info} {os_version}\n**Current Directory:** {pwd}".strip()
+    prompt = f"## System Information\n\n**OS:** {os_info} {os_version}\n**Initial Working Directory:** {pwd}".strip()
 
     yield Message(
         "system",
