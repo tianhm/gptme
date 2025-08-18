@@ -165,10 +165,12 @@ export function useConversation(conversationId: string) {
               // Keep generating true as we're continuing with tool execution
             }
 
+            // Always set pending tool state so onToolExecuting can find it
+            setPendingTool(conversationId, toolId, tooluse);
+
             if (!auto_confirm) {
               // Always set generating to false and play chime for manual confirmation
               setGenerating(conversationId, false);
-              setPendingTool(conversationId, toolId, tooluse);
               playChime().catch((error) => {
                 console.warn('Failed to play tool confirmation chime:', error);
               });
