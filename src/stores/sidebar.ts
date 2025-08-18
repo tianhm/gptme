@@ -4,6 +4,7 @@ import type { ImperativePanelHandle } from 'react-resizable-panels';
 
 export const leftSidebarVisible$ = observable(true);
 export const rightSidebarVisible$ = observable(true);
+export const rightSidebarCollapsed$ = observable(false);
 
 // Selected workspace for filtering conversations
 export const selectedWorkspace$ = observable<string | null>(null);
@@ -48,4 +49,8 @@ export const toggleRightSidebar = () => {
     // Mobile: toggle state directly
     rightSidebarVisible$.set(!rightSidebarVisible$.get());
   }
+};
+
+export const toggleRightSidebarCollapsed = () => {
+  rightSidebarCollapsed$.set(!rightSidebarCollapsed$.get());
 };

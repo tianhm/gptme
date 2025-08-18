@@ -24,6 +24,7 @@ import {
 import {
   leftSidebarVisible$,
   rightSidebarVisible$,
+  rightSidebarCollapsed$,
   setLeftPanelRef,
   setRightPanelRef,
 } from '@/stores/sidebar';
@@ -82,6 +83,11 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
       selectedConversation$.set('');
     }
   }, [conversationParam]);
+
+  // Sidebar state
+  const leftVisible = use$(leftSidebarVisible$);
+  const rightVisible = use$(rightSidebarVisible$);
+  const rightCollapsed = use$(rightSidebarCollapsed$);
 
   // Handle step parameter for auto-generation
   useEffect(() => {
@@ -237,8 +243,14 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
     }
   }, [isMobile]);
 
-  const leftVisible = use$(leftSidebarVisible$);
-  const rightVisible = use$(rightSidebarVisible$);
+  // Handle right sidebar collapsed state changes
+  useEffect(() => {
+    if (!isMobile && rightPanelRef.current && rightVisible) {
+      // Only resize if the panel is visible
+      const targetSize = rightCollapsed ? 4 : 20;
+      rightPanelRef.current.resize(targetSize);
+    }
+  }, [rightCollapsed, rightVisible, isMobile]);
 
   if (isMobile) {
     return (
@@ -373,8 +385,8 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
 
       <ResizablePanel
         ref={rightPanelRef}
-        defaultSize={20}
-        minSize={15}
+        defaultSize={rightCollapsed ? 4 : 20}
+        minSize={3}
         maxSize={40}
         collapsible
         collapsedSize={0}
