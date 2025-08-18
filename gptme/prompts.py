@@ -376,8 +376,9 @@ def get_tree_output(workspace: Path) -> str | None:
     # TODO: use `git ls-files` instead? (respects .gitignore better)
     try:
         # Run tree command with --gitignore option
+        # is -fi more effective? probably
         result = subprocess.run(
-            ["tree", "--gitignore", "."],
+            ["tree", "-fi", "--gitignore", "."],
             cwd=workspace,
             capture_output=True,
             text=True,
@@ -387,6 +388,7 @@ def get_tree_output(workspace: Path) -> str | None:
             logger.warning(f"Failed to run tree command: {result.stderr}")
             return None
         # we allocate roughly a ~5000 token budget (~20000 characters)
+        # TODO: if budged exceeded or command times out, try running tree with less depth
         if len(result.stdout) > 20000:
             logger.warning("Tree output listing files is too long, skipping.")
             return None

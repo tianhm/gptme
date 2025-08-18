@@ -379,12 +379,17 @@ def autocommit() -> Message:
     """
     try:
         # Get current git status
-        status_result = subprocess.run(
+        status_result_porcelain = subprocess.run(
             ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
         )
 
-        if not status_result.stdout.strip():
+        if not status_result_porcelain.stdout.strip():
             return Message("system", "No changes to commit.")
+
+        # Get current git status
+        status_result = subprocess.run(
+            ["git", "status"], capture_output=True, text=True, check=True
+        )
 
         # Get git diff to show what changed
         diff_result = subprocess.run(
@@ -394,7 +399,7 @@ def autocommit() -> Message:
         # Create a message for the LLM to handle the commit
         commit_prompt = f"""Pre-commit checks have passed and the following changes have been made:
 
-```git status --porcelain
+```git status
 {status_result.stdout}
 ```
 
@@ -405,7 +410,7 @@ def autocommit() -> Message:
 This is a good time to review these changes and consider creating an appropriate commit:
 
 1. Review the changes, decide which changes to include in the commit
-2. Stage the relevant files using `git add`, never use `git add .` or `git add -A` to avoid adding unintended files
+2. Stage only the relevant files using `git add` (never use `git add .` or `git add -A` to avoid adding unintended files)
 3. Create the commit using the HEREDOC format to avoid escaping issues. Both stage and commit in one go.
 
 ```shell
