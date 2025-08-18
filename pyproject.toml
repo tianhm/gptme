@@ -1,7 +1,7 @@
 [project]
 name = "gptme"
 version = "0.28.0"
-description = "Personal AI assistant in your terminal that can use the shell, run code, edit files, browse the web, and use vision. An unconstrained local alternative to ChatGPT's Code Interpreter."
+description = "Powerful AI agent for coding and general tasks. Terminal-first with shell, code execution, file editing, web browsing, vision, computer use. Unconstrained."
 authors = [
     { name = "Erik Bjäreholt", email = "erik@bjareho.lt" },
 ]
