@@ -322,11 +322,13 @@ def prompt_systeminfo() -> Generator[Message, None, None]:
         os_version = ""
 
     # Get current working directory
-    from pathlib import Path
 
     pwd = Path.cwd()
 
-    prompt = f"## System Information\n\n**OS:** {os_info} {os_version}\n**Initial Working Directory:** {pwd}".strip()
+    prompt = f"""## System Information
+
+**OS:** {os_info} {os_version}
+**Working Directory:** {pwd}""".strip()
 
     yield Message(
         "system",
@@ -413,7 +415,7 @@ def prompt_workspace(
 
     # Add workspace path if requested
     if include_path:
-        sections.append(f"**Workspace Path:** {workspace}")
+        sections.append(f"**Path:** {workspace.resolve()}")
 
     project = get_project_config(workspace)
 
@@ -457,7 +459,7 @@ def prompt_workspace(
     files_str = []
     for file in files:
         if file.exists():
-            files_str.append(md_codeblock(file, file.read_text()))
+            files_str.append(md_codeblock(file.resolve(), file.read_text()))
     if files_str:
         sections.append(
             "## Selected files\n\nRead more with `cat`.\n\n" + "\n\n".join(files_str)
