@@ -1,9 +1,10 @@
-import { Send, Loader2, Settings } from 'lucide-react';
+import { Send, Loader2, Settings, X, Bot, Folder } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { useState, useEffect, useRef, type FC, type FormEvent, type KeyboardEvent } from 'react';
 import { useApi } from '@/contexts/ApiContext';
 import { ProviderIcon } from '@/components/ProviderIcon';
+import { Badge } from '@/components/ui/badge';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
@@ -21,7 +22,7 @@ import { conversations$ } from '@/stores/conversations';
 import { selectedAgent$, selectedWorkspace$ } from '@/stores/sidebar';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { WorkspaceSelector } from '@/components/WorkspaceSelector';
-import type { WorkspaceProject } from '@/utils/workspaceUtils';
+import type { WorkspaceProject, Agent } from '@/utils/workspaceUtils';
 import { useModels, type ModelInfo } from '@/hooks/useModels';
 
 export interface ChatOptions {
@@ -218,6 +219,50 @@ const SubmitButton: FC<{ isGenerating: boolean; isDisabled: boolean }> = ({
   </Button>
 );
 
+const WorkspaceBadge: FC<{ workspace: string; onRemove: () => void }> = ({
+  workspace,
+  onRemove,
+}) => {
+  // Show a shortened version of the workspace path for better UX
+  const displayName = workspace === '.' ? 'Current' : workspace.split('/').pop() || workspace;
+
+  return (
+    <Badge variant="secondary" className="flex items-center gap-1.5 pr-1">
+      <div className="flex items-center gap-1.5">
+        <Folder className="h-3 w-3" />
+        <span className="text-xs" title={workspace}>
+          {displayName}
+        </span>
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onRemove}
+        className="h-4 w-4 p-0 hover:bg-destructive/20"
+      >
+        <X className="h-2.5 w-2.5" />
+      </Button>
+    </Badge>
+  );
+};
+
+const AgentBadge: FC<{ agent: Agent; onRemove: () => void }> = ({ agent, onRemove }) => (
+  <Badge variant="secondary" className="flex items-center gap-1.5 pr-1">
+    <div className="flex items-center gap-1.5">
+      <Bot className="h-3 w-3" />
+      <span className="text-xs">{agent.name}</span>
+    </div>
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onRemove}
+      className="h-4 w-4 p-0 hover:bg-destructive/20"
+    >
+      <X className="h-2.5 w-2.5" />
+    </Button>
+  </Badge>
+);
+
 export const ChatInput: FC<Props> = ({
   conversationId,
   onSend,
@@ -251,6 +296,7 @@ export const ChatInput: FC<Props> = ({
       setSelectedModel(apiDefaultModel);
     }
   }, [defaultModel, apiDefaultModel, selectedModel]);
+
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>(
     // For new conversations, use the selected workspace from sidebar, otherwise default to '.'
     !conversationId && sidebarSelectedWorkspace
@@ -258,6 +304,11 @@ export const ChatInput: FC<Props> = ({
       : !conversationId && sidebarSelectedAgent && sidebarSelectedAgent.path
         ? sidebarSelectedAgent.path
         : '.'
+  );
+
+  // Track whether workspace was explicitly selected (not derived from agent)
+  const [workspaceExplicitlySelected, setWorkspaceExplicitlySelected] = useState(
+    !conversationId && !!sidebarSelectedWorkspace
   );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -298,12 +349,21 @@ export const ChatInput: FC<Props> = ({
   useEffect(() => {
     if (!conversationId && sidebarSelectedWorkspace) {
       setSelectedWorkspace(sidebarSelectedWorkspace);
+      setWorkspaceExplicitlySelected(true);
     } else if (!conversationId && sidebarSelectedAgent && sidebarSelectedAgent.path) {
       setSelectedWorkspace(sidebarSelectedAgent.path);
+      setWorkspaceExplicitlySelected(false); // Agent-derived workspace, not explicit
     } else if (!conversationId && !sidebarSelectedWorkspace && !sidebarSelectedAgent) {
       setSelectedWorkspace('.');
+      setWorkspaceExplicitlySelected(false);
     }
   }, [conversationId, sidebarSelectedWorkspace, sidebarSelectedAgent]);
+
+  // Wrapper function for explicit workspace selection
+  const handleWorkspaceChange = (workspace: string) => {
+    setSelectedWorkspace(workspace);
+    setWorkspaceExplicitlySelected(workspace !== '.');
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -373,13 +433,13 @@ export const ChatInput: FC<Props> = ({
                   disabled={isDisabled}
                 />
 
-                <div className="absolute bottom-1.5 left-1.5">
+                <div className="absolute bottom-1.5 left-1.5 flex items-center gap-2">
                   <OptionsButton isDisabled={isDisabled}>
                     <ChatOptionsPanel
                       selectedModel={selectedModel}
                       setSelectedModel={setSelectedModel}
                       selectedWorkspace={selectedWorkspace}
-                      setSelectedWorkspace={setSelectedWorkspace}
+                      setSelectedWorkspace={handleWorkspaceChange}
                       streamingEnabled={streamingEnabled}
                       setStreamingEnabled={setStreamingEnabled}
                       models={models}
@@ -394,6 +454,28 @@ export const ChatInput: FC<Props> = ({
                       }}
                     />
                   </OptionsButton>
+
+                  {/* Agent badge for new conversations */}
+                  {!conversationId && sidebarSelectedAgent && (
+                    <AgentBadge
+                      agent={sidebarSelectedAgent}
+                      onRemove={() => selectedAgent$.set(null)}
+                    />
+                  )}
+
+                  {/* Workspace badge for new conversations */}
+                  {!conversationId &&
+                    selectedWorkspace &&
+                    selectedWorkspace !== '.' &&
+                    workspaceExplicitlySelected && (
+                      <WorkspaceBadge
+                        workspace={selectedWorkspace}
+                        onRemove={() => {
+                          setSelectedWorkspace('.');
+                          setWorkspaceExplicitlySelected(false);
+                        }}
+                      />
+                    )}
                 </div>
 
                 <SubmitButton isGenerating={isGenerating} isDisabled={isDisabled} />

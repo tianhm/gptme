@@ -87,51 +87,6 @@ export const LeftSidebar: FC<Props> = ({
   return (
     <div className="h-full">
       <div className="flex h-full flex-col">
-        <Collapsible open={!agentsCollapsed} onOpenChange={(open) => setAgentsCollapsed(!open)}>
-          <CollapsibleTrigger className="flex h-12 w-full shrink-0 items-center justify-between bg-background px-4 hover:bg-muted/50">
-            <div className="flex items-center space-x-2">
-              {agentsCollapsed ? (
-                <ChevronRight className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
-              <h2 className="font-semibold">Agents</h2>
-            </div>
-            <div className="flex items-center space-x-2">
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowCreateAgentDialog(true);
-                      }}
-                      data-testid="new-agent-button"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {!isConnected ? 'Connect to create new agents' : 'Create new agent'}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="overflow-hidden">
-            <div className="overflow-hidden" style={{ maxHeight: agentsCollapsed ? 0 : '200px' }}>
-              <AgentsList
-                conversations={conversations}
-                handleCreateAgent={() => {
-                  setShowCreateAgentDialog(true);
-                }}
-              />
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-
         <div className="flex h-12 shrink-0 items-center justify-between bg-background px-4">
           <h2 className="font-semibold">Conversations</h2>
           <div className="flex items-center space-x-2">
@@ -170,6 +125,52 @@ export const LeftSidebar: FC<Props> = ({
             fetchNextPage={fetchNextPage}
             hasNextPage={hasNextPage}
           />
+
+          <Collapsible open={!agentsCollapsed} onOpenChange={(open) => setAgentsCollapsed(!open)}>
+            <CollapsibleTrigger className="flex h-12 w-full shrink-0 items-center justify-between border-t bg-background px-4 hover:bg-muted/50">
+              <div className="flex items-center space-x-2">
+                {agentsCollapsed ? (
+                  <ChevronRight className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+                <h2 className="font-semibold">Agents</h2>
+              </div>
+              <div className="flex items-center space-x-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowCreateAgentDialog(true);
+                        }}
+                        data-testid="new-agent-button"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {!isConnected ? 'Connect to create new agents' : 'Create new agent'}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="overflow-hidden">
+              <div className="overflow-hidden" style={{ maxHeight: agentsCollapsed ? 0 : '200px' }}>
+                <AgentsList
+                  conversations={conversations}
+                  handleCreateAgent={() => {
+                    setShowCreateAgentDialog(true);
+                  }}
+                />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
           <Collapsible
             open={!workspacesCollapsed}
             onOpenChange={(open) => setWorkspacesCollapsed(!open)}

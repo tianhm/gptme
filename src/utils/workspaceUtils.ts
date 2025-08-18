@@ -35,7 +35,8 @@ export function extractWorkspacesFromConversations(
 
   // Extract workspace information from conversation summaries
   for (const conversation of conversations) {
-    if (!conversation.workspace) continue;
+    // Skip demo conversations (readonly)
+    if (conversation.readonly || !conversation.workspace) continue;
 
     const workspace = conversation.workspace;
     const name = workspace.split('/').pop() || workspace;
