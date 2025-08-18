@@ -378,9 +378,13 @@ def autocommit() -> Message:
     Returns a message asking the LLM to review changes and create a commit.
     """
     try:
-        # Get current git status
+        # See if there are any changes to commit by checking for
+        # changes, excluding untracked files.
         status_result_porcelain = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
         )
 
         if not status_result_porcelain.stdout.strip():
