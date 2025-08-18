@@ -46,7 +46,7 @@ export const ConversationSettings: FC<ConversationSettingsProps> = ({ conversati
       {chatConfig && (
         <Form {...form}>
           <form onSubmit={handleSubmit(onSubmit)} className="flex h-full flex-col">
-            <div className="flex-1 space-y-8 overflow-y-auto pb-24">
+            <div className="flex-1 space-y-8 overflow-y-auto p-4 pb-24">
               <h3 className="mt-4 text-lg font-medium">Chat Settings</h3>
 
               {/* Model Field */}

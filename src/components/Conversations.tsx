@@ -247,7 +247,7 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
   useEffect(() => {
     if (!isMobile && rightPanelRef.current && rightVisible) {
       // Only resize if the panel is visible
-      const targetSize = rightCollapsed ? 4 : 20;
+      const targetSize = rightCollapsed ? 16 : 4;
       rightPanelRef.current.resize(targetSize);
     }
   }, [rightCollapsed, rightVisible, isMobile]);
@@ -385,8 +385,8 @@ const Conversations: FC<Props> = ({ route, conversationId }) => {
 
       <ResizablePanel
         ref={rightPanelRef}
-        defaultSize={rightCollapsed ? 4 : 20}
-        minSize={3}
+        defaultSize={rightCollapsed ? 16 : 4}
+        minSize={rightCollapsed ? 12 : 3}
         maxSize={40}
         collapsible
         collapsedSize={0}
