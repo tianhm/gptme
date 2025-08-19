@@ -13,7 +13,22 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-TIMEOUT = 30  # seconds
+TIMEOUT = 10  # seconds - reduced for faster restarts
+
+
+def _is_connection_error(error: Exception) -> bool:
+    """Check if error indicates browser connection failure"""
+    error_msg = str(error).lower()
+    return any(
+        phrase in error_msg
+        for phrase in [
+            "connection closed",
+            "browser has been closed",
+            "target closed",
+            "connection terminated",
+            "pipe closed",
+        ]
+    )
 
 
 @dataclass
@@ -73,7 +88,11 @@ class BrowserThread:
                         with self.lock:
                             self.results[cmd_id] = (result, None)
                     except Exception as e:
-                        logger.exception("Error in browser thread")
+                        if _is_connection_error(e):
+                            logger.debug(f"Browser connection error (will retry): {e}")
+                        else:
+                            logger.exception("Unexpected error in browser thread")
+
                         with self.lock:
                             self.results[cmd_id] = (None, e)
                 except Empty:
@@ -87,8 +106,13 @@ class BrowserThread:
             try:
                 browser.close()
                 playwright.stop()
-            except Exception:
-                logger.exception("Error stopping browser")
+            except Exception as e:
+                if _is_connection_error(e):
+                    logger.debug(
+                        f"Browser connection already closed during cleanup: {e}"
+                    )
+                else:
+                    logger.exception("Error stopping browser")
             logger.info("Browser stopped")
 
     def execute(self, func: Callable[..., T], *args, **kwargs) -> T:

@@ -8,14 +8,35 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
+from collections.abc import Callable
 
 from playwright.sync_api import Browser, ElementHandle
 
-from ._browser_thread import BrowserThread
+from ._browser_thread import BrowserThread, _is_connection_error
 
 _browser: BrowserThread | None = None
 _last_logs: dict = {"logs": [], "errors": [], "url": None}
 logger = logging.getLogger(__name__)
+
+
+def _restart_browser() -> None:
+    """Restart the browser by resetting the global instance"""
+    import time
+
+    global _browser
+    start_time = time.time()
+
+    if _browser is not None:
+        try:
+            logger.debug("Stopping old browser instance...")
+            _browser.stop()
+            logger.debug(f"Browser stopped in {time.time() - start_time:.2f}s")
+        except Exception:
+            logger.debug("Error stopping old browser instance")
+        _browser = None
+
+    logger.debug(f"Browser restart completed in {time.time() - start_time:.2f}s")
 
 
 def get_browser() -> BrowserThread:
@@ -24,6 +45,35 @@ def get_browser() -> BrowserThread:
         _browser = BrowserThread()
         atexit.register(_browser.stop)
     return _browser
+
+
+T = TypeVar("T")
+
+
+def _execute_with_retry(
+    func: Callable[..., T], *args, max_retries: int = 1, **kwargs
+) -> T:
+    """Execute a browser function with automatic retry on connection failures"""
+    last_error: Exception | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            browser = get_browser()
+            return browser.execute(func, *args, **kwargs)
+
+        except Exception as e:
+            last_error = e
+
+            if _is_connection_error(e) and attempt < max_retries:
+                logger.info("Browser connection failed, restarting browser...")
+                _restart_browser()
+                continue
+            else:
+                break
+
+    # last_error will never be None here since we only break after setting it
+    assert last_error is not None
+    raise last_error
 
 
 def _load_page(browser: Browser, url: str) -> str:
@@ -77,8 +127,7 @@ def _load_page(browser: Browser, url: str) -> str:
 
 def read_url(url: str) -> str:
     """Read the text of a webpage and return the text in Markdown format."""
-    browser = get_browser()
-    body_html = browser.execute(_load_page, url)
+    body_html = _execute_with_retry(_load_page, url)
     return html_to_markdown(body_html)
 
 
@@ -130,8 +179,7 @@ def _search_google(browser: Browser, query: str) -> str:
 
 
 def search_google(query: str) -> str:
-    browser = get_browser()
-    return browser.execute(_search_google, query)
+    return _execute_with_retry(_search_google, query)
 
 
 def _search_duckduckgo(browser: Browser, query: str) -> str:
@@ -149,8 +197,7 @@ def _search_duckduckgo(browser: Browser, query: str) -> str:
 
 
 def search_duckduckgo(query: str) -> str:
-    browser = get_browser()
-    return browser.execute(_search_duckduckgo, query)
+    return _execute_with_retry(_search_duckduckgo, query)
 
 
 @dataclass
@@ -276,8 +323,7 @@ def _take_screenshot(
 def screenshot_url(url: str, path: Path | str | None = None) -> Path:
     """Take a screenshot of a webpage and save it to a file."""
     logger.info(f"Taking screenshot of '{url}' and saving to '{path}'")
-    browser = get_browser()
-    path = browser.execute(_take_screenshot, url, path)
+    path = _execute_with_retry(_take_screenshot, url, path)
     print(f"Screenshot saved to {path}")
     return path
 
