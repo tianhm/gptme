@@ -30,6 +30,8 @@ dist
 prof
 tests/output
 docs/_build
+# exclude tagged versions
+docs/changelog/v*-*.md
 .coverage*
 coverage.xml
 htmlcov
