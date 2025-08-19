@@ -2,7 +2,6 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime
 from itertools import islice
 from pathlib import Path
 from typing import Literal
@@ -24,7 +23,7 @@ from .prompts import get_prompt
 from .telemetry import init_telemetry, shutdown_telemetry
 from .tools import ToolFormat, get_available_tools, init_tools
 from .util import epoch_to_age
-from .util.generate_name import generate_name
+from .util.auto_naming import generate_conversation_id
 from .util.interrupt import handle_keyboard_interrupt, set_interruptible
 from .util.prompt import add_history
 
@@ -314,37 +313,6 @@ def main(
         shutdown_telemetry()
 
 
-def get_name(name: str) -> str:
-    """
-    Returns a name for the new conversation.
-
-    If name is "random", generates a random name.
-    If name is starts with a date, uses it as is.
-    Otherwise, prepends the current date to the name.
-    """
-    datestr = datetime.now().strftime("%Y-%m-%d")
-    logsdir = get_logs_dir()
-
-    # returns a name for the new conversation
-    if name == "random":
-        # check if name exists, if so, generate another one
-        for _ in range(3):
-            name = generate_name()
-            name = f"{datestr}-{name}"
-            logpath = logsdir / name
-            if not logpath.exists():
-                break
-        else:
-            raise ValueError("Failed to generate unique name")
-    else:
-        # if name starts with date, use as is
-        try:
-            datetime.strptime(name[:10], "%Y-%m-%d")
-        except ValueError:
-            name = f"{datestr}-{name}"
-    return name
-
-
 def pick_log(limit=20) -> Path:  # pragma: no cover
     # let user select between starting a new conversation and loading a previous one
     # using the library
@@ -391,10 +359,11 @@ def pick_log(limit=20) -> Path:  # pragma: no cover
 
 
 def get_logdir(logdir: Path | str | Literal["random"]) -> Path:
+    logs_dir = get_logs_dir()
     if logdir == "random":
-        logdir = get_logs_dir() / get_name("random")
+        logdir = logs_dir / generate_conversation_id(name="random", logs_dir=logs_dir)
     elif isinstance(logdir, str):
-        logdir = get_logs_dir() / logdir
+        logdir = logs_dir / logdir
 
     logdir.mkdir(parents=True, exist_ok=True)
     return logdir
