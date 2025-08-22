@@ -231,18 +231,6 @@ def get_github_pr_content(url: str) -> str | None:
         # Combine all content
         content = pr_result.stdout
 
-        # Add GitHub Actions status if we can get PR details
-        if pr_details_result.returncode == 0 and pr_details_result.stdout.strip():
-            try:
-                pr_details = json.loads(pr_details_result.stdout)
-                head_sha = pr_details.get("head", {}).get("sha")
-                if head_sha:
-                    status_content = _get_github_actions_status(owner, repo, head_sha)
-                    if status_content:
-                        content += f"\n\n## GitHub Actions Status\n{status_content}"
-            except (json.JSONDecodeError, KeyError):
-                logger.debug("Failed to parse PR details JSON")
-
         if comments_result.stdout.strip():
             content += "\n\n" + comments_result.stdout
 
@@ -263,6 +251,18 @@ def get_github_pr_content(url: str) -> str | None:
                         content += f"\n**@{user}** on {path}:{line}:\n{body}\n"
             except (json.JSONDecodeError, KeyError):
                 logger.debug("Failed to parse review comments JSON")
+
+        # Add GitHub Actions status last (chronologically latest)
+        if pr_details_result.returncode == 0 and pr_details_result.stdout.strip():
+            try:
+                pr_details = json.loads(pr_details_result.stdout)
+                head_sha = pr_details.get("head", {}).get("sha")
+                if head_sha:
+                    status_content = _get_github_actions_status(owner, repo, head_sha)
+                    if status_content:
+                        content += f"\n\n## GitHub Actions Status\n{status_content}"
+            except (json.JSONDecodeError, KeyError):
+                logger.debug("Failed to parse PR details JSON")
 
         return content
     except subprocess.CalledProcessError as e:
