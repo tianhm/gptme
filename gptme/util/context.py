@@ -545,7 +545,16 @@ def _find_potential_paths(content: str) -> list[str]:
         List of potential paths/URLs found in the message
     """
     # Remove code blocks to avoid matching paths inside them
-    content_no_codeblocks = re.sub(r"```[\s\S]*?```", "", content)
+    # TODO: also remove paths inside XML tags
+    re_codeblock = r"````?[\s\S]*?\n````?"
+    assert re.match(
+        re_codeblock, md_codeblock("test", "test")
+    ), "Code block regex should match the md_codeblock format with quadruple backticks"
+    assert re.match(
+        re_codeblock, md_codeblock("test", "test").replace("````", "```")
+    ), "Code block regex should match the md_codeblock format with triple backticks"
+
+    content_no_codeblocks = re.sub(re_codeblock, "", content)
 
     # List current directory contents for relative path matching
     cwd_files = [f.name for f in Path.cwd().iterdir()]
@@ -597,7 +606,7 @@ def _resource_to_codeblock(prompt: str) -> str | None:
         # check if prompt is a path, if so, replace it with the contents of that file
         f = Path(prompt).expanduser()
         if f.exists() and f.is_file():
-            return f"```{prompt}\n{f.read_text()}\n```"
+            return md_codeblock(prompt, f.read_text())
     except OSError as oserr:
         # some prompts are too long to be a path, so we can't read them
         if oserr.errno == errno.ENAMETOOLONG:
@@ -663,7 +672,7 @@ def _resource_to_codeblock(prompt: str) -> str | None:
             logger.warning("Browser tool not available, skipping URL read")
 
         if content:
-            result += f"```{url}\n{content}\n```"
+            result += md_codeblock(url, content)
 
     return result
 
