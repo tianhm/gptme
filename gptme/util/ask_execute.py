@@ -16,9 +16,9 @@ from rich.syntax import Syntax
 
 from ..message import Message
 from ..tools import ConfirmFunc
-from .sound import print_bell
 from .clipboard import copy, set_copytext
 from .prompt import get_prompt_session
+from .sound import print_bell
 from .terminal import terminal_state_title
 from .useredit import edit_text_with_editor
 
@@ -27,7 +27,7 @@ console = Console(log_path=False)
 
 # Global state
 override_auto = False
-auto_skip_count = 0
+auto_confirm_count = 0
 copiable = False
 editable = False
 
@@ -94,12 +94,12 @@ def ask_execute(question="Execute code?", default=True) -> bool:
     Returns:
         bool: True if user confirms execution, False otherwise
     """
-    global override_auto, auto_skip_count, copiable, editable
+    global override_auto, auto_confirm_count, copiable, editable
 
-    if override_auto or auto_skip_count > 0:
-        if auto_skip_count > 0:
-            auto_skip_count -= 1
-            console.log(f"Auto-skipping, {auto_skip_count} skips left")
+    if override_auto or auto_confirm_count > 0:
+        if auto_confirm_count > 0:
+            auto_confirm_count -= 1
+            console.log(f"Auto-confirmed, {auto_confirm_count} left")
         return True
 
     print_bell()  # Ring the bell just before asking for input
@@ -159,7 +159,7 @@ def ask_execute(question="Execute code?", default=True) -> bool:
     match = re.match(re_auto, answer)
     if match:
         if num := match.group(1):
-            auto_skip_count = int(num)
+            auto_confirm_count = int(num)
             return True
         else:
             return (override_auto := True)
