@@ -13,6 +13,100 @@ import urllib.parse
 logger = logging.getLogger(__name__)
 
 
+def _get_github_actions_status(owner: str, repo: str, sha: str) -> str | None:
+    """Get GitHub Actions status for a commit SHA."""
+    try:
+        # Get check runs for the commit
+        check_runs_result = subprocess.run(
+            ["gh", "api", f"/repos/{owner}/{repo}/commits/{sha}/check-runs"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if check_runs_result.returncode != 0:
+            return None
+
+        check_runs_data = json.loads(check_runs_result.stdout)
+        check_runs = check_runs_data.get("check_runs", [])
+
+        if not check_runs:
+            return None
+
+        # Group by status and conclusion
+        status_summary: dict[str, list[str]] = {}
+        for run in check_runs:
+            name = run.get("name", "Unknown")
+            status = run.get("status", "unknown")
+            conclusion = run.get("conclusion")
+
+            # Determine overall state
+            if status == "completed":
+                state = conclusion or "completed"
+            else:
+                state = status
+
+            if state not in status_summary:
+                status_summary[state] = []
+            status_summary[state].append(name)
+
+        # Format the summary
+        lines = []
+
+        # Order by importance: failure, cancelled, action_required, neutral, success, etc.
+        priority_order = [
+            "failure",
+            "cancelled",
+            "action_required",
+            "timed_out",
+            "neutral",
+            "success",
+            "skipped",
+            "in_progress",
+            "queued",
+            "pending",
+        ]
+
+        for state in priority_order:
+            if state in status_summary:
+                emoji = {
+                    "success": "✅",
+                    "failure": "❌",
+                    "cancelled": "🚫",
+                    "action_required": "⚠️",
+                    "timed_out": "⏰",
+                    "neutral": "⚪",
+                    "skipped": "⏭️",
+                    "in_progress": "🔄",
+                    "queued": "⏳",
+                    "pending": "⏳",
+                }.get(state, "❓")
+
+                checks = status_summary[state]
+                if len(checks) == 1:
+                    lines.append(f"{emoji} {checks[0]}: {state}")
+                else:
+                    lines.append(
+                        f"{emoji} {len(checks)} checks {state}: {', '.join(checks)}"
+                    )
+
+        # Add any remaining states not in priority order
+        for state, checks in status_summary.items():
+            if state not in priority_order:
+                if len(checks) == 1:
+                    lines.append(f"❓ {checks[0]}: {state}")
+                else:
+                    lines.append(
+                        f"❓ {len(checks)} checks {state}: {', '.join(checks)}"
+                    )
+
+        return "\n".join(lines) if lines else None
+
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
+        logger.debug(f"Failed to get GitHub Actions status: {e}")
+        return None
+
+
 def parse_github_url(url: str) -> dict[str, str] | None:
     """
     Parse GitHub issue/PR URLs and return owner, repo, type, and number.
@@ -118,6 +212,14 @@ def get_github_pr_content(url: str) -> str | None:
             check=True,
         )
 
+        # Get PR details to extract HEAD commit SHA
+        pr_details_result = subprocess.run(
+            ["gh", "api", f"/repos/{owner}/{repo}/pulls/{number}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
         # Get review comments (inline code comments) using GitHub API
         review_comments_result = subprocess.run(
             ["gh", "api", f"/repos/{owner}/{repo}/pulls/{number}/comments"],
@@ -128,6 +230,18 @@ def get_github_pr_content(url: str) -> str | None:
 
         # Combine all content
         content = pr_result.stdout
+
+        # Add GitHub Actions status if we can get PR details
+        if pr_details_result.returncode == 0 and pr_details_result.stdout.strip():
+            try:
+                pr_details = json.loads(pr_details_result.stdout)
+                head_sha = pr_details.get("head", {}).get("sha")
+                if head_sha:
+                    status_content = _get_github_actions_status(owner, repo, head_sha)
+                    if status_content:
+                        content += f"\n\n## GitHub Actions Status\n{status_content}"
+            except (json.JSONDecodeError, KeyError):
+                logger.debug("Failed to parse PR details JSON")
 
         if comments_result.stdout.strip():
             content += "\n\n" + comments_result.stdout
