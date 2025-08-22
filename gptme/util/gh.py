@@ -228,22 +228,98 @@ def get_github_pr_content(url: str) -> str | None:
             check=False,  # Don't fail if this doesn't work
         )
 
+        # Get review threads to check resolution status using GraphQL
+        graphql_query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  isResolved
+                  comments(first: 100) {
+                    nodes {
+                      databaseId
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        review_threads_result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={graphql_query}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"repo={repo}",
+                "-F",
+                f"number={int(number)}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
         # Combine all content
         content = pr_result.stdout
 
         if comments_result.stdout.strip():
             content += "\n\n" + comments_result.stdout
 
-        # Format review comments if we got them
+        # Format review comments if we got them, excluding resolved ones
         if (
             review_comments_result.returncode == 0
             and review_comments_result.stdout.strip()
         ):
             try:
                 review_comments = json.loads(review_comments_result.stdout)
-                if review_comments:
-                    content += "\n\n## Review Comments\n"
-                    for comment in review_comments:
+
+                # Get resolved thread IDs if available
+                resolved_thread_ids = set()
+                if (
+                    review_threads_result.returncode == 0
+                    and review_threads_result.stdout.strip()
+                ):
+                    try:
+                        graphql_response = json.loads(review_threads_result.stdout)
+                        review_threads_data = (
+                            graphql_response.get("data", {})
+                            .get("repository", {})
+                            .get("pullRequest", {})
+                            .get("reviewThreads", {})
+                        )
+                        review_threads = review_threads_data.get("nodes", [])
+
+                        for thread in review_threads:
+                            if thread.get("isResolved", False):
+                                # Add all comment IDs from this resolved thread
+                                thread_comments = thread.get("comments", {}).get(
+                                    "nodes", []
+                                )
+                                for comment in thread_comments:
+                                    comment_id = comment.get("databaseId")
+                                    if comment_id:
+                                        resolved_thread_ids.add(comment_id)
+                    except (json.JSONDecodeError, KeyError):
+                        logger.debug("Failed to parse review threads GraphQL response")
+
+                # Filter out resolved comments
+                unresolved_comments = [
+                    comment
+                    for comment in review_comments
+                    if comment.get("id") not in resolved_thread_ids
+                ]
+
+                if unresolved_comments:
+                    content += "\n\n## Review Comments (Unresolved)\n"
+                    for comment in unresolved_comments:
                         user = comment.get("user", {}).get("login", "unknown")
                         body = comment.get("body", "")
                         path = comment.get("path", "")
