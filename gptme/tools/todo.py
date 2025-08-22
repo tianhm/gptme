@@ -257,6 +257,7 @@ def examples_todowrite(tool_format):
 todoread = ToolSpec(
     name="todoread",
     desc="Read and display the current todo list",
+    block_types=["todoread"],
     instructions="""
 Use this tool to read and display the current todo list.
 
@@ -279,6 +280,7 @@ For long-term persistent tasks, use the task management system instead.
 todowrite = ToolSpec(
     name="todowrite",
     desc="Write, update, or manage todos in the current conversation",
+    block_types=["todowrite"],
     instructions="""
 Use this tool to manage todos in the current conversation context.
 
