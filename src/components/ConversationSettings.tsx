@@ -1,7 +1,7 @@
 import { useState, type FC } from 'react';
 import { DeleteConversationConfirmationDialog } from './DeleteConversationConfirmationDialog';
 import { Trash, Loader2 } from 'lucide-react';
-import { AVAILABLE_MODELS } from './ConversationContent';
+import { ModelSelector } from './ModelSelector';
 import {
   Form,
   FormField,
@@ -11,13 +11,6 @@ import {
   FormDescription,
   FormMessage,
 } from '@/components/ui/form';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -25,6 +18,7 @@ import { EnvironmentVariables } from './settings/EnvironmentVariables';
 import { ToolsConfiguration } from './settings/ToolsConfiguration';
 import { McpConfiguration } from './settings/McpConfiguration';
 import { useConversationSettings } from '@/hooks/useConversationSettings';
+import { demoConversations } from '@/democonversations';
 
 interface ConversationSettingsProps {
   conversationId: string;
@@ -32,8 +26,16 @@ interface ConversationSettingsProps {
 
 export const ConversationSettings: FC<ConversationSettingsProps> = ({ conversationId }) => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const { form, toolFields, envFields, serverFields, onSubmit, chatConfig } =
-    useConversationSettings(conversationId);
+  const {
+    form,
+    toolFields,
+    envFields,
+    serverFields,
+    onSubmit,
+    chatConfig,
+    configError,
+    isLoadingConfig,
+  } = useConversationSettings(conversationId);
 
   const {
     handleSubmit,
@@ -41,42 +43,78 @@ export const ConversationSettings: FC<ConversationSettingsProps> = ({ conversati
     formState: { isDirty, isSubmitting },
   } = form;
 
+  const isDemo = demoConversations.some((conv) => conv.id === conversationId);
+  const isLoading = isLoadingConfig || (!chatConfig && !configError && !isDemo);
+
   return (
     <div className="flex flex-col">
-      {chatConfig && (
+      {isLoading ? (
+        <div className="flex h-full items-center justify-center p-8">
+          <div className="flex flex-col items-center gap-4">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Loading configuration...</p>
+          </div>
+        </div>
+      ) : configError ? (
+        <div className="flex h-full items-center justify-center p-8">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="rounded-full bg-destructive/10 p-3">
+              <Trash className="h-6 w-6 text-destructive" />
+            </div>
+            <div>
+              <h3 className="font-medium text-destructive">Failed to Load Configuration</h3>
+              <p className="mt-1 text-sm text-muted-foreground">{configError}</p>
+            </div>
+            <Button variant="outline" onClick={() => window.location.reload()} className="mt-2">
+              Retry
+            </Button>
+          </div>
+        </div>
+      ) : isDemo ? (
+        <div className="flex h-full items-center justify-center p-8">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div>
+              <h3 className="font-medium">Read-Only Conversation</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Chat settings are not available for demo conversations. Create a new conversation to
+                configure settings.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
         <Form {...form}>
           <form onSubmit={handleSubmit(onSubmit)} className="flex h-full flex-col">
             <div className="flex-1 space-y-8 overflow-y-auto p-4 pb-24">
               <h3 className="mt-4 text-lg font-medium">Chat Settings</h3>
 
-              {/* Model Field */}
+              {/* Conversation Name Field */}
               <FormField
                 control={control}
-                name="chat.model"
+                name="chat.name"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Model</FormLabel>
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value ?? ''}
-                      disabled={isSubmitting}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a model" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {AVAILABLE_MODELS.map((model) => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <FormLabel>Name</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Enter name..."
+                        {...field}
+                        value={field.value || ''}
+                        disabled={isSubmitting}
+                      />
+                    </FormControl>
+                    <FormDescription>A display name for this conversation.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
+              />
+
+              {/* Model Field */}
+              <ModelSelector
+                control={control}
+                name="chat.model"
+                disabled={isSubmitting}
+                placeholder="Select a model"
               />
 
               {/* Workspace Field */}
@@ -85,7 +123,7 @@ export const ConversationSettings: FC<ConversationSettingsProps> = ({ conversati
                 name="chat.workspace"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Workspace Directory</FormLabel>
+                    <FormLabel>Workspace</FormLabel>
                     <FormControl>
                       <Input
                         placeholder="e.g., /path/to/project or ."
@@ -94,10 +132,7 @@ export const ConversationSettings: FC<ConversationSettingsProps> = ({ conversati
                         disabled={isSubmitting}
                       />
                     </FormControl>
-                    <FormDescription>
-                      The directory on the server where the agent can read/write files. Use '.' for
-                      the default.
-                    </FormDescription>
+                    <FormDescription>Directory where the conversation takes place.</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

@@ -127,27 +127,26 @@ export const LeftSidebar: FC<Props> = ({
           />
 
           <Collapsible open={!agentsCollapsed} onOpenChange={(open) => setAgentsCollapsed(!open)}>
-            <CollapsibleTrigger className="flex h-12 w-full shrink-0 items-center justify-between border-t bg-background px-4 hover:bg-muted/50">
-              <div className="flex items-center space-x-2">
+            <div className="flex h-12 w-full shrink-0 items-center justify-between border-t bg-background px-4">
+              <CollapsibleTrigger className="-mx-2 flex flex-1 items-center space-x-2 rounded-md px-2 py-1 hover:bg-muted/50">
                 {agentsCollapsed ? (
                   <ChevronRight className="h-4 w-4" />
                 ) : (
                   <ChevronDown className="h-4 w-4" />
                 )}
                 <h2 className="font-semibold">Agents</h2>
-              </div>
+              </CollapsibleTrigger>
               <div className="flex items-center space-x-2">
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
-                        size="icon"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowCreateAgentDialog(true);
-                        }}
+                        size="sm"
+                        onClick={() => setShowCreateAgentDialog(true)}
+                        className="h-8 w-8 p-0"
                         data-testid="new-agent-button"
+                        aria-label="Create new agent"
                       >
                         <Plus className="h-4 w-4" />
                       </Button>
@@ -158,7 +157,7 @@ export const LeftSidebar: FC<Props> = ({
                   </Tooltip>
                 </TooltipProvider>
               </div>
-            </CollapsibleTrigger>
+            </div>
             <CollapsibleContent className="overflow-hidden">
               <div className="overflow-hidden" style={{ maxHeight: agentsCollapsed ? 0 : '200px' }}>
                 <AgentsList
