@@ -3,6 +3,7 @@ import type { Message, StreamingMessage } from '@/types/conversation';
 import { MessageAvatar } from './MessageAvatar';
 import { useMessageChainType } from '@/utils/messageUtils';
 import { useApi } from '@/contexts/ApiContext';
+import { useSettings } from '@/contexts/SettingsContext';
 import { ObservableHint, type Observable } from '@legendapp/state';
 import { Memo, useObservable, useObserveEffect } from '@legendapp/state/react';
 import * as smd from '@/utils/smd';
@@ -22,6 +23,7 @@ export const ChatMessage: FC<Props> = ({
   conversationId,
 }) => {
   const { connectionConfig } = useApi();
+  const { settings } = useSettings();
 
   const contentRef = useRef<HTMLDivElement>(null);
   const renderer$ = useObservable<CustomRenderer | null>(null);
@@ -30,12 +32,12 @@ export const ChatMessage: FC<Props> = ({
   // Initialize the renderer and parser once the contentRef is available
   useEffect(() => {
     if (!contentRef.current) return;
-    const renderer = customRenderer(contentRef.current, false, true);
+    const renderer = customRenderer(contentRef.current, false, true, settings.blocksDefaultOpen);
     renderer$.set(ObservableHint.opaque(renderer));
     const parser = smd.parser(renderer);
     parser$.set(ObservableHint.opaque(parser));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentRef.current]);
+  }, [contentRef.current, settings.blocksDefaultOpen]);
 
   // Send any new content to the parser
   const previousContent$ = useObservable('');

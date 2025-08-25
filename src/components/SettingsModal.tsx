@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 
 import { Separator } from '@/components/ui/separator';
-import { Settings, Volume2, Palette } from 'lucide-react';
+import { Settings, Volume2, Palette, ChevronDown } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useTheme } from 'next-themes';
 
@@ -99,6 +99,31 @@ export const SettingsModal = forwardRef<HTMLButtonElement, SettingsModalProps>(
                   id="chime-toggle"
                   checked={settings.chimeEnabled}
                   onCheckedChange={(checked) => updateSettings({ chimeEnabled: checked })}
+                />
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Content Settings */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <ChevronDown className="h-4 w-4" />
+                <Label className="text-sm font-medium">Content</Label>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="blocks-toggle" className="text-sm">
+                    Code blocks open by default
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Whether code blocks are expanded when first shown
+                  </p>
+                </div>
+                <Switch
+                  id="blocks-toggle"
+                  checked={settings.blocksDefaultOpen}
+                  onCheckedChange={(checked) => updateSettings({ blocksDefaultOpen: checked })}
                 />
               </div>
             </div>

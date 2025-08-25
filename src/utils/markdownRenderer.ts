@@ -52,12 +52,14 @@ export type CustomRenderer = Omit<
  * @param root - The HTML element to render content into
  * @param log - Whether to log rendering details (for debugging)
  * @param useReactTabbed - Whether to use React components for code blocks with tabs
+ * @param blocksDefaultOpen - Whether code blocks should be open by default
  * @returns A CustomRenderer instance
  */
 export function customRenderer(
   root: HTMLElement,
   log: boolean = false,
-  useReactTabbed: boolean = false
+  useReactTabbed: boolean = false,
+  blocksDefaultOpen: boolean = true
 ): CustomRenderer {
   return {
     add_token: (data: CustomRendererData, type: smd.Token) => {
@@ -71,7 +73,9 @@ export function customRenderer(
         case smd.CODE_BLOCK:
         case smd.CODE_FENCE: {
           parent = parent.appendChild(document.createElement('details'));
-          parent.setAttribute('open', 'true');
+          if (blocksDefaultOpen) {
+            parent.setAttribute('open', 'true');
+          }
           data.summary = parent.appendChild(document.createElement('summary'));
           data.summary.textContent = '💻 Code';
 
