@@ -223,18 +223,29 @@ export const ChatInput: FC<Props> = ({
 
   const [internalMessage, setInternalMessage] = useState('');
   const [streamingEnabled, setStreamingEnabled] = useState(true);
-  const [selectedModel, setSelectedModel] = useState(
-    conversationModel || defaultModel || apiDefaultModel || ''
-  );
 
-  // Update selectedModel when conversation config changes or apiDefaultModel changes
+  // Track if user has explicitly selected a model (temporary override)
+  const [hasExplicitModelSelection, setHasExplicitModelSelection] = useState(false);
+  const [selectedModel, setSelectedModel] = useState('');
+
+  // Compute the effective model to use (explicit selection or conversation default)
+  const effectiveModel = hasExplicitModelSelection
+    ? selectedModel
+    : conversationModel || defaultModel || apiDefaultModel || '';
+
+  // Update selectedModel when conversation config changes, but only if no explicit selection
   useEffect(() => {
-    if (conversationModel) {
-      setSelectedModel(conversationModel);
-    } else if (!defaultModel && apiDefaultModel && !selectedModel) {
-      setSelectedModel(apiDefaultModel);
+    if (!hasExplicitModelSelection) {
+      const newModel = conversationModel || defaultModel || apiDefaultModel || '';
+      setSelectedModel(newModel);
     }
-  }, [conversationModel, defaultModel, apiDefaultModel, selectedModel]);
+  }, [conversationModel, defaultModel, apiDefaultModel, hasExplicitModelSelection]);
+
+  // Reset explicit selection when conversation changes
+  useEffect(() => {
+    setHasExplicitModelSelection(false);
+    setSelectedModel(conversationModel || defaultModel || apiDefaultModel || '');
+  }, [conversationId, conversationModel, defaultModel, apiDefaultModel]);
 
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>(
     // For new conversations, use the selected workspace from sidebar, otherwise default to '.'
@@ -316,7 +327,7 @@ export const ChatInput: FC<Props> = ({
       }
     } else if (message.trim()) {
       onSend(message, {
-        model: selectedModel === 'default' ? undefined : selectedModel,
+        model: effectiveModel === 'default' ? undefined : effectiveModel,
         stream: streamingEnabled,
         workspace: selectedWorkspace || undefined,
       });
@@ -375,8 +386,11 @@ export const ChatInput: FC<Props> = ({
                 <div className="absolute bottom-1.5 left-1.5 flex items-center gap-2">
                   <OptionsButton isDisabled={isDisabled}>
                     <ChatOptionsPanel
-                      selectedModel={selectedModel}
-                      setSelectedModel={setSelectedModel}
+                      selectedModel={effectiveModel}
+                      setSelectedModel={(model: string) => {
+                        setSelectedModel(model);
+                        setHasExplicitModelSelection(true);
+                      }}
                       selectedWorkspace={selectedWorkspace}
                       setSelectedWorkspace={handleWorkspaceChange}
                       streamingEnabled={streamingEnabled}

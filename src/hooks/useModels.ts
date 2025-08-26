@@ -21,12 +21,18 @@ export interface ModelsResponse {
 
 const fallbackModels = [
   'anthropic/claude-sonnet-4-20250514',
-  'anthropic/claude-3-5-sonnet-20240620',
-  'anthropic/claude-3-opus-20240229',
-  'anthropic/claude-3-sonnet-20240229',
-  'anthropic/claude-3-haiku-20240307',
+  'anthropic/claude-3-5-haiku-20241022',
+  'openai/gpt-5',
   'openai/gpt-4o',
-  'openai/gpt-4o-mini',
+  'openrouter/x-ai/grok-4',
+];
+
+const recommendedModels = [
+  'anthropic/claude-sonnet-4-20250514',
+  'anthropic/claude-3-5-haiku-20241022',
+  'openai/gpt-5',
+  'openai/gpt-4o',
+  'openrouter/x-ai/grok-4',
 ];
 
 export function useModels() {
@@ -91,5 +97,6 @@ export function useModels() {
     isLoading,
     error,
     fallbackModels,
+    recommendedModels,
   };
 }
