@@ -19,6 +19,7 @@ export interface ModelsResponse {
   default: string | null;
 }
 
+// Shows if the fetch fails
 const fallbackModels = [
   'anthropic/claude-sonnet-4-20250514',
   'anthropic/claude-3-5-haiku-20241022',
@@ -27,6 +28,7 @@ const fallbackModels = [
   'openrouter/x-ai/grok-4',
 ];
 
+// Shows as recommended options in the UI, if they are available
 const recommendedModels = [
   'anthropic/claude-sonnet-4-20250514',
   'anthropic/claude-3-5-haiku-20241022',
@@ -89,6 +91,9 @@ export function useModels() {
 
   // Convert models to simple string array for backward compatibility
   const availableModels = models.map((model) => model.id);
+  const availableRecommendedModels = recommendedModels.filter((model) =>
+    availableModels.includes(model)
+  );
 
   return {
     models,
@@ -97,6 +102,6 @@ export function useModels() {
     isLoading,
     error,
     fallbackModels,
-    recommendedModels,
+    recommendedModels: availableRecommendedModels,
   };
 }
