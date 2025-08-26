@@ -161,7 +161,18 @@ def process_image_file(
     )
 
     # read file
-    data_bytes = f.read_bytes()
+    try:
+        data_bytes = f.read_bytes()
+    except Exception as e:
+        logger.error("Error reading file %s: %s", file_path, str(e))
+        content_parts.append(
+            {
+                "type": "text",
+                "text": f"Error reading file {f.name}. Please check the file path.",
+            }
+        )
+        return None
+
     data = base64.b64encode(data_bytes).decode("utf-8")
 
     # check that the file is not too large
