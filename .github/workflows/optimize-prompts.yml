@@ -68,32 +68,30 @@ jobs:
 
       - name: Run baseline evaluation
         run: |
-          python -m gptme.eval.dspy.cli show-prompt \
+          python -m gptme.eval.dspy show-prompt \
             --model "${{ github.event.inputs.model || 'anthropic/claude-sonnet-4-20250514' }}"
 
       - name: Run quick test
         run: |
-          python -m gptme.eval.dspy.cli quick-test \
+          python -m gptme.eval.dspy -v quick-test \
             --num-examples 5 \
-            --model "${{ github.event.inputs.model || 'anthropic/claude-sonnet-4-20250514' }}" \
-            --verbose
+            --model "${{ github.event.inputs.model || 'anthropic/claude-sonnet-4-20250514' }}"
 
       - name: Run prompt optimization
         run: |
           EXPERIMENT_NAME="automated_optimization_$(date +%Y%m%d_%H%M%S)"
-          python -m gptme.eval.dspy.cli optimize \
+          python -m gptme.eval.dspy -v optimize \
             --name "$EXPERIMENT_NAME" \
             --model "${{ github.event.inputs.model || 'anthropic/claude-sonnet-4-20250514' }}" \
             --max-demos "${{ github.event.inputs.max_demos || '3' }}" \
             --num-trials "${{ github.event.inputs.num_trials || '10' }}" \
             --optimizers "${{ github.event.inputs.optimizers || 'miprov2,bootstrap' }}" \
-            --output-dir ./optimization_results \
-            --verbose
+            --output-dir ./optimization_results
         continue-on-error: true
 
       - name: Analyze task coverage
         run: |
-          python -m gptme.eval.dspy.cli analyze-coverage
+          python -m gptme.eval.dspy analyze-coverage
         continue-on-error: true
 
       - name: Generate summary report
