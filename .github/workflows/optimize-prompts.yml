@@ -30,6 +30,11 @@ env:
   PYTHONPATH: ${{ github.workspace }}
   GPTME_CONFIG_DIR: ${{ github.workspace }}/.config/gptme
 
+permissions:
+  contents: read      # Required to checkout repository
+  issues: write       # Required to create issues on failure
+  actions: read       # Required to read workflow run information
+
 jobs:
   optimize:
     runs-on: ubuntu-latest
