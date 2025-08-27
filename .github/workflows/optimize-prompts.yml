@@ -85,12 +85,20 @@ jobs:
       - name: Run prompt optimization
         run: |
           EXPERIMENT_NAME="automated_optimization_$(date +%Y%m%d_%H%M%S)"
+
+          # Convert comma-separated optimizers to multiple flags
+          OPTIMIZERS="${{ github.event.inputs.optimizers || 'miprov2,bootstrap' }}"
+          OPTIMIZER_FLAGS=""
+          for optimizer in $(echo $OPTIMIZERS | tr ',' ' '); do
+            OPTIMIZER_FLAGS="$OPTIMIZER_FLAGS --optimizers $optimizer"
+          done
+
           python -m gptme.eval.dspy -v optimize \
             --name "$EXPERIMENT_NAME" \
             --model "${{ github.event.inputs.model || 'anthropic/claude-sonnet-4-20250514' }}" \
             --max-demos "${{ github.event.inputs.max_demos || '3' }}" \
             --num-trials "${{ github.event.inputs.num_trials || '10' }}" \
-            --optimizers "${{ github.event.inputs.optimizers || 'miprov2,bootstrap' }}" \
+            $OPTIMIZER_FLAGS \
             --output-dir ./optimization_results
         continue-on-error: true
 
