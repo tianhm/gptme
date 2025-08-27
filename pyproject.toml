@@ -60,6 +60,7 @@ python-xlib = {version = "^0.33", optional=true}  # for X11 interaction
 
 # evals
 multiprocessing-logging = "^0.3.4"
+dspy = {version = "^3.0.2", python = "<=3.13", optional=true}
 
 # datascience essentials
 pillow = {version = "*"}  # non-optional, needed for image scaling in vision
@@ -140,6 +141,7 @@ telemetry = [
     "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-requests",
     "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-openai-v2",
 ]
+dspy = ["dspy"]
 all = [
     # server
     "flask", "flask-cors", "pydantic",
@@ -153,6 +155,8 @@ all = [
     "youtube_transcript_api",
     # tts
     "sounddevice", "scipy", "numpy",
+    # dspy prompt optimization
+    "dspy",
     # telemetry
     "opentelemetry-api", "opentelemetry-sdk",
     "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
