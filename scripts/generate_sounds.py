@@ -295,6 +295,72 @@ def generate_file_write_sound(
     return scribble_sound.astype(np.float32)
 
 
+def generate_chime_sound(
+    duration: float = 1.8,  # Longer to match the original's sustain
+    sample_rate: int = 44100,
+    fundamental_freq: float = 2240.0,
+    volume: float = 0.22,  # Slightly quieter for cleaner sound
+) -> np.ndarray:
+    """Generate a clean, long-ringing chime like the gptme-webui chime."""
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Create multiple beating effects for complex "ring" quality
+    # This creates the varying, organic amplitude swings
+
+    # Primary beating pair (main beat)
+    beat_freq1 = 4.2  # Hz
+    freq1a = fundamental_freq - beat_freq1 / 2
+    freq1b = fundamental_freq + beat_freq1 / 2
+    beat_wave1 = (np.sin(2 * np.pi * freq1a * t) + np.sin(2 * np.pi * freq1b * t)) * 0.4
+
+    # Secondary beating pair (creates variation in beat intensity)
+    beat_freq2 = 6.8  # Hz - different beat rate
+    freq2a = fundamental_freq - beat_freq2 / 2
+    freq2b = fundamental_freq + beat_freq2 / 2
+    beat_wave2 = (np.sin(2 * np.pi * freq2a * t) + np.sin(2 * np.pi * freq2b * t)) * 0.3
+
+    # Third beating pair (subtle, adds complexity)
+    beat_freq3 = 3.1  # Hz - slower beat
+    freq3a = fundamental_freq - beat_freq3 / 2
+    freq3b = fundamental_freq + beat_freq3 / 2
+    beat_wave3 = (np.sin(2 * np.pi * freq3a * t) + np.sin(2 * np.pi * freq3b * t)) * 0.2
+
+    # Combine all beating patterns - this creates varying intensity!
+    fundamental_wave = beat_wave1 + beat_wave2 + beat_wave3
+
+    # Add the main overtone at 2.61x with slower decay
+    overtone_freq = fundamental_freq * 2.61
+    overtone_decay = np.exp(-2.2 * t)  # Slower decay for longer ring
+    overtone_wave = 0.3 * np.sin(2 * np.pi * overtone_freq * t) * overtone_decay
+
+    # Minimal additional harmonics for cleaner sound
+    harm3 = 0.08 * np.sin(2 * np.pi * fundamental_freq * 1.5 * t) * np.exp(-2.8 * t)
+
+    # Combine components
+    chime_sound = fundamental_wave + overtone_wave + harm3
+
+    # Apply slower decay envelope for longer ring
+    decay_rate = 2.2  # Much slower decay for longer sustain
+    envelope = np.exp(-decay_rate * t)
+    chime_sound *= envelope
+
+    # Very minimal noise for slight texture without muddiness
+    texture_noise = np.random.normal(0, 0.003, len(t))
+    texture_envelope = np.exp(-8 * t)  # Noise fades very quickly
+    chime_sound += texture_noise * texture_envelope
+
+    # Sharp attack envelope
+    attack_samples = int(0.005 * sample_rate)  # 5ms attack
+    attack_envelope = np.ones_like(t)
+    attack_envelope[:attack_samples] = np.linspace(0, 1, attack_samples)
+
+    chime_sound *= attack_envelope
+    chime_sound = chime_sound / np.max(np.abs(chime_sound))
+    chime_sound *= volume
+
+    return chime_sound.astype(np.float32)
+
+
 def save_bell_sound(output_path: Path, **kwargs) -> None:
     """Generate and save a bell sound to a file."""
     bell_sound = generate_bell_sound(**kwargs)
@@ -353,6 +419,7 @@ def generate_all_sounds(output_dir: Path):
         "seashell_click.wav": generate_seashell_click_sound,
         "camera_shutter.wav": generate_camera_shutter_sound,
         "file_write.wav": generate_file_write_sound,
+        "chime.wav": generate_chime_sound,
     }
 
     for filename, generator in sounds.items():
@@ -383,6 +450,7 @@ def main():
             "seashell_click",
             "camera_shutter",
             "file_write",
+            "chime",
             "all",
         ],
         default="all",
@@ -433,6 +501,7 @@ def main():
             "seashell_click": generate_seashell_click_sound,
             "camera_shutter": generate_camera_shutter_sound,
             "file_write": generate_file_write_sound,
+            "chime": generate_chime_sound,
         }
 
         sound_data = generators[args.sound]()
