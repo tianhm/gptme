@@ -45,21 +45,21 @@ def test_todowrite_add():
     """Test adding todos."""
     # Add a todo
     result = _todowrite("add", "Test", "todo")
-    assert "✅ Added todo 1: Test todo" in result
+    assert "Added todo 1: Test todo" in result
     assert "1" in _current_todos
     assert _current_todos["1"]["text"] == "Test todo"
     assert _current_todos["1"]["state"] == "pending"
 
     # Add another todo
     result = _todowrite("add", "Second", "task")
-    assert "✅ Added todo 2: Second task" in result
+    assert "Added todo 2: Second task" in result
     assert "2" in _current_todos
 
 
 def test_todowrite_add_with_quotes():
     """Test adding todos with quoted text."""
     result = _todowrite("add", '"Complete the project"')
-    assert "✅ Added todo 1: Complete the project" in result
+    assert "Added todo 1: Complete the project" in result
     assert _current_todos["1"]["text"] == "Complete the project"
 
 
@@ -70,12 +70,12 @@ def test_todowrite_update_state():
 
     # Update state to in_progress
     result = _todowrite("update", "1", "in_progress")
-    assert "✅ Updated todo 1 state to: in_progress" in result
+    assert "Updated todo 1 state to: in_progress" in result
     assert _current_todos["1"]["state"] == "in_progress"
 
     # Update state to completed
     result = _todowrite("update", "1", "completed")
-    assert "✅ Updated todo 1 state to: completed" in result
+    assert "Updated todo 1 state to: completed" in result
     assert _current_todos["1"]["state"] == "completed"
 
 
@@ -86,7 +86,7 @@ def test_todowrite_update_text():
 
     # Update text
     result = _todowrite("update", "1", "New", "text")
-    assert "✅ Updated todo 1 text to: New text" in result
+    assert "Updated todo 1 text to: New text" in result
     assert _current_todos["1"]["text"] == "New text"
 
 
@@ -98,7 +98,7 @@ def test_todowrite_remove():
 
     # Remove first todo
     result = _todowrite("remove", "1")
-    assert "✅ Removed todo 1: First todo" in result
+    assert "Removed todo 1: First todo" in result
     assert "1" not in _current_todos
     assert "2" in _current_todos
 
@@ -111,7 +111,7 @@ def test_todowrite_clear_all():
 
     # Clear all
     result = _todowrite("clear")
-    assert "✅ Cleared 2 todos" in result
+    assert "Cleared 2 todos" in result
     assert len(_current_todos) == 0
 
 
@@ -128,7 +128,7 @@ def test_todowrite_clear_completed():
 
     # Clear completed
     result = _todowrite("clear", "completed")
-    assert "✅ Cleared 1 completed todos" in result
+    assert "Cleared 1 completed todos" in result
     assert "1" not in _current_todos
     assert "2" in _current_todos
     assert "3" in _current_todos
@@ -147,13 +147,10 @@ def test_todoread_with_todos():
     # Read the list
     result = _todoread()
 
-    assert "📝 Current Todo List:" in result
-    assert "🔲 Pending:" in result
-    assert "1. Pending task" in result
-    assert "🔄 In Progress:" in result
-    assert "2. Active task" in result
-    assert "✅ Completed:" in result
-    assert "3. Done task" in result
+    assert "Todo List:" in result
+    assert "1. 🔲 Pending task" in result
+    assert "2. 🔄 Active task" in result
+    assert "3. ✅ Done task" in result
     assert "Summary: 3 total (1 completed, 1 in progress, 1 pending)" in result
 
 
