@@ -23,6 +23,9 @@ from .utils import (
     process_image_file,
 )
 
+ENV_REASONING = "GPTME_REASONING"
+ENV_REASONING_BUDGET = "GPTME_REASONING_BUDGET"
+
 if TYPE_CHECKING:
     # noreorder
     import anthropic.types  # fmt: skip
@@ -70,7 +73,7 @@ def _record_usage(
 
 def _should_use_thinking(model_meta: ModelMeta, tools: list[ToolSpec] | None) -> bool:
     # Support environment variable to override reasoning behavior
-    env_reasoning = os.environ.get("GPTME_REASONING")
+    env_reasoning = os.environ.get(ENV_REASONING)
     if env_reasoning and env_reasoning.lower() in ("1", "true", "yes"):
         return True
     elif env_reasoning and env_reasoning.lower() in ("0", "false", "no"):
@@ -173,7 +176,7 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
     model_meta = get_model(f"anthropic/{model}")
     use_thinking = _should_use_thinking(model_meta, tools)
-    thinking_budget = int(os.environ.get("GPTME_THINKING_BUDGET", "16000"))
+    thinking_budget = int(os.environ.get(ENV_REASONING_BUDGET, "16000"))
     max_tokens = model_meta.max_output or 4096
 
     response = _anthropic.messages.create(
@@ -223,7 +226,7 @@ def stream(
     model_meta = get_model(f"anthropic/{model}")
     use_thinking = _should_use_thinking(model_meta, tools)
     # Use the same configurable thinking budget as chat()
-    thinking_budget = int(os.environ.get("GPTME_THINKING_BUDGET", "16000"))
+    thinking_budget = int(os.environ.get(ENV_REASONING_BUDGET, "16000"))
     max_tokens = model_meta.max_output or 4096
 
     with _anthropic.messages.stream(
