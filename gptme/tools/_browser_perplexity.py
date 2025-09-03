@@ -4,8 +4,9 @@ Perplexity search backend for the browser tool.
 
 import logging
 import os
-import tomlkit
 from pathlib import Path
+
+import tomlkit
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def search_perplexity(query: str) -> str:
         )
 
         response = client.chat.completions.create(
-            model="sonar",
+            model="sonar-pro",
             messages=[
                 {
                     "role": "system",
