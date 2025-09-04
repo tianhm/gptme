@@ -17,7 +17,6 @@ import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { WorkspaceSelector } from '@/components/WorkspaceSelector';
 import type { WorkspaceProject, Agent } from '@/utils/workspaceUtils';
 import { useModels } from '@/hooks/useModels';
-import { getRandomExample } from '@/utils/examples';
 
 export interface ChatOptions {
   model?: string;
@@ -282,7 +281,7 @@ export const ChatInput: FC<Props> = ({
       ? 'Connect to gptme to send messages'
       : !hasSession
         ? 'Waiting for chat session to be established...'
-        : getRandomExample('chat-input-placeholders', 'mixed', 'hour');
+        : "What's on your mind...";
 
   const isDisabled = isReadOnly || !isConnected || !hasSession;
 
