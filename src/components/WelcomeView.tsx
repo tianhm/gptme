@@ -8,7 +8,7 @@ import { use$ } from '@legendapp/state/react';
 import { observable } from '@legendapp/state';
 import { ChatInput, type ChatOptions } from '@/components/ChatInput';
 import { History } from 'lucide-react';
-import { getExamples } from '@/utils/examples';
+import { ExamplesSection } from '@/components/ExamplesSection';
 
 export const WelcomeView = ({ onToggleHistory }: { onToggleHistory: () => void }) => {
   const [inputValue, setInputValue] = useState('');
@@ -80,25 +80,7 @@ export const WelcomeView = ({ onToggleHistory }: { onToggleHistory: () => void }
           </div>
         </div>
 
-        <div className="space-y-4">
-          <h2 className="text-center text-sm text-muted-foreground">
-            Here are some examples to get you started:
-          </h2>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {getExamples('welcome-suggestions', 'mixed', 4).map((example) => (
-              <Button
-                key={example}
-                variant="outline"
-                size="sm"
-                className="h-10 text-xs hover:bg-muted/50"
-                onClick={() => setInputValue(example)}
-                disabled={isSubmitting}
-              >
-                {example}
-              </Button>
-            ))}
-          </div>
-        </div>
+        <ExamplesSection onExampleSelect={setInputValue} disabled={isSubmitting} />
 
         <div className="flex justify-center">
           <Button
