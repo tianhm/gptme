@@ -1,4 +1,4 @@
-import { PenSquare, ExternalLink, ChevronDown, ChevronRight, Plus } from 'lucide-react';
+import { PenSquare, ChevronDown, ChevronRight, UserRoundPlusIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ConversationList } from './ConversationList';
 import { AgentsList } from './AgentsList';
@@ -148,7 +148,7 @@ export const LeftSidebar: FC<Props> = ({
                         data-testid="new-agent-button"
                         aria-label="Create new agent"
                       >
-                        <Plus className="h-4 w-4" />
+                        <UserRoundPlusIcon className="h-4 w-4" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
@@ -193,28 +193,6 @@ export const LeftSidebar: FC<Props> = ({
               </div>
             </CollapsibleContent>
           </Collapsible>
-          <div className="border-t p-2 text-xs text-muted-foreground">
-            <div className="flex items-center justify-center space-x-4">
-              <a
-                href="https://github.com/gptme/gptme"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center hover:text-foreground"
-              >
-                <ExternalLink className="mr-1 h-3 w-3" />
-                gptme
-              </a>
-              <a
-                href="https://github.com/gptme/gptme-webui"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center hover:text-foreground"
-              >
-                <ExternalLink className="mr-1 h-3 w-3" />
-                gptme-webui
-              </a>
-            </div>
-          </div>
         </div>
       </div>
 
