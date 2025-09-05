@@ -265,6 +265,14 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
         },
     },
     "openrouter": {
+        "mistralai/magistral-medium-2506": {
+            "context": 41_000,
+            "max_output": 40_000,
+            "price_input": 2,
+            "price_output": 5,
+            # "supports_vision": True,
+            "supports_reasoning": True,
+        },
         "anthropic/claude-3.5-sonnet": {
             "context": 200_000,
             "max_output": 8192,
@@ -388,13 +396,13 @@ def _get_models_for_provider(
     provider: Provider, dynamic_fetch: bool = True
 ) -> list[ModelMeta]:
     """Get models for a specific provider, with optional dynamic fetching."""
+    from . import get_available_models  # fmt: skip
+
     models_to_show = []
 
     # Try dynamic fetching first for supported providers
     if dynamic_fetch and provider == "openrouter":
         try:
-            from . import get_available_models
-
             dynamic_models = get_available_models(provider)
             models_to_show = dynamic_models
         except Exception:

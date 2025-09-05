@@ -604,11 +604,17 @@ def _prepare_messages_for_api(
         messages = list(_prep_o1(messages))
 
     # without this, deepseek-chat and reasoner can start outputting gibberish after tool calls
-    # similarly, kimi-k2-instruct doesn't acknowledge tool responses/system messages without it
+    # similarly, kimi-k2-instruct doesn't acknowledge tool responses/system messages without it, same with magistral
     # it probably applies to more models/providers, we should figure out which and perhaps make it default behavior
+    # TODO: it seems to apply to a lot of reasoning models, should maybe be default behavior for all reasoning models?
     if any(
         m in model_meta.model
-        for m in ["deepseek-reasoner", "deepseek-chat", "kimi-k2-instruct"]
+        for m in [
+            "deepseek-reasoner",
+            "deepseek-chat",
+            "kimi-k2-instruct",
+            "magistral-medium-2506",
+        ]
     ):
         messages = list(_prep_deepseek_reasoner(messages))
 
