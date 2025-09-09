@@ -265,6 +265,13 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
         },
     },
     "openrouter": {
+        "qwen/qwen3-max": {
+            "context": 256_000,
+            "max_output": 8192,
+            "price_input": 1.2,
+            "price_output": 6.0,
+            "supports_vision": True,
+        },
         "mistralai/magistral-medium-2506": {
             "context": 41_000,
             "max_output": 40_000,
