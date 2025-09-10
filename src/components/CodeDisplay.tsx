@@ -52,10 +52,10 @@ export function CodeDisplay({
       </div>
 
       {/* Single scrollable container for both line numbers and code */}
-      <div className="overflow-auto" style={{ maxHeight }}>
+      <div className="overflow-auto text-xs" style={{ maxHeight }}>
         <div className="flex">
           {showLineNumbers && lines.length > 1 && (
-            <div className="min-w-12 flex-none select-none border-r border-muted-foreground/20 bg-muted/50 py-1 pr-1 text-right font-mono text-muted-foreground">
+            <div className="min-w-12 flex-none select-none border-r border-muted-foreground/20 bg-muted/50 pr-1 text-right font-mono text-muted-foreground">
               {lines.map((_, i) => (
                 <div key={i} className="px-2 text-xs leading-6">
                   {i + 1}
@@ -66,11 +66,11 @@ export function CodeDisplay({
 
           <div className="flex-1">
             {highlightedCode ? (
-              <pre className="whitespace-pre px-4 py-1 leading-6">
+              <pre className="whitespace-pre px-4 leading-6">
                 <code dangerouslySetInnerHTML={{ __html: highlightedCode }} />
               </pre>
             ) : (
-              <pre className="whitespace-pre px-4 py-1 leading-6">{code}</pre>
+              <pre className="whitespace-pre px-4 leading-6">{code}</pre>
             )}
           </div>
         </div>

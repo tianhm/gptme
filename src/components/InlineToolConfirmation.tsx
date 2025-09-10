@@ -128,21 +128,16 @@ export function InlineToolConfirmation({
                     Tool Execution Confirmation
                   </h3>
                 </div>
+
                 <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
-                  The assistant wants to execute a tool. Review the details and choose how to
-                  proceed.
+                  The assistant wants to use
+                  <code className="rounded bg-muted px-2 py-1 font-mono text-sm">
+                    {pendingTool.tooluse.tool}
+                  </code>
                 </p>
               </div>
 
               <div className="space-y-4 p-4">
-                {/* Tool Name */}
-                <div className="flex items-center gap-3">
-                  <span className="min-w-16 text-sm font-medium text-muted-foreground">Tool:</span>
-                  <code className="rounded bg-muted px-2 py-1 font-mono text-sm">
-                    {pendingTool.tooluse.tool}
-                  </code>
-                </div>
-
                 {/* Arguments */}
                 {pendingTool.tooluse.args.length > 0 && (
                   <div className="space-y-2">
@@ -157,7 +152,6 @@ export function InlineToolConfirmation({
 
                 {/* Code */}
                 <div className="space-y-2">
-                  <span className="text-sm font-medium text-muted-foreground">Code:</span>
                   {isEditing ? (
                     <Textarea
                       value={editedContent}

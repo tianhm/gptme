@@ -41,22 +41,15 @@ export function InlineToolExecution({ executingTool$ }: InlineToolExecutionProps
                   <h3 className="font-medium text-blue-800 dark:text-blue-200">Tool Executing</h3>
                 </div>
                 <p className="mt-1 text-sm text-blue-700 dark:text-blue-300">
-                  The assistant is currently executing a tool. Please wait...
+                  The assistant is currently using
+                  <code className="rounded bg-muted px-2 py-1 font-mono text-sm">
+                    {executingTool.tooluse.tool}
+                  </code>
+                  <Cog className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
                 </p>
               </div>
 
               <div className="space-y-4 p-4">
-                {/* Tool Name */}
-                <div className="flex items-center gap-3">
-                  <span className="min-w-16 text-sm font-medium text-muted-foreground">Tool:</span>
-                  <div className="flex items-center gap-2">
-                    <code className="rounded bg-muted px-2 py-1 font-mono text-sm">
-                      {executingTool.tooluse.tool}
-                    </code>
-                    <Cog className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
-                  </div>
-                </div>
-
                 {/* Arguments */}
                 {executingTool.tooluse.args.length > 0 && (
                   <div className="space-y-2">
@@ -71,7 +64,6 @@ export function InlineToolExecution({ executingTool$ }: InlineToolExecutionProps
 
                 {/* Code */}
                 <div className="space-y-2">
-                  <span className="text-sm font-medium text-muted-foreground">Code:</span>
                   <CodeDisplay
                     code={executingTool.tooluse.content}
                     maxHeight="240px"
