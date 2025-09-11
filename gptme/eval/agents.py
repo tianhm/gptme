@@ -1,5 +1,7 @@
 import logging
+import random
 from abc import abstractmethod
+from pathlib import Path
 
 from gptme import Message
 from gptme import chat as gptme_chat
@@ -18,6 +20,10 @@ logger = logging.getLogger(__name__)
 class Agent:
     model: str
     tool_format: ToolFormat
+    tools: list[str] | None = None
+    system_prompt: str | None = None
+    log_dir: Path
+    workspace_dir: Path
 
     def __init__(
         self,
@@ -31,17 +37,7 @@ class Agent:
         self.tools = tools
         self.system_prompt = system_prompt
 
-    @abstractmethod
-    def act(self, files: Files | None, prompt: str) -> Files:
-        """
-        Carries out the prompt and returns artifacts in the form of `Files`.
-        """
-        raise NotImplementedError
-
-
-class GPTMe(Agent):
-    def act(self, files: Files | None, prompt: str):
-        _id = abs(hash(prompt)) % 1000000
+        _id = random.randint(10000, 99999)
         model_fmt = f"{self.model.replace('/', '--')}-{self.tool_format}"
         name = generate_conversation_id(
             f"gptme-evals-{model_fmt}-{_id}", get_logs_dir()
@@ -54,7 +50,20 @@ class GPTMe(Agent):
             )
         workspace_dir.mkdir(parents=True)
 
-        store = FileStore(working_dir=workspace_dir)
+        self.log_dir = log_dir
+        self.workspace_dir = workspace_dir
+
+    @abstractmethod
+    def act(self, files: Files | None, prompt: str) -> Files:
+        """
+        Carries out the prompt and returns artifacts in the form of `Files`.
+        """
+        raise NotImplementedError
+
+
+class GPTMe(Agent):
+    def act(self, files: Files | None, prompt: str):
+        store = FileStore(working_dir=self.workspace_dir)
         if files:
             store.upload(files)
 
@@ -67,7 +76,7 @@ class GPTMe(Agent):
         prompt_sys_msgs = get_prompt(
             tool_format=self.tool_format,
             tools=tools,
-            workspace=workspace_dir,
+            workspace=self.workspace_dir,
             prompt=self.system_prompt or "full",  # this only replaces the base prompt
         )
 
@@ -81,11 +90,11 @@ class GPTMe(Agent):
             gptme_chat(
                 [Message("user", prompt)],
                 prompt_sys_msgs,
-                logdir=log_dir,
+                logdir=self.log_dir,
                 model=self.model,
                 no_confirm=True,
                 interactive=False,
-                workspace=workspace_dir,
+                workspace=self.workspace_dir,
                 tool_format=self.tool_format,
                 tool_allowlist=self.tools,
             )

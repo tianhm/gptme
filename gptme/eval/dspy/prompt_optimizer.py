@@ -16,6 +16,7 @@ from gptme.eval.run import execute
 from gptme.eval.suites import tests as gptme_eval_tests
 from gptme.eval.suites.basic import tests
 from gptme.eval.types import EvalSpec
+from gptme.logmanager import Log
 from gptme.prompts import prompt_gptme
 
 import dspy
@@ -25,6 +26,11 @@ from .metrics import create_composite_metric
 from .signatures import PromptImprovementSignature
 
 logger = logging.getLogger(__name__)
+
+
+task_weight = 0.4
+tool_weight = 0.3
+judge_weight = 0.3
 
 
 class PromptDataset:
@@ -163,17 +169,27 @@ class GptmeModule(dspy.Module):
                 parallel=False,
             )
 
-            # Extract response from result
-            if hasattr(result, "messages") and result.messages:
-                response = str(result.messages[-1].content)
-            else:
-                response = "No response generated"
+            # Read back the actual conversation messages from the agent's logdir
+            # (now properly set by execute() after subprocess completion)
+            messages = []
+            response = "No response generated"
+
+            if agent.log_dir and (agent.log_dir / "conversation.jsonl").exists():
+                log = Log.read_jsonl(agent.log_dir / "conversation.jsonl")
+                messages = log.messages
+
+                # Extract response from the last assistant message
+                try:
+                    response = str(messages[-1].content)
+                except (AttributeError, IndexError):
+                    response = "No response generated"
 
             return dspy.Prediction(
                 response=response,
                 improved_system_prompt=improved_system_prompt,
                 changes_made=getattr(prompt_improvement, "changes_made", ""),
                 eval_result=result,  # Include actual results for metrics
+                messages=messages,  # Include the actual conversation messages
             )
 
         except Exception as e:
@@ -308,8 +324,9 @@ class PromptOptimizer:
         val_data: PromptDataset,
         metric: Callable[[Any, Any, Any | None], float],
     ) -> dict[str, Any]:
-        """Evaluate a prompt against validation data."""
+        """Evaluate a prompt against validation data with detailed score breakdown."""
         scores = []
+        detailed_results = []
 
         # Create GptmeModule with the prompt to test as the base system prompt
         module = GptmeModule(prompt, val_data.eval_specs)
@@ -321,19 +338,80 @@ class PromptOptimizer:
             pred = module(
                 task_description=example.task_description, context=example.context
             )
-            print(f"DEBUG: Got prediction: {hasattr(pred, 'eval_result')}")
-
-            score = metric(example, pred, None)
-            print(f"DEBUG: Score for this example: {score}")
-            scores.append(score)
+            # Get detailed score breakdown
+            detailed_score = self._get_detailed_score_breakdown(example, pred)
+            scores.append(detailed_score["composite_score"])
+            detailed_results.append(detailed_score)
 
         avg_score = sum(scores) / len(scores) if scores else 0.0
+
+        # Calculate average breakdowns
+        avg_task_score = (
+            sum(r["task_score"] for r in detailed_results) / len(detailed_results)
+            if detailed_results
+            else 0.0
+        )
+        avg_tool_score = (
+            sum(r["tool_score"] for r in detailed_results) / len(detailed_results)
+            if detailed_results
+            else 0.0
+        )
+        avg_judge_score = (
+            sum(r["judge_score"] for r in detailed_results) / len(detailed_results)
+            if detailed_results
+            else 0.0
+        )
+
+        print("\n=== OVERALL SCORE BREAKDOWN ===")
+        print(f"Task Success:  {avg_task_score:.3f} (weight: {task_weight})")
+        print(f"Tool Usage:    {avg_tool_score:.3f} (weight: {tool_weight})")
+        print(f"LLM Judge:     {avg_judge_score:.3f} (weight: {judge_weight})")
+        print(f"Composite:     {avg_score:.3f}")
+        print("================================")
 
         return {
             "average_score": avg_score,
             "individual_scores": scores,
+            "detailed_results": detailed_results,
+            "breakdown": {
+                "avg_task_score": avg_task_score,
+                "avg_tool_score": avg_tool_score,
+                "avg_judge_score": avg_judge_score,
+            },
             "num_examples": len(scores),
             "optimized_prompt": prompt,
+        }
+
+    def _get_detailed_score_breakdown(self, gold: Any, pred: Any) -> dict[str, float]:
+        """Get detailed score breakdown for a single example."""
+        from .metrics import (
+            create_llm_judge_metric,
+            create_task_success_metric,
+            create_tool_usage_metric,
+        )
+
+        # Create individual metrics
+        task_metric = create_task_success_metric([])
+        tool_metric = create_tool_usage_metric()
+        judge_metric = create_llm_judge_metric()
+
+        # Calculate individual scores
+        task_score = task_metric(gold, pred, None)
+        tool_score = tool_metric(gold, pred, None)
+        judge_score = judge_metric(gold, pred, None)
+
+        # Calculate composite with weights
+        composite_score = (
+            task_score * task_weight
+            + tool_score * tool_weight
+            + judge_score * judge_weight
+        )
+
+        return {
+            "task_score": task_score,
+            "tool_score": tool_score,
+            "judge_score": judge_score,
+            "composite_score": composite_score,
         }
 
     def compare_prompts(
