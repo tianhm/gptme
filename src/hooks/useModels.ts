@@ -50,7 +50,17 @@ export function useModels() {
         setIsLoading(true);
         setError(null);
 
-        const response = await fetch(`${api.baseUrl}/api/v2/models`);
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+
+        if (api.authHeader) {
+          headers.Authorization = api.authHeader;
+        }
+
+        const response = await fetch(`${api.baseUrl}/api/v2/models`, {
+          headers,
+        });
 
         if (!response.ok) {
           throw new Error(`Failed to fetch models: ${response.statusText}`);
@@ -87,7 +97,7 @@ export function useModels() {
     };
 
     fetchModels();
-  }, [api.baseUrl]);
+  }, [api.baseUrl, api.authHeader]);
 
   // Convert models to simple string array for backward compatibility
   const availableModels = models.map((model) => model.id);
