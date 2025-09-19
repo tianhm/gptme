@@ -3,16 +3,26 @@ import { ChatMessage } from '../ChatMessage';
 import '@testing-library/jest-dom';
 import type { Message } from '@/types/conversation';
 import { observable } from '@legendapp/state';
+import { SettingsProvider } from '@/contexts/SettingsContext';
 
 // Mock the ApiContext
 jest.mock('@/contexts/ApiContext', () => ({
   useApi: () => ({
     baseUrl: 'http://localhost:5700',
+    connectionConfig: {
+      apiKey: '',
+      baseUrl: 'http://localhost:5700',
+    },
   }),
 }));
 
 describe('ChatMessage', () => {
   const testConversationId = 'test-conversation';
+
+  // Helper function to render with providers
+  const renderWithProviders = (component: React.ReactElement) => {
+    return render(<SettingsProvider>{component}</SettingsProvider>);
+  };
 
   it('renders user message', () => {
     const message$ = observable<Message>({
@@ -21,7 +31,7 @@ describe('ChatMessage', () => {
       timestamp: new Date().toISOString(),
     });
 
-    render(<ChatMessage message$={message$} conversationId={testConversationId} />);
+    renderWithProviders(<ChatMessage message$={message$} conversationId={testConversationId} />);
     expect(screen.getByText('Hello!')).toBeInTheDocument();
   });
 
@@ -32,7 +42,7 @@ describe('ChatMessage', () => {
       timestamp: new Date().toISOString(),
     });
 
-    render(<ChatMessage message$={message$} conversationId={testConversationId} />);
+    renderWithProviders(<ChatMessage message$={message$} conversationId={testConversationId} />);
     expect(screen.getByText('Hi there!')).toBeInTheDocument();
   });
 
@@ -43,7 +53,7 @@ describe('ChatMessage', () => {
       timestamp: new Date().toISOString(),
     });
 
-    const { container } = render(
+    const { container } = renderWithProviders(
       <ChatMessage message$={message$} conversationId={testConversationId} />
     );
     const messageElement = container.querySelector('.font-mono');
