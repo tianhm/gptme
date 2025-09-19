@@ -33,7 +33,7 @@ export interface CreateAgentRequest {
   name: string;
   template_repo: string;
   template_branch: string;
-  path: string;
+  path?: string; // Now optional - auto-generated if not provided
   fork_command: string;
   project_config?: Record<string, unknown>;
 }
@@ -42,16 +42,13 @@ export interface CreateAgentResponse {
   status: string;
   message: string;
   initial_conversation_id: string;
+  agent_path: string;
 }
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAgentCreated: (agent: CreateAgentRequest) => Promise<{
-    status: string;
-    message: string;
-    initial_conversation_id: string;
-  }>;
+  onAgentCreated: (agent: CreateAgentRequest) => Promise<CreateAgentResponse>;
 }
 
 const CreateAgentDialog: FC<Props> = ({ open, onOpenChange, onAgentCreated }) => {
@@ -71,12 +68,7 @@ const CreateAgentDialog: FC<Props> = ({ open, onOpenChange, onAgentCreated }) =>
   });
 
   const handleSubmit = async (data: CreateAgentRequest) => {
-    if (
-      !data.name.trim() ||
-      !data.template_repo.trim() ||
-      !data.template_branch.trim() ||
-      !data.path.trim()
-    ) {
+    if (!data.name.trim() || !data.template_repo.trim() || !data.template_branch.trim()) {
       return;
     }
 
@@ -102,7 +94,7 @@ const CreateAgentDialog: FC<Props> = ({ open, onOpenChange, onAgentCreated }) =>
       // Set selected agent
       selectedAgent$.set({
         name: data.name,
-        path: data.path,
+        path: response.agent_path,
         description: `Agent: ${data.name}`,
         conversationCount: 0,
         lastUsed: new Date().toISOString(),
@@ -166,40 +158,6 @@ const CreateAgentDialog: FC<Props> = ({ open, onOpenChange, onAgentCreated }) =>
               )}
             />
 
-            {/* Workspace Settings */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <FolderOpen className="h-4 w-4" />
-                  Workspace Configuration
-                </CardTitle>
-                <CardDescription>Configure the agent's workspace directory</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <FormField
-                  control={form.control}
-                  name="path"
-                  rules={{ required: 'Workspace path is required' }}
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Workspace Path *</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="/path/to/agent/workspace"
-                          {...field}
-                          disabled={isLoading}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        The directory where the agent will store itself
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </CardContent>
-            </Card>
-
             {/* Advanced Options */}
             <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
               <CollapsibleTrigger asChild>
@@ -220,6 +178,42 @@ const CreateAgentDialog: FC<Props> = ({ open, onOpenChange, onAgentCreated }) =>
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="space-y-4">
+                {/* Workspace Settings */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <FolderOpen className="h-4 w-4" />
+                      Workspace Configuration
+                    </CardTitle>
+                    <CardDescription>
+                      Configure the agent's workspace directory (auto-generated if not specified)
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <FormField
+                      control={form.control}
+                      name="path"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Workspace Path (Optional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="Auto-generated from agent name if not specified"
+                              {...field}
+                              disabled={isLoading}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            The directory where the agent will store itself. If not specified, will
+                            be auto-generated from the current directory and agent name.
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </CardContent>
+                </Card>
+
                 {/* Template Repository Settings */}
                 <Card>
                   <CardHeader>
