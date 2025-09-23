@@ -139,8 +139,8 @@ version:
 .PHONY: dist/CHANGELOG.md
 dist/CHANGELOG.md: ./scripts/build_changelog.py
 	VERSION=$$(git describe --tags) && \
-	make docs/release/$${VERSION}.md
-	cp docs/release/$${VERSION}.md $@
+	make docs/releases/$${VERSION}.md && \
+	cp docs/releases/$${VERSION}.md $@
 
 docs/releases/%.md: ./scripts/build_changelog.py
 	@mkdir -p docs/changelog
