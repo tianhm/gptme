@@ -36,19 +36,19 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 
     \b
       # Run full optimization experiment
-      gptme-eval dspy optimize --name "my_experiment" --model anthropic/claude-3-5-haiku-20241022
+      gptme-dspy optimize --name "my_experiment" --model anthropic/claude-3-5-haiku-20241022
 
     \b
       # Quick test of prompt variations
-      gptme-eval dspy quick-test --prompt-files prompt1.txt prompt2.txt --num-examples 5
+      gptme-dspy quick-test --prompt-files prompt1.txt prompt2.txt --num-examples 5
 
     \b
       # Show current system prompt
-      gptme-eval dspy show-prompt
+      gptme-dspy show-prompt
 
     \b
       # List available tasks
-      gptme-eval dspy list-tasks --optimization-tasks
+      gptme-dspy list-tasks --optimization-tasks
     """
     # Configure logging
     log_format = (
@@ -336,15 +336,15 @@ def optimize_gepa(
 
     \b
       # Quick experimentation
-      gptme-eval dspy optimize-gepa --auto light
+      gptme-dspy optimize-gepa --auto light
 
     \b
       # Custom budget with explicit eval limit
-      gptme-eval dspy optimize-gepa --max-full-evals 10
+      gptme-dspy optimize-gepa --max-full-evals 10
 
     \b
       # Super small test run
-      gptme-eval dspy optimize-gepa --auto light --train-size 3 --val-size 2
+      gptme-dspy optimize-gepa --auto light --train-size 3 --val-size 2
     """
     # Validate budget configuration
     budget_options = [auto, max_full_evals, max_metric_calls]
@@ -355,8 +355,8 @@ def optimize_gepa(
             "❌ Error: Exactly one of --auto, --max-full-evals, or --max-metric-calls must be provided"
         )
         print("Examples:")
-        print("  gptme-eval dspy optimize-gepa --auto light")
-        print("  gptme-eval dspy optimize-gepa --max-full-evals 10")
+        print("  gptme-dspy optimize-gepa --auto light")
+        print("  gptme-dspy optimize-gepa --max-full-evals 10")
         sys.exit(1)
 
     print(f"Starting GEPA optimization experiment: {name}")

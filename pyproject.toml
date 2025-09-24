@@ -22,6 +22,7 @@ gptme-eval = "gptme.eval.main:main"
 gptme-util = "gptme.util.cli:main"
 gptme-nc = "gptme.ncurses:main"
 gptme-wut = "gptme.wut:main"
+gptme-dspy = "gptme.eval.dspy:main"
 
 [tool.poetry]
 packages = [
