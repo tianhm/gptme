@@ -336,6 +336,10 @@ def run_prompt_optimization_experiment(
     model: str,
     optimizers: dict[str, dict[str, Any]],
     output_dir: Path,
+    train_size: int = 15,
+    val_size: int = 10,
+    baseline_examples: int = 20,
+    comparison_examples: int = 15,
 ) -> OptimizationExperiment:
     """
     Run a complete prompt optimization experiment.
@@ -345,6 +349,10 @@ def run_prompt_optimization_experiment(
         model: Model to use for optimization
         optimizers: Dictionary of optimizer configurations
         output_dir: Directory to save results
+        train_size: Number of training examples for optimization
+        val_size: Number of validation examples for optimization
+        baseline_examples: Number of examples for baseline evaluation
+        comparison_examples: Number of examples for final comparison
 
     Returns:
         OptimizationExperiment instance with results
@@ -355,17 +363,19 @@ def run_prompt_optimization_experiment(
     optimizers = optimizers or default_optimizers
 
     # Run baseline evaluation
-    experiment.run_baseline_evaluation()
+    experiment.run_baseline_evaluation(num_examples=baseline_examples)
 
     # Run each optimization
     for opt_name, opt_config in optimizers.items():
         try:
-            experiment.run_optimization(opt_name, opt_config)
+            experiment.run_optimization(
+                opt_name, opt_config, train_size=train_size, val_size=val_size
+            )
         except Exception as e:
             logger.error(f"Failed to run optimization {opt_name}: {e}")
 
     # Compare all results
-    experiment.compare_all_optimizations()
+    experiment.compare_all_optimizations(num_examples=comparison_examples)
 
     # Generate and save report
     report = experiment.generate_report()

@@ -71,6 +71,20 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option(
     "--num-trials", type=int, default=10, help="Number of optimization trials"
 )
+@click.option("--train-size", type=int, default=15, help="Number of training examples")
+@click.option("--val-size", type=int, default=10, help="Number of validation examples")
+@click.option(
+    "--baseline-examples",
+    type=int,
+    default=20,
+    help="Number of examples for baseline evaluation",
+)
+@click.option(
+    "--comparison-examples",
+    type=int,
+    default=15,
+    help="Number of examples for final comparison",
+)
 @click.option(
     "--optimizers",
     multiple=True,
@@ -83,11 +97,22 @@ def optimize(
     output_dir: str | None,
     max_demos: int,
     num_trials: int,
+    train_size: int,
+    val_size: int,
+    baseline_examples: int,
+    comparison_examples: int,
     optimizers: tuple[str, ...],
 ) -> None:
-    """Run a full prompt optimization experiment."""
+    """Run a full prompt optimization experiment.
+
+    For quick testing, use smaller values:
+    --train-size 3 --val-size 2 --baseline-examples 5 --comparison-examples 3
+    """
     print(f"Starting prompt optimization experiment: {name}")
     print(f"Using model: {model}")
+    print(
+        f"Dataset sizes: train={train_size}, val={val_size}, baseline={baseline_examples}, comparison={comparison_examples}"
+    )
     print(f"Output directory: {output_dir}")
 
     # Configure optimizers based on args
@@ -121,6 +146,10 @@ def optimize(
             model=model,
             optimizers=optimizer_configs,
             output_dir=Path(output_dir) if output_dir else Path("experiments"),
+            train_size=train_size,
+            val_size=val_size,
+            baseline_examples=baseline_examples,
+            comparison_examples=comparison_examples,
         )
 
         print("\n✅ Experiment completed successfully!")

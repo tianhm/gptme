@@ -80,7 +80,7 @@ class PromptDataset:
             context=self._build_context(spec),
             eval_spec=spec,  # Keep original spec for actual evaluation
             name=spec.get("name", "unknown"),
-        ).with_inputs("task_description", "context")
+        ).with_inputs("task_description", "context", "eval_spec")
 
     def _build_context(self, spec: EvalSpec) -> str:
         """Build context string from eval spec."""
@@ -243,11 +243,14 @@ class PromptOptimizer:
                 auto="medium",
                 max_bootstrapped_demos=self.max_demos,
                 max_labeled_demos=self.max_demos * 2,
+                num_candidates=self.num_trials,
             )
         elif self.optimizer_type.lower() == "bootstrap":
             metric = create_composite_metric(eval_specs=eval_specs)
             return BootstrapFewShot(
-                metric=metric, max_bootstrapped_demos=self.max_demos
+                metric=metric,
+                max_bootstrapped_demos=self.max_demos,
+                max_rounds=self.num_trials,
             )
         elif self.optimizer_type.lower() == "gepa":
             trajectory_metric = create_trajectory_feedback_metric(eval_specs=eval_specs)
@@ -261,6 +264,7 @@ class PromptOptimizer:
                 track_stats=True,
                 reflection_minibatch_size=3,
                 reflection_lm=reflection_lm,
+                max_full_evals=self.num_trials,
             )
         else:
             raise ValueError(f"Unknown optimizer type: {self.optimizer_type}")
