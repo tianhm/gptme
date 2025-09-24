@@ -95,6 +95,11 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     type=click.Choice(["miprov2", "bootstrap"]),
     help="Optimizers to use (default: miprov2, bootstrap)",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Skip actual optimization calls, use fake results for testing",
+)
 def optimize(
     name: str,
     model: str,
@@ -106,6 +111,7 @@ def optimize(
     baseline_examples: int,
     comparison_examples: int,
     optimizers: tuple[str, ...],
+    dry_run: bool,
 ) -> None:
     """Run a full prompt optimization experiment.
 
@@ -147,6 +153,7 @@ def optimize(
             val_size=val_size,
             baseline_examples=baseline_examples,
             comparison_examples=comparison_examples,
+            dry_run=dry_run,
         )
 
         print("\n✅ Experiment completed successfully!")
@@ -314,6 +321,11 @@ def list_tasks(optimization_tasks: bool) -> None:
     help="Size of reflection minibatches",
 )
 @click.option("--num-threads", type=int, default=4, help="Number of parallel threads")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Skip actual optimization calls, use fake results for testing",
+)
 def optimize_gepa(
     name: str,
     model: str,
@@ -327,6 +339,7 @@ def optimize_gepa(
     max_metric_calls: int | None,
     reflection_minibatch_size: int,
     num_threads: int,
+    dry_run: bool,
 ) -> None:
     """Run GEPA prompt optimization with proper budget configuration.
 
@@ -397,6 +410,7 @@ def optimize_gepa(
             val_size=val_size,
             baseline_examples=baseline_examples,
             comparison_examples=comparison_examples,
+            dry_run=dry_run,
         )
 
         print("\n✅ GEPA experiment completed successfully!")

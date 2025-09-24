@@ -123,8 +123,44 @@ class ExperimentReporter:
 class ExperimentRunner:
     """Handles the execution of optimization experiments."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, dry_run: bool = False):
         self.model = model
+        self.dry_run = dry_run
+
+    def _generate_fake_results(self, num_examples: int = 15) -> dict[str, Any]:
+        """Generate fake results for dry run mode."""
+        import random
+
+        random.seed(42)  # Consistent fake results
+
+        return {
+            "average_score": round(random.uniform(0.65, 0.85), 3),
+            "task_success_rate": round(random.uniform(0.6, 0.9), 3),
+            "tool_usage_score": round(random.uniform(0.7, 0.95), 3),
+            "judge_score": round(random.uniform(0.6, 0.8), 3),
+            "num_examples": num_examples,
+        }
+
+    def _generate_fake_comparison(
+        self, prompts: dict[str, str], num_examples: int
+    ) -> dict[str, Any]:
+        """Generate fake comparison results for dry run mode."""
+        import random
+
+        random.seed(42)  # Consistent fake results
+
+        results = {}
+        for name in prompts.keys():
+            # Slightly vary scores to simulate realistic differences
+            base_score = 0.75 + hash(name) % 100 / 1000  # Deterministic but varied
+            results[name] = {
+                "average_score": round(base_score, 3),
+                "task_success_rate": round(base_score - 0.05, 3),
+                "tool_usage_score": round(base_score + 0.05, 3),
+                "judge_score": round(base_score - 0.02, 3),
+                "num_examples": num_examples,
+            }
+        return results
 
     def run_baseline(
         self, eval_specs: list[EvalSpec], num_examples: int = 20
@@ -133,22 +169,26 @@ class ExperimentRunner:
         logger.info("Running baseline evaluation...")
         current_prompt = get_current_gptme_prompt(interactive=False, model=self.model)
 
-        # Use existing evaluation infrastructure with rich results
-        from gptme.eval.dspy.prompt_optimizer import PromptOptimizer, PromptDataset
+        if self.dry_run:
+            logger.info("🧪 DRY RUN: Using fake baseline results")
+            baseline_results = self._generate_fake_results(num_examples)
+        else:
+            # Use existing evaluation infrastructure with rich results
+            from gptme.eval.dspy.prompt_optimizer import PromptOptimizer, PromptDataset
 
-        # Reuse the existing prompt evaluation system
-        optimizer = PromptOptimizer(model=self.model)
-        limited_specs = eval_specs[:num_examples] if eval_specs else []
+            # Reuse the existing prompt evaluation system
+            optimizer = PromptOptimizer(model=self.model)
+            limited_specs = eval_specs[:num_examples] if eval_specs else []
 
-        if not limited_specs:
-            from gptme.eval.suites.basic import tests
+            if not limited_specs:
+                from gptme.eval.suites.basic import tests
 
-            limited_specs = tests[:num_examples]
+                limited_specs = tests[:num_examples]
 
-        val_data = PromptDataset(limited_specs)
+            val_data = PromptDataset(limited_specs)
 
-        # _evaluate_prompt now returns rich breakdown results
-        baseline_results = optimizer._evaluate_prompt(current_prompt, val_data)
+            # _evaluate_prompt now returns rich breakdown results
+            baseline_results = optimizer._evaluate_prompt(current_prompt, val_data)
 
         return {
             "prompt": current_prompt,
@@ -170,13 +210,31 @@ class ExperimentRunner:
         val_size: int = 10,
     ) -> tuple[str, dict[str, Any]]:
         """Run a single optimization."""
-        optimizer = PromptOptimizer(model=self.model, **optimizer_config)
-        return optimizer.optimize_prompt(
-            base_prompt=base_prompt,
-            eval_specs=eval_specs,
-            train_size=train_size,
-            val_size=val_size,
-        )
+        if self.dry_run:
+            logger.info("🧪 DRY RUN: Using fake optimization results")
+            optimizer_type = optimizer_config.get("optimizer_type", "unknown")
+            fake_optimized_prompt = (
+                f"{base_prompt}\n\n# [DRY RUN] Fake optimization by {optimizer_type}"
+            )
+            fake_results = self._generate_fake_results()
+            # Slightly boost scores to simulate optimization improvement
+            for key in [
+                "average_score",
+                "task_success_rate",
+                "tool_usage_score",
+                "judge_score",
+            ]:
+                if key in fake_results:
+                    fake_results[key] = min(0.95, fake_results[key] + 0.05)
+            return fake_optimized_prompt, fake_results
+        else:
+            optimizer = PromptOptimizer(model=self.model, **optimizer_config)
+            return optimizer.optimize_prompt(
+                base_prompt=base_prompt,
+                eval_specs=eval_specs,
+                train_size=train_size,
+                val_size=val_size,
+            )
 
     def compare_prompts(
         self,
@@ -185,22 +243,27 @@ class ExperimentRunner:
         num_examples: int = 15,
     ) -> dict[str, Any]:
         """Compare multiple prompts."""
-        optimizer = PromptOptimizer(model=self.model)
-        return optimizer.compare_prompts(
-            prompts=prompts, eval_specs=eval_specs, num_examples=num_examples
-        )
+        if self.dry_run:
+            logger.info("🧪 DRY RUN: Using fake comparison results")
+            return self._generate_fake_comparison(prompts, num_examples)
+        else:
+            optimizer = PromptOptimizer(model=self.model)
+            return optimizer.compare_prompts(
+                prompts=prompts, eval_specs=eval_specs, num_examples=num_examples
+            )
 
 
 class OptimizationExperiment:
     """Simplified experiment orchestrator using composition."""
 
-    def __init__(self, name: str, output_dir: Path, model: str):
+    def __init__(self, name: str, output_dir: Path, model: str, dry_run: bool = False):
         self.name = name
         self.model = model
         self.output_dir = output_dir
+        self.dry_run = dry_run
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.runner = ExperimentRunner(model)
+        self.runner = ExperimentRunner(model, dry_run=dry_run)
         self.results: dict[str, Any] = {
             "experiment_name": name,
             "model": model,
@@ -340,6 +403,7 @@ def run_prompt_optimization_experiment(
     val_size: int = 10,
     baseline_examples: int = 20,
     comparison_examples: int = 15,
+    dry_run: bool = False,
 ) -> OptimizationExperiment:
     """
     Run a complete prompt optimization experiment.
@@ -358,7 +422,7 @@ def run_prompt_optimization_experiment(
         OptimizationExperiment instance with results
     """
     experiment = OptimizationExperiment(
-        name=experiment_name, output_dir=output_dir, model=model
+        name=experiment_name, output_dir=output_dir, model=model, dry_run=dry_run
     )
     optimizers = optimizers or default_optimizers
 
