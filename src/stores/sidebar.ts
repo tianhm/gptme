@@ -3,6 +3,7 @@ import { observable } from '@legendapp/state';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 
 export const leftSidebarVisible$ = observable(true);
+export const leftSidebarCollapsed$ = observable(false);
 export const rightSidebarVisible$ = observable(true);
 export const rightSidebarCollapsed$ = observable(false);
 export const rightSidebarActiveTab$ = observable<string | null>(null);
@@ -26,7 +27,7 @@ export const setRightPanelRef = (ref: ImperativePanelHandle | null) => {
 
 export const toggleLeftSidebar = () => {
   if (leftPanelRef) {
-    // Desktop: use panel ref
+    // Desktop: toggle visibility using panel ref, collapsed state managed separately
     if (leftPanelRef.isCollapsed()) {
       leftPanelRef.expand();
     } else {
@@ -35,6 +36,22 @@ export const toggleLeftSidebar = () => {
   } else {
     // Mobile: toggle state directly
     leftSidebarVisible$.set(!leftSidebarVisible$.get());
+  }
+};
+
+export const toggleLeftSidebarCollapsed = () => {
+  const currentlyCollapsed = leftSidebarCollapsed$.get();
+  leftSidebarCollapsed$.set(!currentlyCollapsed);
+
+  // Directly control the panel
+  if (leftPanelRef) {
+    if (!currentlyCollapsed) {
+      // Collapsing: set to collapsed size
+      leftPanelRef.collapse();
+    } else {
+      // Expanding: set to normal size
+      leftPanelRef.resize(20);
+    }
   }
 };
 
