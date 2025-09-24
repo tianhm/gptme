@@ -15,7 +15,11 @@ from gptme.eval.types import EvalSpec
 
 from .experiments import quick_prompt_test, run_prompt_optimization_experiment
 from .prompt_optimizer import get_current_gptme_prompt
-
+from .tasks import (
+    analyze_task_coverage,
+    get_prompt_optimization_tasks,
+    get_task_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +92,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option(
     "--optimizers",
     multiple=True,
-    type=click.Choice(["miprov2", "bootstrap", "gepa"]),
+    type=click.Choice(["miprov2", "bootstrap"]),
     help="Optimizers to use (default: miprov2, bootstrap)",
 )
 def optimize(
@@ -130,13 +134,6 @@ def optimize(
             "optimizer_type": "bootstrap",
             "max_demos": max_demos,
             "num_trials": max(num_trials // 2, 3),
-        }
-
-    if "gepa" in optimizers:
-        optimizer_configs["gepa"] = {
-            "optimizer_type": "gepa",
-            "max_demos": max_demos,
-            "num_trials": num_trials,  # GEPA is sample efficient, can use full trials
         }
 
     # Run experiment
@@ -240,13 +237,6 @@ def show_prompt(model: str, non_interactive: bool) -> None:
     print(f"Lines: {current_prompt.count(chr(10)) + 1}")
 
 
-from .tasks import (
-    analyze_task_coverage,
-    get_prompt_optimization_tasks,
-    get_task_metadata,
-)
-
-
 @cli.command("list-tasks")
 @click.option(
     "--optimization-tasks",
@@ -288,6 +278,155 @@ def list_tasks(optimization_tasks: bool) -> None:
                 f"  Task: {prompt}{'...' if len(task.get('prompt', '')) > 100 else ''}"
             )
             print()
+
+
+@cli.command("optimize-gepa")
+@click.option("--name", default="gepa_optimization", help="Experiment name")
+@click.option("--model", default=DEFAULT_MODEL, help="Model to use")
+@click.option("--output-dir", help="Output directory for results")
+@click.option("--train-size", type=int, default=15, help="Number of training examples")
+@click.option("--val-size", type=int, default=10, help="Number of validation examples")
+@click.option(
+    "--baseline-examples",
+    type=int,
+    default=20,
+    help="Number of examples for baseline evaluation",
+)
+@click.option(
+    "--comparison-examples",
+    type=int,
+    default=15,
+    help="Number of examples for final comparison",
+)
+# GEPA budget configuration (mutually exclusive)
+@click.option(
+    "--auto",
+    type=click.Choice(["light", "medium", "heavy"]),
+    help="Preset budget configuration",
+)
+@click.option("--max-full-evals", type=int, help="Maximum number of full evaluations")
+@click.option("--max-metric-calls", type=int, help="Maximum number of metric calls")
+# GEPA-specific options
+@click.option(
+    "--reflection-minibatch-size",
+    type=int,
+    default=3,
+    help="Size of reflection minibatches",
+)
+@click.option("--num-threads", type=int, default=4, help="Number of parallel threads")
+def optimize_gepa(
+    name: str,
+    model: str,
+    output_dir: str | None,
+    train_size: int,
+    val_size: int,
+    baseline_examples: int,
+    comparison_examples: int,
+    auto: str | None,
+    max_full_evals: int | None,
+    max_metric_calls: int | None,
+    reflection_minibatch_size: int,
+    num_threads: int,
+) -> None:
+    """Run GEPA prompt optimization with proper budget configuration.
+
+    Budget Configuration: Exactly one of --auto, --max-full-evals, or --max-metric-calls must be provided.
+
+    Examples:
+
+    \b
+      # Quick experimentation
+      gptme-eval dspy optimize-gepa --auto light
+
+    \b
+      # Custom budget with explicit eval limit
+      gptme-eval dspy optimize-gepa --max-full-evals 10
+
+    \b
+      # Super small test run
+      gptme-eval dspy optimize-gepa --auto light --train-size 3 --val-size 2
+    """
+    # Validate budget configuration
+    budget_options = [auto, max_full_evals, max_metric_calls]
+    provided_options = [opt for opt in budget_options if opt is not None]
+
+    if len(provided_options) != 1:
+        print(
+            "❌ Error: Exactly one of --auto, --max-full-evals, or --max-metric-calls must be provided"
+        )
+        print("Examples:")
+        print("  gptme-eval dspy optimize-gepa --auto light")
+        print("  gptme-eval dspy optimize-gepa --max-full-evals 10")
+        sys.exit(1)
+
+    print(f"Starting GEPA optimization experiment: {name}")
+    print(f"Using model: {model}")
+    print(
+        f"Dataset sizes: train={train_size}, val={val_size}, baseline={baseline_examples}, comparison={comparison_examples}"
+    )
+    print(
+        f"Budget: {auto or f'max_full_evals={max_full_evals}' or f'max_metric_calls={max_metric_calls}'}"
+    )
+    print(f"Output directory: {output_dir}")
+
+    # Configure GEPA optimizer
+    gepa_config = {
+        "optimizer_type": "gepa",
+        "reflection_minibatch_size": reflection_minibatch_size,
+        "num_threads": num_threads,
+    }
+
+    # Add budget configuration
+    if auto:
+        gepa_config["auto"] = auto
+    elif max_full_evals:
+        gepa_config["max_full_evals"] = max_full_evals
+    elif max_metric_calls:
+        gepa_config["max_metric_calls"] = max_metric_calls
+
+    optimizer_configs = {"gepa": gepa_config}
+
+    # Run experiment
+    try:
+        experiment = run_prompt_optimization_experiment(
+            experiment_name=name,
+            model=model,
+            optimizers=optimizer_configs,
+            output_dir=Path(output_dir) if output_dir else Path("experiments"),
+            train_size=train_size,
+            val_size=val_size,
+            baseline_examples=baseline_examples,
+            comparison_examples=comparison_examples,
+        )
+
+        print("\n✅ GEPA experiment completed successfully!")
+        print(f"📊 Results saved to: {experiment.output_dir}")
+        print(f"📝 Report: {experiment.output_dir / f'{name}_report.md'}")
+
+        # Print quick summary
+        if "comparisons" in experiment.results:
+            comparisons_data = experiment.results["comparisons"]
+            assert isinstance(comparisons_data, dict)
+            comparison = comparisons_data["results"]
+            assert isinstance(comparison, dict)
+
+            best_name = max(
+                comparison.keys(), key=lambda k: comparison[k].get("average_score", 0)
+            )
+            best_score = comparison[best_name].get("average_score", 0)
+            baseline_data = comparison.get("baseline", {})
+            assert isinstance(baseline_data, dict)
+            baseline_score = baseline_data.get("average_score", 0)
+
+            print(f"\n📈 Best performing prompt: {best_name} (score: {best_score:.3f})")
+            if baseline_score > 0:
+                improvement = best_score - baseline_score
+                print(f"📊 Improvement over baseline: {improvement:+.3f}")
+
+    except Exception as e:
+        print(f"❌ GEPA experiment failed: {e}")
+        logger.exception("GEPA optimization experiment failed")
+        sys.exit(1)
 
 
 @cli.command("analyze-coverage")

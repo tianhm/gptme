@@ -176,11 +176,23 @@ class PromptOptimizer:
         optimizer_type: str = "miprov2",
         max_demos: int = 3,
         num_trials: int = 10,
+        # GEPA-specific parameters
+        auto: str | None = None,
+        max_full_evals: int | None = None,
+        max_metric_calls: int | None = None,
+        reflection_minibatch_size: int = 3,
+        num_threads: int = 4,
     ):
         self.model = model
         self.optimizer_type = optimizer_type
         self.max_demos = max_demos
         self.num_trials = num_trials
+        # GEPA-specific
+        self.auto = auto
+        self.max_full_evals = max_full_evals
+        self.max_metric_calls = max_metric_calls
+        self.reflection_minibatch_size = reflection_minibatch_size
+        self.num_threads = num_threads
         self._setup_dspy()
 
     def _setup_dspy(self):
@@ -257,15 +269,27 @@ class PromptOptimizer:
             reflection_model = ModelNameMapper.get_reflection_model(self.model)
             reflection_lm = dspy.LM(reflection_model)
 
-            return GEPA(
-                metric=trajectory_metric,
-                auto="light",
-                num_threads=4,
-                track_stats=True,
-                reflection_minibatch_size=3,
-                reflection_lm=reflection_lm,
-                max_full_evals=self.num_trials,
-            )
+            # Build GEPA config with proper budget handling
+            gepa_kwargs = {
+                "metric": trajectory_metric,
+                "num_threads": self.num_threads,
+                "track_stats": True,
+                "reflection_minibatch_size": self.reflection_minibatch_size,
+                "reflection_lm": reflection_lm,
+            }
+
+            # Add exactly one budget parameter
+            if self.auto is not None:
+                gepa_kwargs["auto"] = self.auto
+            elif self.max_full_evals is not None:
+                gepa_kwargs["max_full_evals"] = self.max_full_evals
+            elif self.max_metric_calls is not None:
+                gepa_kwargs["max_metric_calls"] = self.max_metric_calls
+            else:
+                # Default fallback
+                gepa_kwargs["auto"] = "light"
+
+            return GEPA(**gepa_kwargs)
         else:
             raise ValueError(f"Unknown optimizer type: {self.optimizer_type}")
 
