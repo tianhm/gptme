@@ -7,14 +7,15 @@ This module provides CLI commands for running prompt optimization experiments.
 import logging
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import click
 from gptme.eval.suites import tests as gptme_eval_tests
+from gptme.eval.types import EvalSpec
 
 from .experiments import quick_prompt_test, run_prompt_optimization_experiment
 from .prompt_optimizer import get_current_gptme_prompt
-from .tasks import analyze_task_coverage, get_prompt_optimization_tasks
+
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +74,8 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option(
     "--optimizers",
     multiple=True,
-    type=click.Choice(["miprov2", "bootstrap"]),
-    help="Optimizers to use (default: both)",
+    type=click.Choice(["miprov2", "bootstrap", "gepa"]),
+    help="Optimizers to use (default: miprov2, bootstrap)",
 )
 def optimize(
     name: str,
@@ -106,6 +107,13 @@ def optimize(
             "num_trials": max(num_trials // 2, 3),
         }
 
+    if "gepa" in optimizers:
+        optimizer_configs["gepa"] = {
+            "optimizer_type": "gepa",
+            "max_demos": max_demos,
+            "num_trials": num_trials,  # GEPA is sample efficient, can use full trials
+        }
+
     # Run experiment
     try:
         experiment = run_prompt_optimization_experiment(
@@ -121,12 +129,18 @@ def optimize(
 
         # Print quick summary
         if "comparisons" in experiment.results:
-            comparison = experiment.results["comparisons"]["results"]
+            comparisons_data = experiment.results["comparisons"]
+            assert isinstance(comparisons_data, dict)  # Type narrowing
+            comparison = comparisons_data["results"]
+            assert isinstance(comparison, dict)  # Type narrowing
+
             best_name = max(
                 comparison.keys(), key=lambda k: comparison[k].get("average_score", 0)
             )
             best_score = comparison[best_name].get("average_score", 0)
-            baseline_score = comparison.get("baseline", {}).get("average_score", 0)
+            baseline_data = comparison.get("baseline", {})
+            assert isinstance(baseline_data, dict)  # Type narrowing
+            baseline_score = baseline_data.get("average_score", 0)
 
             print(f"\n📈 Best performing prompt: {best_name} (score: {best_score:.3f})")
             if baseline_score > 0:
@@ -197,6 +211,13 @@ def show_prompt(model: str, non_interactive: bool) -> None:
     print(f"Lines: {current_prompt.count(chr(10)) + 1}")
 
 
+from .tasks import (
+    analyze_task_coverage,
+    get_prompt_optimization_tasks,
+    get_task_metadata,
+)
+
+
 @cli.command("list-tasks")
 @click.option(
     "--optimization-tasks",
@@ -212,7 +233,8 @@ def list_tasks(optimization_tasks: bool) -> None:
 
         for task in tasks:
             name = task.get("name", "unknown")
-            focus_areas = task.get("focus_areas", [])
+            metadata = get_task_metadata(name)
+            focus_areas = metadata.get("focus_areas", [])
             prompt = task.get("prompt", "")[:100]
 
             print(f"• {name}")
@@ -222,7 +244,7 @@ def list_tasks(optimization_tasks: bool) -> None:
             )
             print()
     else:
-        tasks = cast(list[dict[str, Any]], gptme_eval_tests)
+        tasks = cast(list[EvalSpec], gptme_eval_tests)
         print("=== Standard Evaluation Tasks ===")
         print(f"Total tasks: {len(tasks)}\n")
 
