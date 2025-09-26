@@ -546,16 +546,30 @@ def get_available_models(provider: Provider) -> list[ModelMeta]:
         raise ValueError(f"Provider {provider} does not support listing models")
 
     config = get_config()
-    api_key = config.get_env_required("OPENROUTER_API_KEY")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-    }
+    # Check if we should use the proxy
+    proxy_key = config.get_env("LLM_PROXY_API_KEY")
+    proxy_url = config.get_env("LLM_PROXY_URL")
+
+    if proxy_key and proxy_url:
+        # Use proxy for models endpoint
+        # Strip /messages from proxy URL and replace with /models
+        api_key = proxy_key
+        if proxy_url.endswith("/messages"):
+            base_url = proxy_url.rsplit("/messages", 1)[0]
+            url = f"{base_url}/models"
+        else:
+            # Fallback if URL structure is different
+            url = f"{proxy_url.rstrip('/')}/models"
+        headers = {"x-api-key": api_key}
+    else:
+        # Direct OpenRouter API call (fallback)
+        api_key = config.get_env_required("OPENROUTER_API_KEY")
+        url = "https://openrouter.ai/api/v1/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        response = requests.get(
-            "https://openrouter.ai/api/v1/models", headers=headers, timeout=30
-        )
+        response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
 
