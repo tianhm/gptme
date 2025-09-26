@@ -67,9 +67,14 @@ def init(provider: Provider, config: Config):
     """Initialize OpenAI client for a given provider."""
     from openai import AzureOpenAI, OpenAI  # fmt: skip
 
+    proxy_key = config.get_env("LLM_PROXY_API_KEY")
+    proxy_url = config.get_env("LLM_PROXY_URL")
+
+    # Set the proxy URL to the unified messages endpoint if not already set
+    if proxy_url and not proxy_url.endswith("/messages"):
+        proxy_url = proxy_url + "/messages" if proxy_url else None
+
     if provider == "openai":
-        proxy_key = config.get_env("LLM_PROXY_API_KEY")
-        proxy_url = config.get_env("LLM_PROXY_URL")
         api_key = proxy_key or config.get_env_required("OPENAI_API_KEY")
         clients[provider] = OpenAI(
             api_key=api_key,
@@ -84,8 +89,6 @@ def init(provider: Provider, config: Config):
             azure_endpoint=azure_endpoint,
         )
     elif provider == "openrouter":
-        proxy_key = config.get_env("LLM_PROXY_API_KEY")
-        proxy_url = config.get_env("LLM_PROXY_URL")
         api_key = proxy_key or config.get_env_required("OPENROUTER_API_KEY")
         clients[provider] = OpenAI(
             api_key=api_key, base_url=proxy_url or "https://openrouter.ai/api/v1"

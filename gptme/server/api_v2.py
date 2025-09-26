@@ -13,6 +13,12 @@ from itertools import islice
 import flask
 from flask import request
 from gptme.config import ChatConfig, Config, set_config
+from gptme.llm.models import (
+    PROVIDERS,
+    Provider,
+    _get_models_for_provider,
+    get_default_model,
+)
 from gptme.prompts import get_prompt
 
 from ..dirs import get_logs_dir
@@ -269,9 +275,10 @@ def api_conversation_delete(conversation_id: str):
     logdir = get_logs_dir() / conversation_id
     assert logdir.parent == get_logs_dir()
     if not logdir.exists():
-        return flask.jsonify(
-            {"error": f"Conversation not found: {conversation_id}"}
-        ), 404
+        return (
+            flask.jsonify({"error": f"Conversation not found: {conversation_id}"}),
+            404,
+        )
 
     try:
         shutil.rmtree(logdir)
@@ -295,13 +302,6 @@ def api_models():
     Returns available models based on current configuration.
     If proxy is configured, only returns proxy-supported models.
     """
-    from gptme.config import Config
-    from gptme.llm.models import (
-        PROVIDERS,
-        Provider,
-        _get_models_for_provider,
-        get_default_model,
-    )
 
     config = Config()
 
@@ -319,7 +319,7 @@ def api_models():
     # If proxy is configured (like gptme.ai), show supported providers
     # The proxy now supports both OpenAI and Anthropic models
     providers_to_check: list[Provider] = (
-        ["openai", "anthropic"] if is_proxy else PROVIDERS
+        ["openai", "anthropic", "openrouter"] if is_proxy else PROVIDERS
     )
     for provider in providers_to_check:
         models = _get_models_for_provider(provider, dynamic_fetch=True)
