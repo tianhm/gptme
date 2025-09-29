@@ -88,6 +88,15 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
     "openai": OPENAI_MODELS,
     # https://docs.anthropic.com/en/docs/about-claude/models
     "anthropic": {
+        "claude-sonnet-4-5": {
+            "context": 200_000,
+            "max_output": 64_000,
+            "price_input": 3,
+            "price_output": 15,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "knowledge_cutoff": datetime(2025, 7, 1),
+        },
         "claude-opus-4-1-20250805": {
             "context": 200_000,
             "max_output": 32_000,
