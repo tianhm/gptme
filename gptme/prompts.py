@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from .__version__ import __version__
-from .config import get_config, get_project_config, config_path
+from .config import config_path, get_config, get_project_config
 from .dirs import get_project_git_dir
 from .llm.models import get_model, get_recommended_model
 from .message import Message
@@ -600,9 +600,9 @@ def prompt_chat_history() -> Generator[Message, None, None]:
 
 The following is a summary of your recent conversations with the user to provide continuity:
 
----
+```history
 {sep.join(part for part in context_parts)}
----
+```
 
 Use this context to understand ongoing projects, preferences, and previous discussions.
 """
