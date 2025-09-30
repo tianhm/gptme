@@ -436,7 +436,7 @@ def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
     elif provider == "gemini":
         return "gemini-2.5-pro"
     elif provider == "anthropic":
-        return "claude-sonnet-4-20250514"
+        return "claude-sonnet-4-5"
     else:
         raise ValueError(f"Provider {provider} did not have a recommended model")
 
