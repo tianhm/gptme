@@ -16,6 +16,7 @@ from itertools import islice
 from pathlib import Path
 
 import flask
+from dateutil.parser import isoparse
 from flask import current_app, request
 from flask_cors import CORS
 
@@ -178,9 +179,7 @@ def api_conversation_put(logfile: str):
     # Add any additional messages from request
     for msg in req_json.get("messages", []):
         timestamp: datetime = (
-            datetime.fromisoformat(msg["timestamp"])
-            if "timestamp" in msg
-            else datetime.now()
+            isoparse(msg["timestamp"]) if "timestamp" in msg else datetime.now()
         )
         msgs.append(Message(msg["role"], msg["content"], timestamp=timestamp))
 

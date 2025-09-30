@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from dateutil.parser import isoparse
+
 
 @dataclass
 class Comment:
@@ -22,7 +24,7 @@ class Comment:
             type="pr_comment",
             user=d["user"]["login"],
             body=d["body"],
-            created_at=datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")),
+            created_at=isoparse(d["created_at"].replace("Z", "+00:00")),
         )
 
 
@@ -40,7 +42,7 @@ class Review:
             type="review",
             user=d["user"]["login"],
             body=d["body"],
-            created_at=datetime.fromisoformat(d["submitted_at"].replace("Z", "+00:00")),
+            created_at=isoparse(d["submitted_at"].replace("Z", "+00:00")),
             state=d["state"],
         )
 
@@ -69,7 +71,7 @@ class ReviewComment:
             type="review_comment",
             user=d["user"]["login"],
             body=d["body"],
-            created_at=datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")),
+            created_at=isoparse(d["created_at"].replace("Z", "+00:00")),
             path=d["path"],
             line=d["line"],
             diff_hunk=d["diff_hunk"],

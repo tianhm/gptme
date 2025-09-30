@@ -15,6 +15,8 @@ import shlex
 from collections.abc import Generator
 from datetime import datetime
 
+from dateutil.parser import isoparse
+
 from ..message import Message
 from .base import ConfirmFunc, ToolSpec, ToolUse
 
@@ -51,8 +53,8 @@ class TodoItem:
     @classmethod
     def from_dict(cls, data: dict) -> "TodoItem":
         item = cls(data["id"], data["text"], data["state"])
-        item.created = datetime.fromisoformat(data["created"])
-        item.updated = datetime.fromisoformat(data["updated"])
+        item.created = isoparse(data["created"])
+        item.updated = isoparse(data["updated"])
         return item
 
 

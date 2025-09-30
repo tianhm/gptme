@@ -17,6 +17,7 @@ from typing import (
     TypeAlias,
 )
 
+from dateutil.parser import isoparse
 from rich import print
 
 from .config import ChatConfig, get_project_config
@@ -474,5 +475,5 @@ def _gen_read_jsonl(path: PathLike) -> Generator[Message, None, None]:
             json_data = json.loads(line)
             files = [Path(f) for f in json_data.pop("files", [])]
             if "timestamp" in json_data:
-                json_data["timestamp"] = datetime.fromisoformat(json_data["timestamp"])
+                json_data["timestamp"] = isoparse(json_data["timestamp"])
             yield Message(**json_data, files=files)
