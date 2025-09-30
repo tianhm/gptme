@@ -11,6 +11,7 @@ from datetime import datetime
 from itertools import islice
 
 import flask
+from dateutil.parser import isoparse
 from flask import request
 from gptme.config import ChatConfig, Config, set_config
 from gptme.llm.models import (
@@ -162,9 +163,7 @@ def api_conversation_put(conversation_id: str):
 
     for msg in req_json.get("messages", []):
         timestamp: datetime = (
-            datetime.fromisoformat(msg["timestamp"])
-            if "timestamp" in msg
-            else datetime.now()
+            isoparse(msg["timestamp"]) if "timestamp" in msg else datetime.now()
         )
         msgs.append(Message(msg["role"], msg["content"], timestamp=timestamp))
 
