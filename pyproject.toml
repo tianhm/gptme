@@ -47,6 +47,7 @@ json-repair = "^0.32.0"
 mcp = "^1.13.0"
 questionary = "^2.1.0"
 deprecated = "^1.2.18"
+python-dateutil = "^2.9.0.post0"
 
 # providers
 openai = "^1.0"
