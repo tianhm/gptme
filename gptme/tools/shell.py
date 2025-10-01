@@ -79,6 +79,16 @@ deny_groups = [
     ),
     (
         [
+            r"git\s+reset\s+--hard",
+            r"git\s+clean\s+-[fFdDxX]+",
+            r"git\s+push\s+(-f|--force)",
+            r"git\s+reflog\s+expire",
+            r"git\s+filter-branch",
+        ],
+        "Destructive git operations are blocked. Use safer alternatives: `git stash` to save changes, `git reset --soft` to uncommit without losing changes, `git push --force-with-lease` for safer force pushes.",
+    ),
+    (
+        [
             r"rm\s+-rf\s+/",
             r"sudo\s+rm\s+-rf\s+/",
             r"rm\s+-rf\s+\*",
