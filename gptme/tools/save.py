@@ -101,19 +101,24 @@ def execute_save_impl(
     """Actual save implementation."""
     assert path
     path_display = path
-    path = path.expanduser()
+
+    # Print full path to give agent feedback about where exactly the file is saved
+    path = path.expanduser().resolve()
 
     # Ensure content ends with newline
     if not content.endswith("\n"):
         content += "\n"
 
     # Check if file exists
+    overwrite = False
     if path.exists():
         if not confirm(f"File {path_display} exists, overwrite?"):
             yield Message("system", "Save aborted: user refused to overwrite the file.")
             return
+        overwrite = True
 
     # Check if folder exists
+    missing_parent_created = False
     if not path.parent.exists():
         if not confirm(f"Folder {path_display.parent} doesn't exist, create it?"):
             yield Message(
@@ -121,11 +126,17 @@ def execute_save_impl(
             )
             return
         path.parent.mkdir(parents=True)
+        missing_parent_created = True
 
     # Save the file
     with open(path, "w") as f:
         f.write(content)
-    yield Message("system", f"Saved to {path_display}")
+    yield Message(
+        "system",
+        f"Saved to {path_display}"
+        + (" (overwritten)" if overwrite else "")
+        + (" (created missing folder)" if missing_parent_created else ""),
+    )
 
 
 def execute_append_impl(
