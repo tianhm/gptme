@@ -138,7 +138,14 @@ version:
 
 .PHONY: dist/CHANGELOG.md
 dist/CHANGELOG.md: ./scripts/build_changelog.py
-	VERSION=$$(git describe --tags) && \
+	@# Use clean version if on tagged commit, otherwise use descriptive version
+	@POETRY_VERSION=v$$(poetry version --short) && \
+	GIT_VERSION=$$(git describe --tags) && \
+	if [ "$$POETRY_VERSION" = "$$GIT_VERSION" ]; then \
+		VERSION=$$POETRY_VERSION; \
+	else \
+		VERSION=$$GIT_VERSION; \
+	fi && \
 	make docs/releases/$${VERSION}.md && \
 	cp docs/releases/$${VERSION}.md $@
 
@@ -154,7 +161,7 @@ release: version dist/CHANGELOG.md
 	# Stage changelog and release notes with version bump
 	# Amend version commit to include changelog
 	# Force-update tag to amended commit
-	@VERSION=$$(git describe --tags --abbrev=0) && \
+	@VERSION=v$$(poetry version --short) && \
 		echo "Releasing version $${VERSION}"; \
 		awk '/^   releases\// && !done { \
 			print "   releases/'"$${VERSION}"'.md"; \
