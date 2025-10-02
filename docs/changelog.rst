@@ -8,8 +8,6 @@ The changelog is also available in the repository releases <https://github.com/g
 
    releases/v0.28.3.md
    releases/v0.28.2.md
-   releases/v0.28.3.md
-   releases/v0.28.2.md
    releases/v0.28.1.md
    releases/v0.28.0.md
    releases/v0.27.0.md
