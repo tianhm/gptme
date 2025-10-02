@@ -177,13 +177,17 @@ def chat(
             # Check if complete tool was used - if so, exit cleanly
             if not prompt_queue:
                 # Check last few messages for complete tool usage
-                for msg in reversed(manager.log.messages[-5:]):
-                    if msg.role == "system" and "Task complete" in msg.content:
-                        console.log(
-                            "Autonomous mode: Complete tool detected. Exiting cleanly."
-                        )
-                        _wait_for_tts_if_enabled()
-                        return
+                if any(
+                    tu.tool == "complete"
+                    for msg in reversed(manager.log.messages[-5:])
+                    if msg.role == "assistant"
+                    for tu in ToolUse.iter_from_content(msg.content)
+                ):
+                    console.log(
+                        "Autonomous mode: Complete tool detected. Exiting cleanly."
+                    )
+                    _wait_for_tts_if_enabled()
+                    return
 
             # Auto-reply mechanism for autonomous operation
             # If in non-interactive mode and last assistant message had no tools,
