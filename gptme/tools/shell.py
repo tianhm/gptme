@@ -69,7 +69,7 @@ allowlist_commands = [
 deny_groups = [
     (
         [
-            r"git\s+add\s+\.",
+            r"git\s+add\s+\.(?:\s|$)",  # Match 'git add .' but not '.gitignore'
             r"git\s+add\s+-A",
             r"git\s+add\s+--all",
             r"git\s+commit\s+-a",
@@ -81,7 +81,7 @@ deny_groups = [
         [
             r"git\s+reset\s+--hard",
             r"git\s+clean\s+-[fFdDxX]+",
-            r"git\s+push\s+(-f|--force)",
+            r"git\s+push\s+(-f|--force)(?!-)",  # Allow --force-with-lease
             r"git\s+reflog\s+expire",
             r"git\s+filter-branch",
         ],

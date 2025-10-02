@@ -1,10 +1,14 @@
-from gptme.tools.shell import _shorten_stdout
-import tempfile
 import os
+import tempfile
 from collections.abc import Generator
 
 import pytest
-from gptme.tools.shell import ShellSession, split_commands
+from gptme.tools.shell import (
+    ShellSession,
+    _shorten_stdout,
+    is_denylisted,
+    split_commands,
+)
 
 
 @pytest.fixture
@@ -30,23 +34,27 @@ def test_echo_multiline(shell):
     assert ret == 0
 
     # Test basic heredoc (<<)
-    ret, out, err = shell.run("""
+    ret, out, err = shell.run(
+        """
 cat << EOF
 Hello
 World
 EOF
-""")
+"""
+    )
     assert err.strip() == ""
     assert out.strip() == "Hello\nWorld"
     assert ret == 0
 
     # Test stripped heredoc (<<-)
-    ret, out, err = shell.run("""
+    ret, out, err = shell.run(
+        """
 cat <<- EOF
 Hello
 World
 EOF
-""")
+"""
+    )
     assert err.strip() == ""
     assert out.strip() == "Hello\nWorld"
     assert ret == 0
@@ -105,7 +113,8 @@ multiline command"
 
 def test_heredoc_complex(shell):
     # Test nested heredocs
-    ret, out, err = shell.run("""
+    ret, out, err = shell.run(
+        """
 cat << OUTER
 This is the outer heredoc
 $(cat << INNER
@@ -113,18 +122,21 @@ This is the inner heredoc
 INNER
 )
 OUTER
-""")
+"""
+    )
     assert err.strip() == ""
     assert out.strip() == "This is the outer heredoc\nThis is the inner heredoc"
     assert ret == 0
 
     # Test heredoc with variable substitution
-    ret, out, err = shell.run("""
+    ret, out, err = shell.run(
+        """
 NAME="World"
 cat << EOF
 Hello, $NAME!
 EOF
-""")
+"""
+    )
     assert err.strip() == ""
     assert out.strip() == "Hello, World!"
     assert ret == 0
@@ -132,27 +144,33 @@ EOF
 
 def test_heredoc_quoted_delimiters(shell):
     # Test heredoc with single-quoted delimiter
-    ret, out, err = shell.run("""cat <<'EOF'
+    ret, out, err = shell.run(
+        """cat <<'EOF'
 some content with single quotes
-EOF""")
+EOF"""
+    )
     assert err.strip() == ""
     assert out.strip() == "some content with single quotes"
     assert ret == 0
 
     # Test heredoc with double-quoted delimiter
-    ret, out, err = shell.run("""cat <<"EOF"
+    ret, out, err = shell.run(
+        """cat <<"EOF"
 some content with double quotes
-EOF""")
+EOF"""
+    )
     assert err.strip() == ""
     assert out.strip() == "some content with double quotes"
     assert ret == 0
 
     # Test that quoted delimiters prevent variable expansion
-    ret, out, err = shell.run("""
+    ret, out, err = shell.run(
+        """
 VAR="expanded"
 cat <<'EOF'
 This $VAR should not be expanded
-EOF""")
+EOF"""
+    )
     assert err.strip() == ""
     assert out.strip() == "This $VAR should not be expanded"
     assert ret == 0
@@ -160,20 +178,24 @@ EOF""")
 
 def test_heredoc_quoted_delimiters_with_spaces(shell):
     # Test heredoc with space before single-quoted delimiter
-    ret, out, err = shell.run("""cat > /tmp/test_space.sh << 'EOF'
+    ret, out, err = shell.run(
+        """cat > /tmp/test_space.sh << 'EOF'
 #!/bin/bash
 echo "This is a test with space before quoted delimiter"
 EOF
-cat /tmp/test_space.sh && rm /tmp/test_space.sh""")
+cat /tmp/test_space.sh && rm /tmp/test_space.sh"""
+    )
     assert ret == 0
     assert "This is a test with space before quoted delimiter" in out
 
     # Test heredoc with space before double-quoted delimiter
-    ret, out, err = shell.run("""cat > /tmp/test_space2.sh << "EOF"
+    ret, out, err = shell.run(
+        """cat > /tmp/test_space2.sh << "EOF"
 #!/bin/bash
 echo "This is a test with space before double-quoted delimiter"
 EOF
-cat /tmp/test_space2.sh && rm /tmp/test_space2.sh""")
+cat /tmp/test_space2.sh && rm /tmp/test_space2.sh"""
+    )
     assert ret == 0
     assert "This is a test with space before double-quoted delimiter" in out
 
@@ -279,7 +301,6 @@ l2"""
 
 def test_is_denylisted_pattern_matches():
     """Test that commands matching the deny group patterns are properly handled."""
-    from gptme.tools.shell import is_denylisted
 
     # Test commands that should match the regex patterns in deny_groups
     pattern_matching_commands = [
@@ -303,7 +324,6 @@ def test_is_denylisted_pattern_matches():
 
 def test_is_denylisted_git_bulk_operations():
     """Test that git bulk operations are properly denied with correct reason."""
-    from gptme.tools.shell import is_denylisted
 
     dangerous_git_commands = [
         "git add .",
@@ -325,7 +345,6 @@ def test_is_denylisted_git_bulk_operations():
 
 def test_is_denylisted_destructive_file_operations():
     """Test that destructive file operations are properly denied with correct reason."""
-    from gptme.tools.shell import is_denylisted
 
     dangerous_file_commands = [
         "rm -rf /",
@@ -344,7 +363,6 @@ def test_is_denylisted_destructive_file_operations():
 
 def test_is_denylisted_dangerous_permissions():
     """Test that dangerous permission operations are properly denied with correct reason."""
-    from gptme.tools.shell import is_denylisted
 
     dangerous_chmod_commands = [
         "chmod 777",
@@ -363,7 +381,6 @@ def test_is_denylisted_dangerous_permissions():
 
 def test_is_denylisted_safe_commands():
     """Test that safe commands are allowed through."""
-    from gptme.tools.shell import is_denylisted
 
     safe_commands = [
         "git add specific-file.py",
@@ -376,6 +393,7 @@ def test_is_denylisted_safe_commands():
         "rm -rf build/",  # specific directory, not root
         "ls -la",
         "echo 'hello'",
+        "git push --force-with-lease",  # force-with-lease is safer than --force
     ]
 
     for cmd in safe_commands:
@@ -386,12 +404,13 @@ def test_is_denylisted_safe_commands():
 
 def test_is_denylisted_edge_cases():
     """Test edge cases and boundary conditions."""
-    from gptme.tools.shell import is_denylisted
 
     # Test that similar but safe variations are allowed
     safe_variations = [
         "git add file.py",  # specific file, not bulk
         "git add src/",  # specific directory, not all
+        "git add .gitignore",  # dotfile, not current directory
+        "git add .github/workflows/build.yml",  # dotfile in subdirectory
         "chmod 755",  # safe permissions
         "rm -rf build/target/",  # specific path, not root
         "git commit --amend",  # different flag
