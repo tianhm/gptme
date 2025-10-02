@@ -109,9 +109,11 @@ def execute_save_impl(
     if not content.endswith("\n"):
         content += "\n"
 
-    # Check if file exists
+    # Check if file exists and store original content for comparison
     overwrite = False
+    original_content = None
     if path.exists():
+        original_content = path.read_text()
         if not confirm(f"File {path_display} exists, overwrite?"):
             yield Message("system", "Save aborted: user refused to overwrite the file.")
             return
@@ -131,11 +133,37 @@ def execute_save_impl(
     # Save the file
     with open(path, "w") as f:
         f.write(content)
+
+    # Check if this was an inefficient overwrite (minimal changes)
+    hint = ""
+    if overwrite and original_content:
+        try:
+            # Calculate how much actually changed
+            p = Patch(original_content, content)
+            diff = p.diff_minimal(strip_context=True)
+
+            # Count changed lines vs total lines
+            changed_lines = len(
+                [line for line in diff.split("\n") if line.startswith(("+", "-"))]
+            )
+            total_lines = len(content.split("\n"))
+
+            # Emit hint if changes are minimal relative to file size
+            # Show hint if: (< 30% changed AND > 10 lines) OR (< 5 lines changed AND > 10 lines)
+            if total_lines > 10 and (
+                changed_lines < total_lines * 0.3 or changed_lines < 5
+            ):
+                hint = "\n💡 Hint: This save barely changed the file. Consider using the patch tool for small modifications to be more efficient."
+        except Exception:
+            # If diff calculation fails, don't emit hint
+            pass
+
     yield Message(
         "system",
         f"Saved to {path_display}"
         + (" (overwritten)" if overwrite else "")
-        + (" (created missing folder)" if missing_parent_created else ""),
+        + (" (created missing folder)" if missing_parent_created else "")
+        + hint,
     )
 
 
