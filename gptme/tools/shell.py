@@ -433,21 +433,131 @@ def is_allowlisted(cmd: str) -> bool:
     return True
 
 
-def is_denylisted(cmd: str) -> tuple[bool, str | None]:
+def _find_quotes(cmd: str) -> list[tuple[int, int]]:
+    """Find all quoted regions in a command string.
+
+    Returns a list of (start, end) tuples for each quoted region.
+    """
+    quoted_regions = []
+    in_single = False
+    in_double = False
+    start = -1
+
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+
+        # Handle escape sequences
+        if c == "\\" and i + 1 < len(cmd):
+            i += 2
+            continue
+
+        # Handle single quotes
+        if c == "'" and not in_double:
+            if not in_single:
+                start = i
+                in_single = True
+            else:
+                quoted_regions.append((start, i + 1))
+                in_single = False
+
+        # Handle double quotes
+        elif c == '"' and not in_single:
+            if not in_double:
+                start = i
+                in_double = True
+            else:
+                quoted_regions.append((start, i + 1))
+                in_double = False
+
+        i += 1
+
+    return quoted_regions
+
+
+def _find_heredoc_regions(cmd: str) -> list[tuple[int, int]]:
+    """Find all heredoc regions in a command string.
+
+    Heredoc syntax: << DELIMITER or <<- DELIMITER
+    The delimiter can be quoted: << 'EOF' or << "EOF"
+
+    Returns a list of (start, end) tuples for each heredoc content region.
+    """
+    heredoc_regions = []
+
+    # Pattern to match heredoc operators with optional quotes around delimiter
+    # Matches: << or <<- followed by optional whitespace and delimiter (with optional quotes)
+    heredoc_pattern = re.compile(r"<<-?\s*([\"']?)(\w+)\1")
+
+    for match in heredoc_pattern.finditer(cmd):
+        delimiter = match.group(2)
+
+        # Find where the content starts (after the first newline after the marker)
+        search_start = match.end()
+        newline_idx = cmd.find("\n", search_start)
+        if newline_idx == -1:
+            continue  # No content
+
+        content_start = newline_idx + 1
+
+        # Find the line with just the delimiter
+        pos = content_start
+        while True:
+            newline_idx = cmd.find("\n", pos)
+            if newline_idx == -1:
+                # Check if remaining text is the delimiter
+                if cmd[pos:].strip() == delimiter:
+                    heredoc_regions.append((content_start, pos))
+                break
+
+            # Check if the line from pos to newline_idx is just the delimiter
+            line = cmd[pos:newline_idx]
+            if line.strip() == delimiter:
+                heredoc_regions.append((content_start, pos))
+                break
+
+            pos = newline_idx + 1
+
+    return heredoc_regions
+
+
+def _is_in_quoted_region(pos: int, quoted_regions: list[tuple[int, int]]) -> bool:
+    """Check if a position is within any quoted region."""
+    for start, end in quoted_regions:
+        if start <= pos < end:
+            return True
+    return False
+
+
+def is_denylisted(cmd: str) -> tuple[bool, str | None, str | None]:
     """Check if a command contains dangerous patterns that should be denied.
 
-    Returns:
-        tuple[bool, str | None]: (is_denied, reason_if_denied)
-    """
-    cmd_normalized = " ".join(cmd.split())  # normalize whitespace
+    Only checks actual commands, not content in quoted strings or heredocs.
 
-    # Check deny groups
+    Returns:
+        tuple[bool, str | None, str | None]: (is_denied, reason_if_denied, matched_command)
+    """
+    # Find both quoted regions and heredoc regions in the original command
+    # (heredocs require newlines to be detected properly)
+    quoted_regions = _find_quotes(cmd)
+    heredoc_regions = _find_heredoc_regions(cmd)
+
+    # Combine all safe regions
+    safe_regions = quoted_regions + heredoc_regions
+
+    # Check deny groups against the original command
+    # We don't normalize because it would break heredoc detection
     for patterns, reason in deny_groups:
         for pattern in patterns:
-            if re.search(pattern, cmd_normalized, re.IGNORECASE):
-                return True, reason
+            match = re.search(pattern, cmd, re.IGNORECASE)
+            if match:
+                # Check if the match is within a safe region (quoted or heredoc)
+                match_start = match.start()
+                if not _is_in_quoted_region(match_start, safe_regions):
+                    # Return the matched text to show in error message
+                    return True, reason, match.group(0)
 
-    return False, None
+    return False, None, None
 
 
 def _format_shell_output(
@@ -604,9 +714,9 @@ def execute_shell(
             timeout = 60.0
 
     # Check if command is denylisted - these are blocked entirely
-    is_denied, deny_reason = is_denylisted(cmd)
+    is_denied, deny_reason, matched_cmd = is_denylisted(cmd)
     if is_denied:
-        yield Message("system", f"Command denied: `{cmd}`\n\n{deny_reason}")
+        yield Message("system", f"Command denied: `{matched_cmd}`\n\n{deny_reason}")
         return
 
     # Skip confirmation for allowlisted commands

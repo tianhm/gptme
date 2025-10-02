@@ -317,9 +317,10 @@ def test_is_denylisted_pattern_matches():
     ]
 
     for cmd in pattern_matching_commands:
-        is_denied, reason = is_denylisted(cmd)
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert is_denied, f"Pattern-matching command should be denied: {cmd}"
         assert reason is not None, f"Should have reason for: {cmd}"
+        assert matched_cmd is not None, f"Should have matched command for: {cmd}"
 
 
 def test_is_denylisted_git_bulk_operations():
@@ -338,9 +339,10 @@ def test_is_denylisted_git_bulk_operations():
     expected_reason = "Instead of bulk git operations, use selective commands: `git add <specific-files>` to stage only intended files, then `git commit`."
 
     for cmd in dangerous_git_commands:
-        is_denied, reason = is_denylisted(cmd)
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert is_denied, f"Command should be denied: {cmd}"
         assert reason == expected_reason, f"Wrong reason for: {cmd}"
+        assert matched_cmd is not None, f"Should have matched command for: {cmd}"
 
 
 def test_is_denylisted_destructive_file_operations():
@@ -356,9 +358,10 @@ def test_is_denylisted_destructive_file_operations():
     expected_reason = "Destructive file operations are blocked. Specify exact paths and avoid operations that could delete system files or entire directories."
 
     for cmd in dangerous_file_commands:
-        is_denied, reason = is_denylisted(cmd)
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert is_denied, f"Command should be denied: {cmd}"
         assert reason == expected_reason, f"Wrong reason for: {cmd}"
+        assert matched_cmd is not None, f"Should have matched command for: {cmd}"
 
 
 def test_is_denylisted_dangerous_permissions():
@@ -374,9 +377,10 @@ def test_is_denylisted_dangerous_permissions():
     expected_reason = "Overly permissive chmod operations are blocked. Use safer permissions like `chmod 755` or `chmod 644` and be specific about target files."
 
     for cmd in dangerous_chmod_commands:
-        is_denied, reason = is_denylisted(cmd)
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert is_denied, f"Command should be denied: {cmd}"
         assert reason == expected_reason, f"Wrong reason for: {cmd}"
+        assert matched_cmd is not None, f"Should have matched command for: {cmd}"
 
 
 def test_is_denylisted_safe_commands():
@@ -397,9 +401,12 @@ def test_is_denylisted_safe_commands():
     ]
 
     for cmd in safe_commands:
-        is_denied, reason = is_denylisted(cmd)
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe command should be allowed: {cmd}"
         assert reason is None, f"Safe command should have no reason: {cmd}"
+        assert (
+            matched_cmd is None
+        ), f"Safe command should have no matched command: {cmd}"
 
 
 def test_is_denylisted_edge_cases():
@@ -417,6 +424,163 @@ def test_is_denylisted_edge_cases():
     ]
 
     for cmd in safe_variations:
-        is_denied, reason = is_denylisted(cmd)
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
         assert not is_denied, f"Safe variation should be allowed: {cmd}"
         assert reason is None, f"Safe variation should have no reason: {cmd}"
+        assert (
+            matched_cmd is None
+        ), f"Safe variation should have no matched command: {cmd}"
+
+
+def test_is_denylisted_quoted_content():
+    """Test that dangerous patterns in quoted strings are allowed."""
+
+    # Test single-quoted strings containing dangerous patterns
+    safe_quoted_commands = [
+        "echo 'git add .'",
+        "echo 'rm -rf /'",
+        "git commit -m 'Added git add . support'",
+        'echo "chmod 777"',
+        'echo "git commit -a"',
+        "printf 'Avoid using git add -A\\n'",
+        'echo "Never run rm -rf *"',
+        "echo 'Command: git add --all'",
+    ]
+
+    for cmd in safe_quoted_commands:
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
+        assert not is_denied, f"Quoted dangerous pattern should be allowed: {cmd}"
+        assert reason is None, f"Should have no reason for quoted content: {cmd}"
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for quoted content: {cmd}"
+
+
+def test_is_denylisted_mixed_quoted_and_actual():
+    """Test commands that mix safe quoted content with actual dangerous commands."""
+
+    # Commands that should still be denied despite having quotes elsewhere
+    dangerous_with_quotes = [
+        "echo 'safe' && git add .",
+        'git add . && echo "safe"',
+        "git add . # comment with 'quotes'",
+    ]
+
+    for cmd in dangerous_with_quotes:
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
+        assert is_denied, f"Actual dangerous command should be denied: {cmd}"
+        assert reason is not None, f"Should have reason for dangerous command: {cmd}"
+        assert matched_cmd is not None, f"Should have matched command: {cmd}"
+
+
+def test_is_denylisted_escaped_quotes():
+    """Test handling of escaped quotes."""
+
+    # Commands with escaped quotes should still work correctly
+    safe_escaped = [
+        r"echo 'It'\''s safe to say: git add .'",  # Single quote escape within single quotes
+        r'echo "She said \"git add .\" is dangerous"',  # Escaped double quotes
+    ]
+
+    for cmd in safe_escaped:
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
+        assert not is_denied, f"Escaped quoted content should be allowed: {cmd}"
+        assert (
+            reason is None
+        ), f"Should have no reason for escaped quoted content: {cmd}"
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for escaped quoted content: {cmd}"
+
+
+def test_is_denylisted_heredoc():
+    """Test handling of heredoc syntax."""
+
+    # Heredocs with various delimiter styles should not trigger on content
+    safe_heredoc_commands = [
+        # Basic heredoc
+        """cat << EOF
+git add .
+rm -rf /
+chmod 777
+EOF""",
+        # Single-quoted delimiter (literal)
+        """cat << 'EOF'
+git add .
+rm -rf /
+chmod 777
+EOF""",
+        # Double-quoted delimiter
+        """cat << "EOF"
+git add .
+rm -rf /
+chmod 777
+EOF""",
+        # Heredoc with leading tab strip
+        """cat <<- EOF
+git add .
+rm -rf /
+chmod 777
+EOF""",
+        # Heredoc in middle of command
+        """echo "before" && cat << EOF
+git add .
+EOF
+echo "after" """,
+        # Multiple heredocs
+        """cat << EOF1
+git add .
+EOF1
+cat << EOF2
+rm -rf /
+EOF2""",
+        # Real-world example: creating a script
+        """cat > script.sh << 'EOF'
+#!/bin/bash
+# This script documents dangerous commands
+# Never use: git add .
+# Never use: rm -rf /
+EOF""",
+    ]
+
+    for cmd in safe_heredoc_commands:
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
+        assert not is_denied, f"Heredoc content should be allowed: {cmd[:50]}..."
+        assert (
+            reason is None
+        ), f"Should have no reason for heredoc content: {cmd[:50]}..."
+        assert (
+            matched_cmd is None
+        ), f"Should have no matched command for heredoc: {cmd[:50]}..."
+
+
+def test_is_denylisted_heredoc_with_actual_command():
+    """Test that actual dangerous commands before/after heredocs are still caught."""
+
+    dangerous_with_heredoc = [
+        # Dangerous command before heredoc
+        """git add . && cat << EOF
+This is safe content
+EOF""",
+        # Dangerous command after heredoc
+        """cat << EOF
+This is safe content
+EOF
+git add .""",
+        # Dangerous command between heredocs
+        """cat << EOF1
+safe
+EOF1
+git add .
+cat << EOF2
+safe
+EOF2""",
+    ]
+
+    for cmd in dangerous_with_heredoc:
+        is_denied, reason, matched_cmd = is_denylisted(cmd)
+        assert is_denied, f"Actual dangerous command should be denied: {cmd[:50]}..."
+        assert (
+            reason is not None
+        ), f"Should have reason for dangerous command: {cmd[:50]}..."
+        assert matched_cmd is not None, f"Should have matched command: {cmd[:50]}..."
