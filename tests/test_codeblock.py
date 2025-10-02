@@ -400,3 +400,198 @@ def test_extract_patch_codeblock_with_nested_backticks():
     assert (
         len(blocks) == 1
     ), f"Expected 1 patch block in non-streaming mode, got {len(blocks)}"
+
+
+def test_multiple_sequential_nested_blocks():
+    """
+    Test that multiple nested blocks with language tags are handled correctly.
+
+    When we close a nested block and return to depth 1, we should be able to
+    open a new nested block immediately after.
+    """
+    fence = "```"
+    markdown = f"""{fence}outer
+First content
+{fence}inner1
+nested content 1
+{fence}
+Between blocks
+{fence}inner2
+nested content 2
+{fence}
+Final content
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1, f"Expected 1 outer block, got {len(blocks)}"
+
+    content = blocks[0].content
+    # Should contain both nested blocks with their markers
+    assert "```inner1" in content
+    assert "nested content 1" in content
+    assert "```inner2" in content
+    assert "nested content 2" in content
+    assert "Between blocks" in content
+    assert "Final content" in content
+
+
+def test_nested_block_followed_by_content():
+    """
+    Test that content after a nested block is included in the outer block.
+
+    This is the key case that the depth > 1 heuristic fixes.
+    """
+    fence = "```"
+    markdown = f"""{fence}outer
+Before nested
+{fence}inner
+nested content
+{fence}
+After nested - this should be included!
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+
+    content = blocks[0].content
+    assert "Before nested" in content
+    assert "```inner" in content
+    assert "nested content" in content
+    assert "After nested - this should be included!" in content
+
+
+def test_bare_backticks_open_nested_at_depth_1():
+    """
+    Test that bare backticks CAN open nested blocks when at depth 1.
+
+    This documents the behavior where bare ``` followed by content
+    opens a nested block only when we're at the top level.
+    """
+    fence = "```"
+    markdown = f"""{fence}outer
+Some content
+{fence}
+This starts a nested block (bare backticks at depth 1)
+{fence}
+More content
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+
+    content = blocks[0].content
+    assert "Some content" in content
+    assert "This starts a nested block" in content
+    assert "More content" in content
+
+
+def test_mixed_nested_blocks():
+    """
+    Test mixing language-tagged and bare-backtick nested blocks.
+    """
+    fence = "```"
+    markdown = f"""{fence}outer
+{fence}python
+print("hello")
+{fence}
+Between
+{fence}
+Bare nested block
+{fence}
+After
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+
+    content = blocks[0].content
+    assert "```python" in content
+    assert 'print("hello")' in content
+    assert "Between" in content
+    assert "Bare nested block" in content
+    assert "After" in content
+
+
+import pytest
+
+
+def test_triple_nesting_preserved_as_content():
+    """
+    Test that triple nesting is preserved as content within the outer block.
+
+    When we have multiple levels of nesting, the parser correctly preserves
+    all nested blocks as content within the outermost block. The nested
+    blocks keep their markers (```lang) so they can be parsed separately
+    if needed.
+    """
+    fence = "```"
+    markdown = f"""{fence}level1
+{fence}level2
+{fence}level3
+innermost content
+{fence}
+level2 content
+{fence}
+level1 content
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+
+    # All nested levels are preserved as content with their markers
+    content = blocks[0].content
+    assert "```level2" in content
+    assert "```level3" in content
+    assert "innermost content" in content
+    assert "level2 content" in content
+    assert "level1 content" in content
+
+
+def test_consecutive_bare_nested_blocks():
+    """
+    Test that consecutive bare ``` nested blocks are preserved as content.
+
+    Multiple bare ``` blocks within an outer block are correctly preserved
+    as nested content, maintaining their structure for potential nested parsing.
+    """
+    fence = "```"
+    markdown = f"""{fence}outer
+{fence}
+First nested (bare)
+{fence}
+Second nested (bare)
+{fence}
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    assert len(blocks) == 1
+
+    # All bare backtick nested blocks are preserved in the content
+    content = blocks[0].content
+    assert "First nested (bare)" in content
+    assert "Second nested (bare)" in content
+
+
+@pytest.mark.xfail(reason="Ambiguous bare backticks with only blank lines between")
+def test_ambiguous_bare_backticks():
+    """
+    LIMITATION: Bare ``` followed by blank line then ``` is ambiguous.
+
+    Is it: (empty nested block) or (close then immediately open)?
+    Our heuristic may not handle this case as expected.
+    """
+    fence = "```"
+    markdown = f"""{fence}outer
+Content before
+
+{fence}
+
+{fence}
+
+Content after
+{fence}"""
+
+    blocks = list(_extract_codeblocks(markdown))
+    # The behavior here is undefined/ambiguous
+    # Users should use language tags to disambiguate
+    assert len(blocks) == 1
