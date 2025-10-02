@@ -371,9 +371,8 @@ def build(
         repo_order=repo_order,
     )
 
-    changelog_heading = "## Changelog" if add_version_header else "# Changelog"
     output_changelog = f"""
-{changelog_heading}
+# Changelog
 
 Changes since {since}:
 
@@ -389,8 +388,7 @@ Changes since {since}:
         + ", ".join("@" + handle for handle in twitter_handles.values() if handle),
     )
 
-    contributors_heading = "## Contributors" if add_version_header else "# Contributors"
-    output_contributors = f"""{contributors_heading}
+    output_contributors = f"""# Contributors
 
 Thanks to everyone who contributed to this release:
 
@@ -398,10 +396,7 @@ Thanks to everyone who contributed to this release:
 
     # Header starts here
     logger.info("Building final output")
-    output = ""
-    if add_version_header:
-        output = f"# {tag}\n\n"
-    output += f"These are the release notes for {project_name} version {tag}.".strip()
+    output = f"These are the release notes for {project_name} version {tag}.".strip()
     output += "\n\n"
 
     # hardcoded for now
@@ -429,6 +424,12 @@ See the [getting started guide in the documentation](https://docs.activitywatch.
 
     if repo == "activitywatch":
         output = output.replace("# activitywatch", "# activitywatch (bundle repo)")
+
+    if add_version_header:
+        output = f"# {tag}\n\n" + output
+        output = output.replace("\n# Contributors\n", "\n## Contributors\n")
+        output = output.replace("\n# Changelog\n", "\n## Changelog\n")
+
     with open(output_path, "w") as f:
         f.write(output)
     print(f"Wrote {len(output.splitlines())} lines to {output_path}")
