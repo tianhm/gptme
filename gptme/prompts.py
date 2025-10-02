@@ -519,7 +519,7 @@ def prompt_chat_history() -> Generator[Message, None, None]:
             return
 
         # Take the 3 most recent substantial conversations
-        conversations_to_summarize = substantial_conversations[:3]
+        conversations_to_summarize = substantial_conversations[:5]
 
         context_parts = []
 
