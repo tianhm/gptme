@@ -154,7 +154,7 @@ docs/releases/%.md: ./scripts/build_changelog.py
 	# version is the % in the target
 	VERSION=$* && \
 	PREV_VERSION=$$(./scripts/get-last-version.sh $${VERSION}) && \
-		./scripts/build_changelog.py --range $${PREV_VERSION}...$${VERSION} --project-title gptme --org gptme --repo gptme --output $@
+		./scripts/build_changelog.py --range $${PREV_VERSION}...$${VERSION} --project-title gptme --org gptme --repo gptme --output $@ --add-version-header
 
 release: version dist/CHANGELOG.md
 	# Insert new version at top of changelog toctree
