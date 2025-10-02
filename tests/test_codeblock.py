@@ -512,9 +512,6 @@ After
     assert "After" in content
 
 
-import pytest
-
-
 def test_triple_nesting_preserved_as_content():
     """
     Test that triple nesting is preserved as content within the outer block.
@@ -572,13 +569,15 @@ Second nested (bare)
     assert "Second nested (bare)" in content
 
 
-@pytest.mark.xfail(reason="Ambiguous bare backticks with only blank lines between")
 def test_ambiguous_bare_backticks():
     """
-    LIMITATION: Bare ``` followed by blank line then ``` is ambiguous.
+    Documents behavior with ambiguous bare backticks and blank lines.
 
-    Is it: (empty nested block) or (close then immediately open)?
-    Our heuristic may not handle this case as expected.
+    When bare ``` is followed by blank lines and another ```, the parser
+    treats the first ``` as closing the outer block. This creates two
+    separate blocks rather than nested content.
+
+    Users should use language tags to disambiguate if they want nested blocks.
     """
     fence = "```"
     markdown = f"""{fence}outer
@@ -592,6 +591,16 @@ Content after
 {fence}"""
 
     blocks = list(_extract_codeblocks(markdown))
-    # The behavior here is undefined/ambiguous
-    # Users should use language tags to disambiguate
-    assert len(blocks) == 1
+
+    # The parser treats the middle ``` as closing, creating 2 blocks
+    assert len(blocks) == 2
+
+    # First block contains content before the first bare ```
+    assert blocks[0].lang == "outer"
+    assert "Content before" in blocks[0].content
+    assert "Content after" not in blocks[0].content
+
+    # Second block (bare) contains content after the second bare ```
+    assert blocks[1].lang == ""
+    assert "Content after" in blocks[1].content
+    assert "Content before" not in blocks[1].content
