@@ -132,14 +132,34 @@ def _extract_codeblocks(
                         next_is_fence = has_next_line and lines[i + 1].startswith("```")
 
                         # Decision logic:
-                        # 1. If next line has content and isn't a fence -> opening
-                        # 2. If streaming mode:
+                        # 1. If we have nested blocks open (depth > 1), prefer closing
+                        #    This fixes the case where ``` appears after a nested block
+                        #    like ```text, where it should close that block.
+                        # 2. If next line has content and isn't a fence -> opening
+                        # 3. If streaming mode:
                         #    - Require blank line after ``` to confirm closure
                         #    - Otherwise treat as incomplete (don't extract)
-                        # 3. If not streaming:
+                        # 4. If not streaming:
                         #    - Blank line or EOF -> closing
 
-                        if next_has_content and not next_is_fence:
+                        if nesting_depth > 1:
+                            # We have nested blocks open, this should close the innermost one
+                            nesting_depth -= 1
+                            if nesting_depth == 0:
+                                # Check streaming condition before yielding
+                                if streaming and not next_is_blank:
+                                    # Streaming mode requires blank line to confirm closure
+                                    # Incomplete block - don't extract
+                                    break
+                                # Either not streaming, or streaming with blank line - extract
+                                yield Codeblock(
+                                    lang, "\n".join(content_lines), start=start_line
+                                )
+                                i += 1
+                                break
+                            else:
+                                content_lines.append(line)
+                        elif next_has_content and not next_is_fence:
                             # Next line has content, this is an opening tag
                             nesting_depth += 1
                             content_lines.append(line)

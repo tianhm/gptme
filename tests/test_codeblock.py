@@ -355,3 +355,48 @@ Done!
     ), "Should extract nested block with blank line during streaming"
     assert "npm install" in blocks[0].content
     assert "Done!" in blocks[0].content
+
+
+def test_extract_patch_codeblock_with_nested_backticks():
+    """
+    Test extraction of patch codeblocks containing nested triple backticks.
+
+    This reproduces an issue where patch blocks with code examples
+    inside them (using ```) were incorrectly parsed during streaming.
+    """
+    # Read the actual example that failed
+    script_dir = __file__.rsplit("/", 1)[0]
+    with open(f"{script_dir}/data/example-patch-codeblock.txt") as f:
+        content = f.read()
+
+    # The file has a blank line after the closing ```, so it should extract in streaming mode
+    blocks = list(_extract_codeblocks(content, streaming=True))
+    assert (
+        len(blocks) == 1
+    ), f"Expected 1 patch block in streaming mode, got {len(blocks)}"
+
+    block = blocks[0]
+    assert block.lang.startswith(
+        "patch "
+    ), f"Expected patch block, got lang='{block.lang}'"
+
+    # The content should include all the patch markers and nested code blocks
+    assert "<<<<<<< ORIGINAL" in block.content
+    assert "=======" in block.content
+    assert ">>>>>>> UPDATED" in block.content
+    assert "```text" in block.content, "Should preserve nested code block markers"
+    assert block.content.count("```text") == 2, "Should have both text blocks"
+    assert "git grep" in block.content
+
+    # Test without blank line - should NOT extract in streaming mode
+    content_no_blank = content.rstrip()  # Remove trailing whitespace
+    blocks = list(_extract_codeblocks(content_no_blank, streaming=True))
+    assert (
+        len(blocks) == 0
+    ), f"Should not extract during streaming without blank line, got {len(blocks)} blocks"
+
+    # But should extract in non-streaming mode
+    blocks = list(_extract_codeblocks(content_no_blank, streaming=False))
+    assert (
+        len(blocks) == 1
+    ), f"Expected 1 patch block in non-streaming mode, got {len(blocks)}"
