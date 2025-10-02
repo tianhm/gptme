@@ -174,6 +174,55 @@ def chat(
                         model,
                     )
 
+            # Check if complete tool was used - if so, exit cleanly
+            if not prompt_queue:
+                # Check last few messages for complete tool usage
+                for msg in reversed(manager.log.messages[-5:]):
+                    if msg.role == "system" and "Task complete" in msg.content:
+                        console.log(
+                            "Autonomous mode: Complete tool detected. Exiting cleanly."
+                        )
+                        _wait_for_tts_if_enabled()
+                        return
+
+            # Auto-reply mechanism for autonomous operation
+            # If in non-interactive mode and last assistant message had no tools,
+            # inject an auto-reply to ensure the assistant does work
+            if not interactive and not prompt_queue:
+                last_assistant_msg = next(
+                    (m for m in reversed(manager.log) if m.role == "assistant"), None
+                )
+                if last_assistant_msg:
+                    tool_uses = list(
+                        ToolUse.iter_from_content(last_assistant_msg.content)
+                    )
+                    if not tool_uses:
+                        # Check if we already auto-replied
+                        last_user_msg = next(
+                            (m for m in reversed(manager.log) if m.role == "user"), None
+                        )
+                        if (
+                            last_user_msg
+                            and "use the `complete` tool" in last_user_msg.content
+                        ):
+                            # Already auto-replied, assistant still no tools - exit
+                            console.log(
+                                "Autonomous mode: No tools used after confirmation. Exiting."
+                            )
+                            break
+                        else:
+                            # First time - inject auto-reply
+                            console.log(
+                                "Auto-reply: Assistant message had no tools. Asking for confirmation..."
+                            )
+                            auto_reply_msg = Message(
+                                "user",
+                                "Are you sure? If you're finished, use the `complete` tool to end the session.",
+                                quiet=False,
+                            )
+                            prompt_queue.append(auto_reply_msg)
+                            continue  # Process the auto-reply
+
         except KeyboardInterrupt:
             console.log("Interrupted.")
             _recently_interrupted = True
