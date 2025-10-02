@@ -152,8 +152,23 @@ docs/releases/%.md: ./scripts/build_changelog.py
 release: version dist/CHANGELOG.md
 	@VERSION=$$(git describe --tags --abbrev=0) && \
 		echo "Releasing version $${VERSION}"; \
-		read -p "Press enter to continue" && \
-		git push origin master $${VERSION} && \
+		# Insert new version at top of changelog toctree \
+		awk '/^   releases\// && !done { \
+			print "   releases/'"$${VERSION}"'.md"; \
+			done=1; \
+		} \
+		{print}' docs/changelog.rst > docs/changelog.rst.tmp && \
+		mv docs/changelog.rst.tmp docs/changelog.rst && \
+		# Stage changelog and release notes with version bump \
+		git add docs/changelog.rst docs/releases/$${VERSION}.md && \
+		# Amend version commit to include changelog \
+		git commit --amend --no-edit && \
+		# Force-update tag to amended commit \
+		git tag -f $${VERSION} && \
+		echo "✓ Updated commit and tag with changelog" && \
+		read -p "Press enter to push" && \
+		git push origin master && \
+		git push origin $${VERSION} --force && \
 		gh release create $${VERSION} -t $${VERSION} -F dist/CHANGELOG.md
 
 install-completions: ## Install shell completions (Fish)
