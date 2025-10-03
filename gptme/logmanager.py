@@ -352,7 +352,7 @@ def prepare_messages(
     # Enrich with enabled context enhancements (RAG, fresh context)
     msgs = enrich_messages_with_context(msgs, workspace)
 
-    # Then reduce and limit as before
+    # Use regular reduction
     msgs_reduced = list(reduce_log(msgs))
 
     model = get_default_model()
