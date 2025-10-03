@@ -180,10 +180,12 @@ class HookRegistry:
                     logger.debug(f"Hook '{hook.name}' stopped propagation")
                     return
 
-            except Exception as e:
+            except Exception:
                 # logger.exception already includes exception info and traceback
                 logger.exception(f"Error executing hook '{hook.name}'")
-                yield Message("system", f"Hook '{hook.name}' failed: {e}", hide=True)
+                return
+                # Disable printing system message to prevent infinite loops
+                # yield Message("system", f"Hook '{hook.name}' failed: {e}", hide=True)
 
     def get_hooks(self, hook_type: HookType | None = None) -> list[Hook]:
         """Get all registered hooks, optionally filtered by type."""

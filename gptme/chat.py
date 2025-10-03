@@ -238,6 +238,7 @@ def _run_chat_loop(
             # Note: Complete tool detection now handled by complete tool's hook
             # which raises SessionCompleteException
 
+            # TODO: this should be implemented as a hook
             # Auto-reply mechanism for autonomous operation
             # If in non-interactive mode and last assistant message had no tools,
             # inject an auto-reply to ensure the assistant does work
