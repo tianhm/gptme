@@ -48,6 +48,51 @@ def complete_hook(log: list[Message], workspace, manager=None):
         raise SessionCompleteException("Session completed via complete tool")
 
 
+def auto_reply_hook(
+    log: list[Message], workspace, manager=None, interactive=True, prompt_queue=None
+):
+    """
+    Hook that implements auto-reply mechanism for autonomous operation.
+
+    If in non-interactive mode and last assistant message had no tools,
+    inject an auto-reply to ensure the assistant does work.
+
+    This is called via LOOP_CONTINUE hook, which receives interactive and prompt_queue.
+    """
+    # Only run in non-interactive mode
+    if interactive:
+        return
+
+    # Skip if there are queued prompts
+    if prompt_queue:
+        return
+
+    last_assistant_msg = next((m for m in reversed(log) if m.role == "assistant"), None)
+    if not last_assistant_msg:
+        return
+
+    tool_uses = list(ToolUse.iter_from_content(last_assistant_msg.content))
+    if tool_uses:
+        return  # Has tools, no need to prompt
+
+    # Check if we already auto-replied
+    last_user_msg = next((m for m in reversed(log) if m.role == "user"), None)
+    if last_user_msg and "use the `complete` tool" in last_user_msg.content:
+        # Already auto-replied, assistant still no tools - signal exit
+        logger.info("Autonomous mode: No tools used after confirmation. Exiting.")
+        raise SessionCompleteException("No tools used after auto-reply confirmation")
+
+    # First time - inject auto-reply
+    logger.info(
+        "Auto-reply: Assistant message had no tools. Asking for confirmation..."
+    )
+    yield Message(
+        "user",
+        "Are you sure? If you're finished, use the `complete` tool to end the session.",
+        quiet=False,
+    )
+
+
 tool = ToolSpec(
     name="complete",
     desc="Signal that the autonomous session is finished",
@@ -72,5 +117,10 @@ This is the proper way to finish an autonomous session instead of using sys.exit
             complete_hook,
             1000,
         ),  # High priority
+        "auto_reply": (
+            HookType.LOOP_CONTINUE,
+            auto_reply_hook,
+            999,
+        ),  # Run after complete check
     },
 )

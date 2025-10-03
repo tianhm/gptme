@@ -53,6 +53,9 @@ class HookType(str, Enum):
     GENERATION_POST = "generation_post"  # After generating response
     GENERATION_INTERRUPT = "generation_interrupt"  # Interrupt generation
 
+    # Loop control
+    LOOP_CONTINUE = "loop_continue"  # Decide whether/how to continue the chat loop
+
 
 # Hook function signatures for different hook types
 HookFunc = Callable[..., Any | Generator[Message, None, None]]

@@ -235,47 +235,21 @@ def _run_chat_loop(
                         model,
                     )
 
-            # Note: Complete tool detection now handled by complete tool's hook
-            # which raises SessionCompleteException
-
-            # TODO: this should be implemented as a hook
-            # Auto-reply mechanism for autonomous operation
-            # If in non-interactive mode and last assistant message had no tools,
-            # inject an auto-reply to ensure the assistant does work
-            if not interactive and not prompt_queue:
-                last_assistant_msg = next(
-                    (m for m in reversed(manager.log) if m.role == "assistant"), None
-                )
-                if last_assistant_msg:
-                    tool_uses = list(
-                        ToolUse.iter_from_content(last_assistant_msg.content)
-                    )
-                    if not tool_uses:
-                        # Check if we already auto-replied
-                        last_user_msg = next(
-                            (m for m in reversed(manager.log) if m.role == "user"), None
-                        )
-                        if (
-                            last_user_msg
-                            and "use the `complete` tool" in last_user_msg.content
-                        ):
-                            # Already auto-replied, assistant still no tools - exit
-                            console.log(
-                                "Autonomous mode: No tools used after confirmation. Exiting."
-                            )
-                            break
-                        else:
-                            # First time - inject auto-reply
-                            console.log(
-                                "Auto-reply: Assistant message had no tools. Asking for confirmation..."
-                            )
-                            auto_reply_msg = Message(
-                                "user",
-                                "Are you sure? If you're finished, use the `complete` tool to end the session.",
-                                quiet=False,
-                            )
-                            prompt_queue.append(auto_reply_msg)
-                            continue  # Process the auto-reply
+            # Trigger LOOP_CONTINUE hooks to check if we should continue/exit
+            # This handles auto-reply mechanism and other loop control logic
+            if loop_msgs := trigger_hook(
+                HookType.LOOP_CONTINUE,
+                log=manager.log,
+                workspace=workspace,
+                manager=manager,
+                interactive=interactive,
+                prompt_queue=prompt_queue,
+            ):
+                for msg in loop_msgs:
+                    # Add hook-generated messages to prompt queue
+                    prompt_queue.append(msg)
+                    console.log(f"[Loop control] {msg.content[:100]}...")
+                continue  # Process the queued messages
 
         except KeyboardInterrupt:
             console.log("Interrupted.")
