@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 RoleLiteral = Literal["user", "assistant", "system"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Log:
     messages: list[Message] = field(default_factory=list)
 
@@ -45,6 +45,9 @@ class Log:
 
     def __iter__(self) -> Generator[Message, None, None]:
         yield from self.messages
+
+    def __repr__(self) -> str:
+        return f"Log(messages=<{len(self.messages)} msgs>])"
 
     def replace(self, **kwargs) -> "Log":
         return replace(self, **kwargs)
