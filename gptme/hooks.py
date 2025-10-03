@@ -181,7 +181,8 @@ class HookRegistry:
                     return
 
             except Exception as e:
-                logger.exception(f"Error executing hook '{hook.name}': {e}")
+                # logger.exception already includes exception info and traceback
+                logger.exception(f"Error executing hook '{hook.name}'")
                 yield Message("system", f"Hook '{hook.name}' failed: {e}", hide=True)
 
     def get_hooks(self, hook_type: HookType | None = None) -> list[Hook]:
