@@ -229,6 +229,10 @@ class ShellSession:
         self.run("export PAGER=")
         self.run("export GH_PAGER=")
         self.run("export GIT_PAGER=cat")
+        # prevent editors from opening (they can break terminal state)
+        self.run("export EDITOR=true")
+        self.run("export GIT_EDITOR=true")
+        self.run("export VISUAL=true")
         # make Python output unbuffered by default for better UX
         self.run("export PYTHONUNBUFFERED=1")
 
