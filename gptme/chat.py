@@ -26,7 +26,7 @@ from .tools import (
 from .tools.tts import speak, stop, tts_request_queue
 from .util import console, path_with_tilde
 from .util.ask_execute import ask_execute
-from .util.context import autocommit, include_paths, run_precommit_checks
+from .util.context import include_paths
 from .util.cost import log_costs
 from .util.interrupt import clear_interruptible, set_interruptible
 from .util.prompt import add_history, get_input
@@ -72,6 +72,19 @@ def chat(
     # init
     init(model, interactive, tool_allowlist)
 
+    # Trigger session start hooks
+    from .hooks import HookType, trigger_hook
+
+    if session_start_msgs := trigger_hook(
+        HookType.SESSION_START,
+        logdir=logdir,
+        workspace=workspace,
+        initial_msgs=initial_msgs,
+    ):
+        # Process any messages from session start hooks
+        for hook_msg in session_start_msgs:
+            console.log(f"[Session start hook] {hook_msg.content[:100]}...")
+
     default_model = get_default_model()
     assert default_model is not None, "No model loaded and no model specified"
     modelmeta = get_model(model or default_model.full)
@@ -86,16 +99,7 @@ def chat(
     console.log(f"Using logdir: {path_with_tilde(logdir)}")
     manager = LogManager.load(logdir, initial_msgs=initial_msgs, create=True)
 
-    # Auto-replay todowrite operations when resuming to restore state
-    if manager.log and any(
-        tooluse.tool == "todowrite"
-        for msg in manager.log
-        for tooluse in ToolUse.iter_from_content(msg.content)
-    ):
-        from .commands import _replay_tool
-
-        logger.info("Detected todowrite operations, replaying to restore state...")
-        _replay_tool(manager.log, "todowrite")
+    # Note: todowrite replay is now handled by the todo_replay tool via SESSION_START hook
 
     # tool_format should already be resolved by this point
     assert (
@@ -113,6 +117,8 @@ def chat(
     # print log
     manager.log.print(show_hidden=show_hidden)
     console.print("--- ^^^ past messages ^^^ ---")
+
+    # Note: todowrite replay is now handled by the todo_replay tool via SESSION_START hook
 
     def confirm_func(msg) -> bool:
         if no_confirm:
@@ -147,8 +153,8 @@ def chat(
                     _wait_for_tts_if_enabled()
                     break
 
-                msg = _get_user_input(manager.log, workspace)
-                if msg is None:
+                user_input = _get_user_input(manager.log, workspace)
+                if user_input is None:
                     # Either user wants to exit OR we should generate response directly
                     if _should_prompt_for_input(manager.log):
                         # User wants to exit
@@ -166,6 +172,7 @@ def chat(
                         )
                 else:
                     # Normal case: user provided input
+                    msg = user_input
                     manager.append(msg)
 
                     # Reset interrupt flag since user provided new input
@@ -198,6 +205,14 @@ def chat(
                         "Autonomous mode: Complete tool detected. Exiting cleanly."
                     )
                     _wait_for_tts_if_enabled()
+
+                    # Trigger session end hooks
+                    if session_end_msgs := trigger_hook(
+                        HookType.SESSION_END, logdir=logdir, manager=manager
+                    ):
+                        for msg in session_end_msgs:
+                            manager.append(msg)
+
                     return
 
             # Auto-reply mechanism for autonomous operation
@@ -246,6 +261,13 @@ def chat(
             prompt_queue.clear()
             continue
 
+    # Trigger session end hooks when exiting normally
+    if session_end_msgs := trigger_hook(
+        HookType.SESSION_END, logdir=logdir, manager=manager
+    ):
+        for msg in session_end_msgs:
+            manager.append(msg)
+
 
 def _process_message_conversation(
     manager: LogManager,
@@ -256,9 +278,19 @@ def _process_message_conversation(
     model: str | None,
 ) -> None:
     """Process a message and generate responses until no more tools to run."""
+    from .hooks import HookType, trigger_hook
+
     while True:
         try:
             set_interruptible()
+
+            # Trigger pre-process hooks
+            if pre_msgs := trigger_hook(
+                HookType.MESSAGE_PRE_PROCESS, log=manager.log, workspace=workspace
+            ):
+                for msg in pre_msgs:
+                    manager.append(msg)
+
             response_msgs = list(
                 step(
                     manager.log,
@@ -297,37 +329,13 @@ def _process_message_conversation(
         if not has_runnable:
             break
 
-    # After all tools are executed, check for modifications and run autocommit/pre-commit
-    _check_and_handle_modifications(manager)
-
-
-def _check_and_handle_modifications(manager: LogManager) -> None:
-    """Check for modifications and handle autocommit/pre-commit after conversation is done."""
-    global _recently_interrupted
-
-    # Skip automatic actions if we were recently interrupted
-    if _recently_interrupted:
-        return
-
-    if check_for_modifications(manager.log):
-        try:
-            set_interruptible()
-
-            success, failed_check_message = check_changes()
-            if success:
-                if get_config().get_env_bool("GPTME_AUTOCOMMIT"):
-                    autocommit_msg = autocommit()
-                    manager.append(autocommit_msg)
-                    return
-            elif failed_check_message:
-                manager.append(Message("system", failed_check_message, quiet=False))
-                return
-
-        except KeyboardInterrupt:
-            console.log("Interrupted during pre-commit/autocommit.")
-            _recently_interrupted = True
-        finally:
-            clear_interruptible()
+    # Trigger post-process hooks after message processing completes
+    # Note: pre-commit checks and autocommit are now handled by hooks
+    if post_msgs := trigger_hook(
+        HookType.MESSAGE_POST_PROCESS, log=manager.log, workspace=workspace
+    ):
+        for msg in post_msgs:
+            manager.append(msg)
 
 
 def _should_prompt_for_input(log: Log) -> bool:
@@ -508,8 +516,3 @@ def check_for_modifications(log: Log) -> bool:
     #     f"Found {len(messages_since_user)} messages since user ({found_user_message=}, {has_modifications=})"
     # )
     return has_modifications
-
-
-def check_changes() -> tuple[bool, str | None]:
-    """Run lint/pre-commit checks after file modifications."""
-    return run_precommit_checks()
