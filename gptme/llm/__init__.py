@@ -57,6 +57,11 @@ def reply(
     stream: bool = False,
     tools: list[ToolSpec] | None = None,
 ) -> Message:
+    # Trigger GENERATION_PRE hooks before generating response
+    from ..hooks import get_hooks, HookType
+    for _ in get_hooks().trigger(HookType.GENERATION_PRE, messages):
+        pass  # GENERATION_PRE hooks can raise SessionCompleteException to stop
+    
     init_llm(get_provider_from_model(model))
     config = get_config()
     agent_name = _get_agent_name(config)
