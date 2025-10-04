@@ -39,14 +39,21 @@ def complete_hook(log: list[Message], workspace, manager=None):
     # Handle both Log objects and list[Message]
     messages = log.messages if hasattr(log, 'messages') else log
     
+    logger.debug(f"complete_hook: checking {len(messages) if messages else 0} messages")
+    
     # Check if the last message is a system message from complete tool
     if not messages:
+        logger.debug("complete_hook: no messages")
         return
 
     last_msg = messages[-1]
+    logger.debug(f"complete_hook: last msg role={last_msg.role}, content preview={last_msg.content[:50] if last_msg.content else 'empty'}")
+    
     if last_msg.role == "system" and "Task complete" in last_msg.content:
         logger.info("Complete tool result detected, stopping session immediately")
         raise SessionCompleteException("Session completed via complete tool")
+    
+    logger.debug("complete_hook: complete tool not detected")
 
 
 def auto_reply_hook(
