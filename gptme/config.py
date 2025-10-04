@@ -480,8 +480,9 @@ class ChatConfig:
             default_value = getattr(defaults, field_name)
 
             # For optional fields that default to None, check if explicitly provided
+            # Also include stream and interactive since their defaults should always override saved config
             if (
-                field_name in ["model", "tool_format", "tools", "agent"]
+                field_name in ["model", "tool_format", "tools", "agent", "stream", "interactive"]
                 and cli_value is not None
             ):
                 logger.debug(f"Overriding {field_name} with CLI value: {cli_value}")
