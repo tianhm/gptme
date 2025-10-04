@@ -36,11 +36,14 @@ def complete_hook(log: list[Message], workspace, manager=None):
     Runs at GENERATION_PRE (before generating response) to stop the session
     immediately after complete tool executes.
     """
-    # Check if the last message is a system message from complete tool
-    if not log:
-        return
+    # Handle both Log objects and list[Message]
+    messages = log.messages if hasattr(log, 'messages') else log
     
-    last_msg = log[-1]
+    # Check if the last message is a system message from complete tool
+    if not messages:
+        return
+
+    last_msg = messages[-1]
     if last_msg.role == "system" and "Task complete" in last_msg.content:
         logger.info("Complete tool result detected, stopping session immediately")
         raise SessionCompleteException("Session completed via complete tool")
