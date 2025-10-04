@@ -183,12 +183,15 @@ class HookRegistry:
                     logger.debug(f"Hook '{hook.name}' stopped propagation")
                     return
 
-            except Exception:
-                # logger.exception already includes exception info and traceback
-                logger.error(f"Error executing hook '{hook.name}'")
+            except Exception as e:
+                # Special handling for session termination
+                if e.__class__.__name__ == "SessionCompleteException":
+                    logger.info(f"Hook '{hook.name}' signaled session completion")
+                    raise  # Propagate session complete signal
+                
+                # Log other exceptions with full traceback for debugging
+                logger.exception(f"Error executing hook '{hook.name}'")
                 continue  # Skip this hook but continue with others
-                # Disable printing system message to prevent infinite loops
-                # yield Message("system", f"Hook '{hook.name}' failed: {e}", hide=True)
 
     def get_hooks(self, hook_type: HookType | None = None) -> list[Hook]:
         """Get all registered hooks, optionally filtered by type."""

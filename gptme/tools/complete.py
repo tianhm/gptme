@@ -31,20 +31,18 @@ def execute_complete(
 
 def complete_hook(log: list[Message], workspace, manager=None):
     """
-    Hook that checks if the complete tool was used and signals session end.
+    Hook that detects complete tool result and prevents next generation.
 
-    Raises SessionCompleteException to signal the main loop to exit cleanly.
+    Runs at GENERATION_PRE (before generating response) to stop the session
+    immediately after complete tool executes.
     """
-    # Check last few messages for complete tool usage
-    complete_used = any(
-        tu.tool == "complete"
-        for msg in reversed(log[-5:])
-        if msg.role == "assistant"
-        for tu in ToolUse.iter_from_content(msg.content)
-    )
-
-    if complete_used:
-        logger.info("Complete tool detected, signaling session end")
+    # Check if the last message is a system message from complete tool
+    if not log:
+        return
+    
+    last_msg = log[-1]
+    if last_msg.role == "system" and "Task complete" in last_msg.content:
+        logger.info("Complete tool result detected, stopping session immediately")
         raise SessionCompleteException("Session completed via complete tool")
 
 
@@ -113,14 +111,14 @@ This is the proper way to finish an autonomous session instead of using sys.exit
     available=True,
     hooks={
         "complete": (
-            HookType.MESSAGE_POST_PROCESS,
+            HookType.GENERATION_PRE,
             complete_hook,
             1000,
-        ),  # High priority
+        ),  # High priority - prevent generation after complete
         "auto_reply": (
             HookType.LOOP_CONTINUE,
             auto_reply_hook,
             999,
-        ),  # Run after complete check
+        ),  # Run after complete check (lower priority)
     },
 )
