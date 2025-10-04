@@ -326,7 +326,10 @@ def autocompact_hook(log: list[Message], workspace: Path | None, manager=None):
         )
         return
 
-    if not should_auto_compact(log):
+    # Handle both Log objects and list[Message]
+    messages = log.messages if hasattr(log, 'messages') else log
+    
+    if not should_auto_compact(messages):
         return
 
     if manager is None:
@@ -353,13 +356,13 @@ def autocompact_hook(log: list[Message], workspace: Path | None, manager=None):
 
     # Apply auto-compacting with comprehensive error handling
     try:
-        compacted_msgs = list(auto_compact_log(log))
+        compacted_msgs = list(auto_compact_log(messages))
 
         # Calculate reduction stats
         m = get_default_model()
-        original_count = len(log)
+        original_count = len(messages)
         compacted_count = len(compacted_msgs)
-        original_tokens = len_tokens(log, m.model) if m else 0
+        original_tokens = len_tokens(messages, m.model) if m else 0
         compacted_tokens = len_tokens(compacted_msgs, m.model) if m else 0
 
         # Replace the log with compacted version
