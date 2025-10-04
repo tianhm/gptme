@@ -58,8 +58,8 @@ def reply(
     tools: list[ToolSpec] | None = None,
 ) -> Message:
     # Trigger GENERATION_PRE hooks before generating response
-    from ..hooks import get_hooks, HookType
-    for _ in get_hooks().trigger(HookType.GENERATION_PRE, messages):
+    from ..hooks import trigger_hook, HookType
+    for _ in trigger_hook(HookType.GENERATION_PRE, messages):
         pass  # GENERATION_PRE hooks can raise SessionCompleteException to stop
     
     init_llm(get_provider_from_model(model))
