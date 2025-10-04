@@ -59,7 +59,7 @@ def reply(
 ) -> Message:
     # Trigger GENERATION_PRE hooks before generating response
     from ..hooks import trigger_hook, HookType
-    for _ in trigger_hook(HookType.GENERATION_PRE, messages):
+    for _ in trigger_hook(HookType.GENERATION_PRE, messages, workspace=None, manager=None):
         pass  # GENERATION_PRE hooks can raise SessionCompleteException to stop
     
     init_llm(get_provider_from_model(model))
