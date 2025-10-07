@@ -33,7 +33,11 @@ try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
         OTLPSpanExporter,  # fmt: skip
     )
+    from opentelemetry.instrumentation.anthropic import (
+        AnthropicInstrumentor,  # fmt: skip
+    )
     from opentelemetry.instrumentation.flask import FlaskInstrumentor  # fmt: skip
+    from opentelemetry.instrumentation.openai import OpenAIInstrumentor  # fmt: skip
     from opentelemetry.instrumentation.requests import RequestsInstrumentor  # fmt: skip
     from opentelemetry.sdk.metrics import MeterProvider  # fmt: skip
     from opentelemetry.sdk.metrics.export import (
@@ -72,6 +76,8 @@ def init_telemetry(
     service_name: str = "gptme",
     enable_flask_instrumentation: bool = True,
     enable_requests_instrumentation: bool = True,
+    enable_openai_instrumentation: bool = True,
+    enable_anthropic_instrumentation: bool = True,
 ) -> None:
     """Initialize OpenTelemetry tracing and metrics."""
     global _telemetry_enabled, _tracer, _meter, _token_counter, _request_histogram
@@ -195,6 +201,12 @@ def init_telemetry(
 
         if enable_requests_instrumentation:
             RequestsInstrumentor().instrument()
+
+        if enable_openai_instrumentation:
+            OpenAIInstrumentor().instrument()
+
+        if enable_anthropic_instrumentation:
+            AnthropicInstrumentor().instrument()
 
         _telemetry_enabled = True
 
