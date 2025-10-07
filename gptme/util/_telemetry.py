@@ -27,12 +27,18 @@ TELEMETRY_IMPORT_ERROR = None
 
 try:
     from opentelemetry import metrics, trace  # fmt: skip
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+        OTLPMetricExporter,  # fmt: skip
+    )
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
         OTLPSpanExporter,  # fmt: skip
     )
     from opentelemetry.instrumentation.flask import FlaskInstrumentor  # fmt: skip
     from opentelemetry.instrumentation.requests import RequestsInstrumentor  # fmt: skip
     from opentelemetry.sdk.metrics import MeterProvider  # fmt: skip
+    from opentelemetry.sdk.metrics.export import (
+        PeriodicExportingMetricReader,  # fmt: skip
+    )
     from opentelemetry.sdk.resources import Resource  # fmt: skip
     from opentelemetry.sdk.trace import TracerProvider  # fmt: skip
     from opentelemetry.sdk.trace.export import BatchSpanProcessor  # fmt: skip
@@ -121,13 +127,6 @@ def init_telemetry(
 
         # Use OTLP for metrics (same endpoint as traces)
         try:
-            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
-                OTLPMetricExporter,
-            )
-            from opentelemetry.sdk.metrics.export import (
-                PeriodicExportingMetricReader,
-            )
-
             # Ensure endpoint ends with /v1/metrics for the metric exporter
             metric_endpoint = otlp_endpoint
             if not metric_endpoint.endswith("/v1/metrics"):
