@@ -8,6 +8,7 @@ unless explicitly needed.
 
 import logging
 import os
+import socket
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,6 @@ def init_telemetry(
         resource_attrs = {"service.name": service_name}
 
         # Add hostname (standard OpenTelemetry attribute)
-        import socket
 
         try:
             hostname = socket.gethostname()
@@ -185,7 +185,6 @@ def init_telemetry(
             metrics.set_meter_provider(
                 MeterProvider(resource=resource, metric_readers=[metric_reader])
             )
-            logger.info("Using OTLP for metrics export")
         except ImportError as e:
             logger.warning(f"OTLP metric exporter not available: {e}")
             # Initialize without metrics if OTLP not available
