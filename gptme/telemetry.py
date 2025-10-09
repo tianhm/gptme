@@ -152,6 +152,7 @@ def record_tool_call(
     success: bool = True,
     error_type: str | None = None,
     error_message: str | None = None,
+    tool_format: str | None = None,
 ) -> None:
     """Record tool call metrics."""
     if not is_telemetry_enabled():
@@ -166,6 +167,8 @@ def record_tool_call(
 
     attributes = {"tool_name": tool_name, "success": str(success).lower()}
 
+    if tool_format:
+        attributes["tool_format"] = tool_format
     if error_type:
         attributes["error_type"] = error_type
     if error_message:
