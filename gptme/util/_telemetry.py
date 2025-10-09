@@ -248,7 +248,7 @@ def init_telemetry(
         from . import console  # fmt: skip
 
         # Log to console so users know telemetry is active
-        console.log(f"🔍 Using OTLP to send metrics and traces to {otlp_endpoint}")
+        console.log(f"Using OTLP to send metrics and traces to {otlp_endpoint}")
 
     except Exception as e:
         logger.error(f"Failed to initialize telemetry: {e}")
