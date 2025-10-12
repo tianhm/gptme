@@ -4,8 +4,7 @@
 
 A fancy web UI for [gptme][gptme], built with [lovable.dev](https://lovable.dev).
 
-An alternative to the minimal UI currently provided by `gptme`.
-
+An alternative to the minimal UI bundled with `gptme`.
 
 ## Features
 
@@ -15,16 +14,24 @@ An alternative to the minimal UI currently provided by `gptme`.
 
 ## Usage
 
-You can use the web UI hosted at [chat.gptme.org](https://chat.gptme.org/), or run it locally:
+You can use your own `gptme-server` instance with the latest version of the web UI hosted at [chat.gptme.org](https://chat.gptme.org/), use our upcoming managed service [gptme.ai](https://gptme.ai), or run it locally:
 
 ```sh
 git clone https://github.com/gptme/gptme-webui
 cd gptme-webui
 npm i
+
+# start the web UI at http://localhost:5701
 npm run dev
+
+# install gptme with pipx if you haven't already, including the server dependencies
+pipx install 'gptme[server]'
+
+# start a gptme-server at http://localhost:5700, configured to allow requests from the web UI
+gptme-server --cors-origin='http://localhost:5701'  # or whatever the origin of your local web UI is
 ```
 
-To connect to a local `gptme-server` instance, you need to start one with `gptme-server --cors-origin='https://chat.gptme.org'` (or whatever the origin of your web UI is).
+Then open [localhost:5701](http://localhost:5701) in your browser.
 
 ## Tech stack
 
