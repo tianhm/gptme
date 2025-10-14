@@ -331,6 +331,56 @@ Format the response as a structured document that could serve as a RESUME.md fil
         yield Message("system", f"❌ Failed to generate resume: {e}")
 
 
+def _get_backup_name(conversation_name: str) -> str:
+    """
+    Get a unique backup conversation name, stripping any existing -before-compact suffixes.
+
+    This ensures:
+    - Backup names don't grow indefinitely with repeated compactions
+    - Each backup has a unique suffix to prevent folder collisions
+
+    Examples:
+    - "my-conversation" -> "my-conversation-before-compact-a7x9"
+    - "my-conversation-before-compact" -> "my-conversation-before-compact-k2p5"
+
+    Args:
+        conversation_name: The current conversation directory name
+
+    Returns:
+        The backup name with exactly one -before-compact suffix and a unique random suffix
+
+    Raises:
+        ValueError: If conversation_name is empty
+    """
+    if not conversation_name:
+        raise ValueError("conversation name cannot be empty")
+
+    # Strip any existing backup suffixes: -before-compact or -before-compact-XXXX
+    # Repeatedly strip from the end until no more suffixes found
+    # This handles cases like:
+    # - "conv-before-compact" -> "conv"
+    # - "conv-before-compact-a7x9" -> "conv"
+    # - "conv-before-compact-before-compact-before-compact" -> "conv"
+    # But preserves names like "test-before-compaction" (not a backup suffix)
+    import re
+
+    base_name = conversation_name
+    while True:
+        new_name = re.sub(r"-before-compact(-[0-9a-f]{4})?$", "", base_name)
+        if new_name == base_name:  # No more changes
+            break
+        base_name = new_name
+
+    if not base_name:  # Safety: if entire name was the suffix (shouldn't happen)
+        base_name = conversation_name
+
+    # Add unique suffix to prevent collisions
+    import secrets
+
+    random_suffix = secrets.token_hex(2)  # 4 hex chars
+    return f"{base_name}-before-compact-{random_suffix}"
+
+
 def autocompact_hook(log: list[Message], workspace: Path | None, manager=None):
     """
     Hook that checks if auto-compacting is needed and applies it.
@@ -375,7 +425,7 @@ def autocompact_hook(log: list[Message], workspace: Path | None, manager=None):
     _last_autocompact_time = current_time
 
     # Fork conversation to preserve original state
-    fork_name = f"{manager.logfile.parent.name}-before-compact"
+    fork_name = _get_backup_name(manager.logfile.parent.name)
     try:
         manager.fork(fork_name)
         logger.info(f"Forked conversation to '{fork_name}' before compacting")
