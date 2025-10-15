@@ -100,8 +100,8 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
         "claude-haiku-4-5": {
             "context": 200_000,
             "max_output": 64_000,
-            "price_input": 0.5,
-            "price_output": 2.5,
+            "price_input": 1,
+            "price_output": 5,
             "supports_vision": True,
             "supports_reasoning": True,
             "knowledge_cutoff": datetime(2025, 2, 1),
