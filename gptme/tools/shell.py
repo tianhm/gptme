@@ -264,12 +264,30 @@ class ShellSession:
             command_parts = list(
                 shlex.shlex(command, posix=True, punctuation_chars=True)
             )
-            if (
-                "<" not in command_parts
-                and "<<" not in command_parts
-                and "<<<" not in command_parts
-                and "|" not in command_parts
-            ):
+
+            # Check if there's already stdin redirection
+            has_stdin_redirect = (
+                "<" in command_parts or "<<" in command_parts or "<<<" in command_parts
+            )
+
+            # For pipelines, redirect stdin for the first command only
+            if "|" in command_parts and not has_stdin_redirect:
+                # Find first pipe in tokenized parts
+                try:
+                    pipe_idx = command_parts.index("|")
+                    # Reconstruct command parts before and after pipe
+                    first_parts = command_parts[:pipe_idx]
+                    rest_parts = command_parts[pipe_idx + 1 :]
+
+                    # Join parts back with proper quoting using shlex.join()
+                    first_cmd = shlex.join(first_parts)
+                    rest = shlex.join(rest_parts)
+                    command = f"{first_cmd} < /dev/null | {rest}"
+                except (ValueError, IndexError) as e:
+                    # Fallback to raw command if parsing fails
+                    logger.warning(f"Failed to parse pipe in command '{command}': {e}")
+            elif not has_stdin_redirect and "|" not in command_parts:
+                # No pipe and no stdin redirection - add /dev/null
                 command += " < /dev/null"
         except ValueError as e:
             logger.warning("Failed shlex parsing command, using raw command", e)
