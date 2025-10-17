@@ -97,87 +97,41 @@ def _extract_recent_tools(log: list[Message], limit: int = 10) -> list[str]:
     return unique_tools
 
 
-def auto_include_lessons_hook(
-    log: list[Message],
-    **kwargs,
-) -> Generator[Message, None, None]:
-    """Hook to automatically include relevant lessons before message processing."""
-    if not HAS_LESSONS:
-        return
+def _extract_message_content(log: list[Message], limit: int = 10) -> str:
+    """Extract message content from recent user and assistant messages.
 
-    # Check if auto-include is enabled via environment variable
-    config = get_config()
-    if not config.get_env_bool("GPTME_LESSONS_AUTO_INCLUDE", True):
-        return
+    Args:
+        log: Conversation log
+        limit: Number of recent messages to check
 
-    # Get max lessons from environment or use default
-    max_lessons_str = config.get_env("GPTME_LESSONS_MAX_INCLUDED") or "5"
-    try:
-        max_lessons = int(max_lessons_str)
-    except (ValueError, TypeError):
-        max_lessons = 5
+    Returns:
+        Combined message content string
+    """
+    messages = []
+    for msg in reversed(log[-limit:]):
+        if msg.role in ("user", "assistant"):
+            messages.append(msg.content)
 
-    # Get last user message
-    user_msg = None
-    for msg in reversed(log):
-        if msg.role == "user":
-            user_msg = msg
-            break
+    # Combine messages (most recent first, so reverse to get chronological)
+    combined = " ".join(reversed(messages))
 
-    if not user_msg:
-        logger.debug("No user message found, skipping lesson inclusion")
-        return
+    logger.debug(
+        f"Extracted content from {len(messages)} messages "
+        f"(content length: {len(combined)} chars)"
+    )
 
-    # Extract recent tool usage
-    recent_tools = _extract_recent_tools(log)
-
-    # Build match context with tools
-    context = MatchContext(message=user_msg.content, tools_used=recent_tools)
-
-    # Find matching lessons
-    try:
-        index = _get_lesson_index()
-        if not index.lessons:
-            logger.debug("No lessons found in index")
-            return
-
-        matcher = LessonMatcher()
-        matches = matcher.match(index.lessons, context)
-
-        if not matches:
-            logger.debug("No matching lessons found")
-            return
-
-        # Filter out already-included lessons by checking history
-        included_paths = _get_included_lessons_from_log(log)
-        new_matches = [m for m in matches if str(m.lesson.path) not in included_paths]
-
-        if not new_matches:
-            logger.debug("All matching lessons already included")
-            return
-
-        # Limit to top N
-        new_matches = new_matches[:max_lessons]
-        titles = [str(match.lesson.title) for match in new_matches]
-        newline = "\n- "
-        logger.info(f"Including {len(new_matches)} lessons: \n{newline.join(titles)}")
-
-        # Format lessons for inclusion
-        lesson_content = _format_lessons(new_matches)
-
-        # Yield system message with lessons
-        yield Message(
-            role="system",
-            content=f"# Relevant Lessons\n\n{lesson_content}",
-            hide=True,  # Don't show in UI by default
-        )
-
-    except Exception as e:
-        logger.exception(f"Failed to include lessons: {e}")
+    return combined
 
 
 def _format_lessons(matches: list) -> str:
-    """Format matched lessons for inclusion."""
+    """Format matched lessons for inclusion.
+
+    Args:
+        matches: List of MatchResult objects
+
+    Returns:
+        Formatted lessons as string
+    """
     parts = []
 
     for i, match in enumerate(matches, 1):
@@ -213,29 +167,131 @@ def handle_lesson_command(ctx: CommandContext) -> Generator[Message, None, None]
     yield from lesson(ctx)
 
 
-# Tool specification
+def auto_include_lessons_hook(
+    log: list[Message], workspace: str | None = None, **kwargs
+) -> Generator[Message, None, None]:
+    """Hook to automatically include relevant lessons in context.
+
+    Extracts keywords from both user and assistant messages to trigger lessons.
+    This enables lessons to be relevant in both interactive and autonomous contexts.
+
+    Args:
+        log: Current conversation log
+        workspace: Optional workspace directory path
+        **kwargs: Additional hook arguments (unused)
+
+    Returns:
+        Generator of messages to prepend (lessons as system message)
+    """
+    if not HAS_LESSONS:
+        logger.debug("Lessons module not available, skipping auto-inclusion")
+        return
+
+    # Get configuration
+    config = get_config()
+    auto_include = config.get_env_bool("GPTME_LESSONS_AUTO_INCLUDE", True)
+
+    if not auto_include:
+        logger.debug("Auto-inclusion disabled")
+        return
+
+    try:
+        max_lessons = int(config.get_env("GPTME_LESSONS_MAX_INCLUDED") or "5")
+    except (ValueError, TypeError):
+        max_lessons = 5
+
+    # Get lessons already included
+    included_lessons = _get_included_lessons_from_log(log)
+
+    # Extract message content from recent user and assistant messages
+    message_content = _extract_message_content(log)
+    tools = _extract_recent_tools(log)
+
+    if not message_content and not tools:
+        logger.debug("No message content or tools to match, skipping lesson inclusion")
+        return
+
+    # Create match context
+    context = MatchContext(
+        message=message_content,
+        tools_used=tools,
+    )
+
+    # Get lesson index and find matching lessons
+    try:
+        index = _get_lesson_index()
+        matcher = LessonMatcher()
+        match_results = matcher.match(index.lessons, context)
+
+        # Filter out already included lessons (MatchResult has .lesson attribute)
+        new_matches = [
+            match
+            for match in match_results
+            if str(match.lesson.path) not in included_lessons
+        ]
+
+        # Limit number of lessons
+        if len(new_matches) > max_lessons:
+            logger.debug(f"Limiting lessons from {len(new_matches)} to {max_lessons}")
+            new_matches = new_matches[:max_lessons]
+
+        if not new_matches:
+            logger.debug("No new lessons to include")
+            return
+
+        # Format lessons as system message
+        content_parts = ["# Relevant Lessons\n"]
+        for match in new_matches:
+            lesson = match.lesson
+            content_parts.append(f"\n## {lesson.title}\n")
+            content_parts.append(f"\n*Path: {lesson.path}*\n")
+            content_parts.append(f"\n*Category: {lesson.category}*\n")
+            content_parts.append(f"\n*Matched by: {', '.join(match.matched_by)}*\n")
+            content_parts.append(f"\n{lesson.body}\n")
+
+        lesson_msg = Message(
+            role="system",
+            content="".join(content_parts),
+            hide=True,  # Hide from user-facing output
+        )
+
+        titles = [str(match.lesson.title) for match in new_matches]
+        newline = "\n- "
+        logger.info(f"Auto-included {len(new_matches)} lessons: \n{newline.join(titles)}")
+
+        yield lesson_msg
+
+    except Exception as e:
+        logger.warning(f"Error during lesson auto-inclusion: {e}")
+        return
+
+
+# Tool specification (for /tools command)
 tool = ToolSpec(
     name="lessons",
-    desc="Structured lessons with automatic context inclusion",
+    desc="Lesson system for structured guidance",
     instructions="""
-The lesson system provides structured lessons that can be automatically included
-in context based on keywords.
+Use lessons to improve your performance and avoid known failure modes.
 
-Lessons are stored as Markdown files with YAML frontmatter:
+How lessons help you:
+- Automatically included when relevant keywords or tools match
+- Extracted from both user and assistant messages in the conversation
+- Limited to 5 most relevant lessons to conserve context
 
-```yaml
----
-match:
-  keywords: [patch, file, editing]
----
+Commands available:
+- /lesson list - View all available lessons
+- /lesson search <query> - Find lessons matching query
+- /lesson show <id> - Display a specific lesson
+- /lesson refresh - Reload lessons from disk
 
-# Lesson Title
-
-Lesson content...
-```
-
-Lessons are automatically included when their keywords match the conversation context.
+Leverage lessons for self-improvement:
+- Pay attention to lessons included in context
+- Apply patterns and avoid anti-patterns
+- Reference lessons when making decisions
+- Learn from past failures documented in lessons
 """.strip(),
+    examples="",
+    functions=[],
     available=HAS_LESSONS,
     hooks={
         "auto_include_lessons": (
@@ -248,5 +304,3 @@ Lessons are automatically included when their keywords match the conversation co
         "lesson": handle_lesson_command,
     },
 )
-
-__all__ = ["tool"]
