@@ -355,6 +355,11 @@ class ToolUse:
                     if sound_type := get_tool_sound_for_tool(self.tool):
                         play_tool_sound(sound_type)
 
+                    # Measure tool execution time
+                    import time
+
+                    start_time = time.time()
+
                     ex = tool.execute(
                         self.content,
                         self.args,
@@ -368,9 +373,13 @@ class ToolUse:
                     else:
                         yield ex
 
-                    # Record successful tool call
+                    # Calculate duration
+                    duration = time.time() - start_time
+
+                    # Record successful tool call with duration
                     record_tool_call(
                         self.tool,
+                        duration=duration,
                         success=True,
                         tool_format=self._format,
                     )
@@ -384,9 +393,13 @@ class ToolUse:
                         yield from post_hook_msgs
 
                 except Exception as e:
-                    # Record failed tool call with error details
+                    # Calculate duration even for failed calls
+                    duration = time.time() - start_time
+
+                    # Record failed tool call with error details and duration
                     record_tool_call(
                         self.tool,
+                        duration=duration,
                         success=False,
                         error_type=type(e).__name__,
                         error_message=str(e),
