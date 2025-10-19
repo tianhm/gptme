@@ -294,13 +294,13 @@ class GptmeCompleter(Completer):
         self.path_completer = PathCompleter2(expanduser=True)
 
     def get_completions(self, document, complete_event):
-        from ..commands import COMMANDS  # fmt: skip
+        from ..commands import get_user_commands  # fmt: skip
 
         document.get_word_before_cursor()
         text = document.text_before_cursor
         path_seg = text.split(" ")[-1]
 
-        completions = [f"/{cmd}" for cmd in COMMANDS]
+        completions = get_user_commands()  # Already includes "/" prefix
 
         # Command completion
         if text.startswith("/"):

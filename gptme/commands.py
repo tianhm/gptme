@@ -539,11 +539,6 @@ def print_available_models() -> None:
 
 
 def get_user_commands() -> list[str]:
-    """Returns a list of all user commands"""
-    commands = [f"/{cmd}" for cmd in action_descriptions.keys()]
-
-    # check if command is valid tooluse
-    # TODO: check for registered tools instead of hardcoding
-    commands.extend(["/python", "/shell"])
-
-    return commands
+    """Returns a list of all user commands, including tool-registered commands"""
+    # Get all registered commands (includes built-in + tool-registered)
+    return [f"/{cmd}" for cmd in _command_registry.keys()]
