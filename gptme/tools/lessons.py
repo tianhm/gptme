@@ -256,8 +256,8 @@ def auto_include_lessons_hook(
         )
 
         titles = [str(match.lesson.title) for match in new_matches]
-        newline = "\n- "
-        logger.info(f"Auto-included {len(new_matches)} lessons: \n{newline.join(titles)}")
+        titles_list = "\n".join(f"- {title}" for title in titles)
+        logger.info(f"Auto-included {len(new_matches)} lessons:\n{titles_list}")
 
         yield lesson_msg
 
