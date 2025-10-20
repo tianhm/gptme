@@ -140,6 +140,11 @@ The interface provides user commands that can be used to interact with the syste
     is_flag=True,
     help="Show version and configuration information",
 )
+@click.option(
+    "--profile",
+    is_flag=True,
+    help="Enable profiling and save results to gptme-profile-{timestamp}.prof",
+)
 def main(
     prompts: list[str],
     prompt_system: str,
@@ -156,8 +161,39 @@ def main(
     resume: bool,
     workspace: str | None,
     agent_path: str | None,
+    profile: bool,
 ):
     """Main entrypoint for the CLI."""
+    if profile:
+        import atexit
+        import cProfile
+        import pstats
+        from datetime import datetime
+
+        print("Profiling enabled...")
+        pr = cProfile.Profile()
+        pr.enable()
+
+        profile_dir = Path("profiles")
+        profile_dir.mkdir(exist_ok=True)
+        profile_path = (
+            profile_dir / f"gptme-{datetime.now().strftime('%Y%m%d-%H%M%S')}.prof"
+        )
+
+        def save_profile():
+            pr.disable()
+            pr.dump_stats(profile_path)
+            print(f"\nProfile saved to {profile_path}")
+            print(f"View with: snakeviz {profile_path}")
+
+            # Print top 20 functions
+            stats = pstats.Stats(pr)
+            stats.sort_stats("cumulative")
+            print("\nTop 20 functions by cumulative time:")
+            stats.print_stats(20)
+
+        atexit.register(save_profile)
+
     interactive = not non_interactive
     if version:
         # print version

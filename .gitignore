@@ -62,3 +62,4 @@ config.toml
 
 # VSCode
 .vscode
+profiles/
