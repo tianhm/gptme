@@ -141,6 +141,8 @@ nitpick_ignore = [
     ("py:class", "gptme.tools.computer.ScalingSource"),
     ("py:class", "gptme.config.RagConfig"),
     ("py:class", "ToolFormat"),
+    ("py:class", "ConfirmFunc"),
+    ("py:class", "Path"),
 ]
 
 # -- Options for HTML output -------------------------------------------------
