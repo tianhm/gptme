@@ -21,15 +21,15 @@ from typing import (
     get_origin,
 )
 
-if TYPE_CHECKING:
-    from ..logmanager import Log
-
 import json_repair
 from lxml import etree
 
 from ..codeblock import Codeblock
 from ..message import Message
 from ..util import clean_example, transform_examples_to_chat_directives
+
+if TYPE_CHECKING:
+    from ..logmanager import Log
 
 logger = logging.getLogger(__name__)
 
@@ -642,9 +642,18 @@ class ToolUse:
 
     def _to_xml(self) -> str:
         assert self.args is not None
+        wrapper_tag = "tool-use"
         args = " ".join(self.args)
         args_str = "" if not args else f" args='{args}'"
-        return f"<tool-use>\n<{self.tool}{args_str}>\n{self.content}\n</{self.tool}>\n</tool-use>"
+        # Special case for Haiku format (testing purposes)
+        haiku_adapted = False
+        if haiku_adapted:
+            wrapper_tag = "function_calls"
+            args_str = f' name="{self.tool}"' + args_str
+            call = f'<invoke name="{self.tool}"{args_str}>\n{self.content}\n</invoke>'
+        else:
+            call = f"<{self.tool}{args_str}>\n{self.content}\n</{self.tool}>"
+        return f"<{wrapper_tag}>\n{call}\n</{wrapper_tag}>"
 
     def _to_params(self) -> dict:
         # noreorder
