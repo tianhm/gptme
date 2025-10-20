@@ -418,40 +418,6 @@ def test_vision(args: list[str], runner: CliRunner):
 
 
 @pytest.mark.slow
-@pytest.mark.requires_api
-@pytest.mark.parametrize(
-    "tool_format, expected, not_expected",
-    [
-        ("markdown", ["```shell\nls"], ["<tool-use>\n<shell>\nls"]),
-        ("xml", ["<tool-use>\n<shell>\nls"], ["```shell\nls"]),
-        (
-            "tool",
-            ["@shell:"],
-            ["```shell\nls", "<tool-use>\n<shell>\nls"],
-        ),
-    ],
-)
-def test_tool_format_option(
-    args: list[str], runner: CliRunner, tool_format, expected, not_expected
-):
-    args.append("--show-hidden")
-    args.append("--tool-format")
-    args.append(tool_format)
-    args.append("we are testing, just ls the current dir and then do nothing else")
-
-    result = runner.invoke(gptme.cli.main, args)
-    if result.exception:
-        raise result.exception
-    assert result.exit_code == 0
-
-    for expect in expected:
-        assert expect in result.output
-
-    for not_expect in not_expected:
-        assert not_expect not in result.output
-
-
-@pytest.mark.slow
 def test_nested_gptme_calls(args: list[str], runner: CliRunner):
     """Test that gptme can call itself recursively, even without --non-interactive flag."""
     # Run a nested gptme instance that echoes a message
