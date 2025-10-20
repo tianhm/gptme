@@ -254,7 +254,11 @@ def trigger_hook(
     hook_type: HookType, *args, **kwargs
 ) -> Generator[Message, None, None]:
     """Trigger hooks of a given type."""
-    yield from _registry.trigger(hook_type, *args, **kwargs)
+    try:
+        yield from _registry.trigger(hook_type, *args, **kwargs)
+    except KeyboardInterrupt:
+        logger.debug(f"Hook trigger {hook_type} interrupted by user")
+        return
 
 
 def get_hooks(hook_type: HookType | None = None) -> list[Hook]:

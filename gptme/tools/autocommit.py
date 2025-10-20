@@ -9,7 +9,7 @@ from collections.abc import Generator
 from ..commands import CommandContext
 from ..config import get_config
 from ..hooks import HookType
-from ..logmanager import Log
+from ..logmanager import Log, check_for_modifications
 from ..message import Message
 from .base import ToolSpec
 
@@ -74,8 +74,11 @@ EOF
         return Message("system", commit_prompt)
 
     except subprocess.CalledProcessError as e:
+        if e.returncode == -2:
+            raise KeyboardInterrupt from e
         return Message(
-            "system", f"Git operation failed: {e.stderr or e.stdout or str(e)}"
+            "system",
+            f"Git operation failed (code {e.returncode}): {e.stderr or e.stdout or str(e)}",
         )
     except Exception as e:
         logger.error(f"Autocommit failed: {e}")
@@ -115,7 +118,6 @@ def autocommit_on_message_complete(
         return
 
     # Check if there are modifications
-    from ..logmanager import check_for_modifications
 
     if not check_for_modifications(log):
         logger.debug("No modifications detected, skipping autocommit")

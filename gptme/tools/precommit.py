@@ -98,8 +98,7 @@ def run_precommit_checks() -> tuple[bool, str | None]:
     except subprocess.CalledProcessError as e:
         # if exit code is 130, it means the user interrupted the process
         if e.returncode == 130:
-            logger.info("Pre-commit checks interrupted by user")
-            return False, None
+            raise KeyboardInterrupt() from None
         # If no pre-commit config found
         # Can happen in nested git repos, since we check parent dirs but pre-commit only checks the current repo.
         if ".pre-commit-config.yaml is not a file" in e.stdout:
@@ -153,6 +152,8 @@ def handle_precommit_command(ctx: CommandContext) -> Generator[Message, None, No
         else:
             yield Message("system", "Pre-commit checks not enabled or no issues found")
 
+    except KeyboardInterrupt:
+        raise
     except Exception as e:
         logger.exception(f"Error running pre-commit checks: {e}")
         yield Message("system", f"Pre-commit check failed: {e}")
@@ -189,6 +190,8 @@ def run_precommit_on_file(
             logger.debug("pre-commit not available, skipping hook")
             return
 
+    except KeyboardInterrupt:
+        raise
     except (subprocess.TimeoutExpired, FileNotFoundError):
         logger.debug("pre-commit not found or timed out, skipping hook")
         return
@@ -218,6 +221,8 @@ def run_precommit_on_file(
                 hide=True,  # Hide success messages to reduce noise
             )
 
+    except KeyboardInterrupt:
+        raise
     except subprocess.TimeoutExpired:
         yield Message(
             "system", f"Pre-commit checks timed out for {path.name}", hide=True
@@ -274,6 +279,8 @@ def run_full_precommit_checks(
         elif success:
             yield Message("system", "Pre-commit checks passed", hide=True)
 
+    except KeyboardInterrupt:
+        raise
     except Exception as e:
         logger.exception(f"Error running pre-commit checks: {e}")
         yield Message("system", f"Pre-commit check failed: {e}", hide=True)

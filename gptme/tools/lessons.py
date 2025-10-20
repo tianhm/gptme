@@ -2,7 +2,14 @@
 Lesson system tool for gptme.
 
 Provides structured lessons with metadata that can be automatically included in context.
-Similar to .cursorrules but with keyword-based triggering.
+Similar to .cursorrules or "Claude Skills". Has keyword-based triggering.
+
+Commands provided:
+
+- ``/lesson list`` - View all available lessons
+- ``/lesson search <query>`` - Find lessons matching query
+- ``/lesson show <id>`` - Display a specific lesson
+- ``/lesson refresh`` - Reload lessons from disk
 """
 
 import logging
