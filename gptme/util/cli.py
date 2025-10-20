@@ -6,6 +6,7 @@ import io
 import logging
 import sys
 from contextlib import redirect_stderr
+from pathlib import Path
 
 import click
 
@@ -17,6 +18,7 @@ from ..mcp.client import MCPClient
 from ..message import Message
 from ..tools import get_tools, init_tools
 from ..tools.chats import list_chats, search_chats
+from .context import include_paths
 
 
 @click.group()
@@ -489,6 +491,38 @@ def tools_call(tool_name: str, function_name: str, arg: list[str]):
             kwargs[key] = value
         return_val = function[0](**kwargs)
         print(return_val)
+
+
+@main.group()
+def prompts():
+    """Commands for prompt utilities."""
+    pass
+
+
+@prompts.command("expand")
+@click.argument("prompt", nargs=-1, required=True)
+def prompts_expand(prompt: tuple[str, ...]):
+    """Expand a prompt to show what will be sent to the LLM.
+
+    Shows exactly how file paths in prompts are expanded into message content,
+    using the same logic as the main gptme tool.
+
+    Examples:
+
+        gptme-util prompts expand "fix this bug" test.py
+
+        gptme-util prompts expand "review these files" src/*.py
+    """
+
+    # Join all prompt arguments
+    full_prompt = "\n\n".join(prompt)
+
+    # Use the existing include_paths function to expand the prompt
+    original_msg = Message("user", full_prompt)
+    expanded_msg = include_paths(original_msg, workspace=Path.cwd())
+
+    # Print the expanded content exactly as it would be sent to the LLM
+    print(expanded_msg.content)
 
 
 @main.group()
