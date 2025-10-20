@@ -29,7 +29,6 @@ from .tools import (
     get_tool_format,
     get_tools,
 )
-
 from .util.auto_naming import generate_llm_name
 from .util.cost import log_costs
 from .util.export import export_chat_to_html
@@ -399,10 +398,6 @@ def cmd_export(ctx: CommandContext) -> None:
     print(f"Exported conversation to {output_path}")
 
 
-# Note: /commit command is now registered by the autocommit tool
-# Note: /pre-commit command is registered by the precommit tool
-
-
 @command("setup")
 def cmd_setup(ctx: CommandContext) -> None:
     """Setup gptme with completions, configuration, and project setup."""
@@ -419,16 +414,14 @@ def cmd_help(ctx: CommandContext) -> None:
     help()
 
 
-def execute_cmd(
-    msg: Message, log: LogManager, confirm: ConfirmFunc, workspace: Path | None = None
-) -> bool:
+def execute_cmd(msg: Message, log: LogManager, confirm: ConfirmFunc) -> bool:
     """Executes any user-command, returns True if command was executed."""
     assert msg.role == "user"
 
     # if message starts with / treat as command
     # when command has been run,
-    if msg.content[:1] in ["/"]:
-        for resp in handle_cmd(msg.content, log, confirm, workspace):
+    if msg.content.startswith("/"):
+        for resp in handle_cmd(msg.content, log, confirm):
             log.append(resp)
         return True
     return False
@@ -438,7 +431,6 @@ def handle_cmd(
     cmd: str,
     manager: LogManager,
     confirm: ConfirmFunc,
-    workspace: Path | None = None,
 ) -> Generator[Message, None, None]:
     """Handles a command."""
     cmd = cmd.lstrip("/")
@@ -457,7 +449,7 @@ def handle_cmd(
     # Fallback to tool execution
     tooluse = ToolUse(name, [], full_args)
     if tooluse.is_runnable:
-        yield from tooluse.execute(confirm, manager.log, workspace)
+        yield from tooluse.execute(confirm, manager.log, manager.workspace)
     else:
         manager.undo(1, quiet=True)
         print("Unknown command")

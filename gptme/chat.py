@@ -140,7 +140,6 @@ def chat(
             stream,
             confirm_func,
             tool_format,
-            workspace,
             model,
             interactive,
             logdir,
@@ -164,7 +163,6 @@ def _run_chat_loop(
     stream,
     confirm_func,
     tool_format,
-    workspace,
     model,
     interactive,
     logdir,
@@ -178,18 +176,16 @@ def _run_chat_loop(
             if prompt_queue:
                 msg = prompt_queue.pop(0)
                 assert msg is not None, "prompt_queue contained None"
-                msg = include_paths(msg, workspace)
+                msg = include_paths(msg, manager.workspace)
                 manager.append(msg)
 
                 # Handle user commands
-                if msg.role == "user" and execute_cmd(
-                    msg, manager, confirm_func, workspace
-                ):
+                if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
                     continue
 
                 # Process the message and get response
                 _process_message_conversation(
-                    manager, stream, confirm_func, tool_format, workspace, model
+                    manager, stream, confirm_func, tool_format, model
                 )
             else:
                 # Get user input or exit if non-interactive
@@ -198,7 +194,7 @@ def _run_chat_loop(
                     _wait_for_tts_if_enabled()
                     break
 
-                user_input = _get_user_input(manager.log, workspace)
+                user_input = _get_user_input(manager.log, manager.workspace)
                 if user_input is None:
                     # Either user wants to exit OR we should generate response directly
                     if _should_prompt_for_input(manager.log):
@@ -212,7 +208,6 @@ def _run_chat_loop(
                             stream,
                             confirm_func,
                             tool_format,
-                            workspace,
                             model,
                         )
                 else:
@@ -223,9 +218,7 @@ def _run_chat_loop(
                     # Reset interrupt flag since user provided new input
 
                     # Handle user commands
-                    if msg.role == "user" and execute_cmd(
-                        msg, manager, confirm_func, workspace
-                    ):
+                    if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
                         continue
 
                     # Process the message and get response
@@ -234,7 +227,6 @@ def _run_chat_loop(
                         stream,
                         confirm_func,
                         tool_format,
-                        workspace,
                         model,
                     )
 
@@ -243,8 +235,7 @@ def _run_chat_loop(
             if loop_msgs := trigger_hook(
                 HookType.LOOP_CONTINUE,
                 log=manager.log,
-                workspace=workspace,
-                manager=manager,
+                workspace=manager.workspace,
                 interactive=interactive,
                 prompt_queue=prompt_queue,
             ):
@@ -274,7 +265,6 @@ def _process_message_conversation(
     stream: bool,
     confirm_func: ConfirmFunc,
     tool_format: ToolFormat,
-    workspace: Path,
     model: str | None,
 ) -> None:
     """Process a message and generate responses until no more tools to run."""
@@ -285,7 +275,9 @@ def _process_message_conversation(
 
             # Trigger pre-process hooks
             if pre_msgs := trigger_hook(
-                HookType.MESSAGE_PRE_PROCESS, log=manager.log, workspace=workspace
+                HookType.MESSAGE_PRE_PROCESS,
+                log=manager.log,
+                workspace=manager.workspace,
             ):
                 for msg in pre_msgs:
                     manager.append(msg)
@@ -296,7 +288,7 @@ def _process_message_conversation(
                     stream,
                     confirm_func,
                     tool_format=tool_format,
-                    workspace=workspace,
+                    workspace=manager.workspace,
                     model=model,
                 )
             )
@@ -313,7 +305,7 @@ def _process_message_conversation(
             manager.append(response_msg)
             # run any user-commands, if msg is from user
             if response_msg.role == "user" and execute_cmd(
-                response_msg, manager, confirm_func, workspace
+                response_msg, manager, confirm_func
             ):
                 return
 
@@ -369,8 +361,7 @@ def _process_message_conversation(
     if post_msgs := trigger_hook(
         HookType.MESSAGE_POST_PROCESS,
         log=manager.log,
-        workspace=workspace,
-        manager=manager,
+        workspace=manager.workspace,
     ):
         for msg in post_msgs:
             manager.append(msg)
