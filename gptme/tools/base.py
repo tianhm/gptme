@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import functools
 import importlib
 import json
@@ -10,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import indent
 from typing import (
+    TYPE_CHECKING,
     Any,
     Literal,
     Protocol,
@@ -17,6 +20,9 @@ from typing import (
     cast,
     get_origin,
 )
+
+if TYPE_CHECKING:
+    from ..logmanager import Log
 
 import json_repair
 from lxml import etree
@@ -322,7 +328,12 @@ class ToolUse:
     start: int | None = None
     _format: ToolFormat | None = "markdown"
 
-    def execute(self, confirm: ConfirmFunc) -> Generator[Message, None, None]:
+    def execute(
+        self,
+        confirm: ConfirmFunc,
+        log: Log | None = None,
+        workspace: Path | None = None,
+    ) -> Generator[Message, None, None]:
         """Executes a tool-use tag and returns the output."""
         # noreorder
         from ..hooks import HookType, trigger_hook  # fmt: skip
@@ -345,7 +356,8 @@ class ToolUse:
                     # Trigger pre-execution hooks
                     if pre_hook_msgs := trigger_hook(
                         HookType.TOOL_PRE_EXECUTE,
-                        tool_name=self.tool,
+                        log=log,
+                        workspace=workspace,
                         tool_use=self,
                     ):
                         yield from pre_hook_msgs
@@ -388,7 +400,8 @@ class ToolUse:
                     # Trigger post-execution hooks
                     if post_hook_msgs := trigger_hook(
                         HookType.TOOL_POST_EXECUTE,
-                        tool_name=self.tool,
+                        log=log,
+                        workspace=workspace,
                         tool_use=self,
                     ):
                         yield from post_hook_msgs
@@ -426,7 +439,7 @@ class ToolUse:
         return bool(tool.execute) if tool else False
 
     @classmethod
-    def _from_codeblock(cls, codeblock: Codeblock) -> "ToolUse | None":
+    def _from_codeblock(cls, codeblock: Codeblock) -> ToolUse | None:
         """Parses a codeblock into a ToolUse. Codeblock must be a supported type.
 
         Example:
@@ -465,7 +478,7 @@ class ToolUse:
         content: str,
         tool_format_override: ToolFormat | None = None,
         streaming: bool = False,
-    ) -> Generator["ToolUse", None, None]:
+    ) -> Generator[ToolUse, None, None]:
         """Returns all ToolUse in a message, markdown or XML, in order.
 
         Args:
@@ -521,7 +534,7 @@ class ToolUse:
     @classmethod
     def _iter_from_markdown(
         cls, content: str, streaming: bool = False
-    ) -> Generator["ToolUse", None, None]:
+    ) -> Generator[ToolUse, None, None]:
         """Returns all markdown-style ToolUse in a message.
 
         Args:
@@ -538,7 +551,7 @@ class ToolUse:
                 yield tool_use
 
     @classmethod
-    def _iter_from_xml(cls, content: str) -> Generator["ToolUse", None, None]:
+    def _iter_from_xml(cls, content: str) -> Generator[ToolUse, None, None]:
         """Returns all XML-style ToolUse in a message.
 
         Example:

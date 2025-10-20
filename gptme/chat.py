@@ -182,7 +182,9 @@ def _run_chat_loop(
                 manager.append(msg)
 
                 # Handle user commands
-                if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
+                if msg.role == "user" and execute_cmd(
+                    msg, manager, confirm_func, workspace
+                ):
                     continue
 
                 # Process the message and get response
@@ -221,7 +223,9 @@ def _run_chat_loop(
                     # Reset interrupt flag since user provided new input
 
                     # Handle user commands
-                    if msg.role == "user" and execute_cmd(msg, manager, confirm_func):
+                    if msg.role == "user" and execute_cmd(
+                        msg, manager, confirm_func, workspace
+                    ):
                         continue
 
                     # Process the message and get response
@@ -309,7 +313,7 @@ def _process_message_conversation(
             manager.append(response_msg)
             # run any user-commands, if msg is from user
             if response_msg.role == "user" and execute_cmd(
-                response_msg, manager, confirm_func
+                response_msg, manager, confirm_func, workspace
             ):
                 return
 
@@ -484,7 +488,7 @@ def step(
         # log response and run tools
         if msg_response:
             yield msg_response.replace(quiet=True)
-            yield from execute_msg(msg_response, confirm)
+            yield from execute_msg(msg_response, confirm, log, workspace)
 
         # Reset interrupt flag after successful completion
         _recently_interrupted = False

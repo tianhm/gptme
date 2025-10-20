@@ -419,14 +419,16 @@ def cmd_help(ctx: CommandContext) -> None:
     help()
 
 
-def execute_cmd(msg: Message, log: LogManager, confirm: ConfirmFunc) -> bool:
+def execute_cmd(
+    msg: Message, log: LogManager, confirm: ConfirmFunc, workspace: Path | None = None
+) -> bool:
     """Executes any user-command, returns True if command was executed."""
     assert msg.role == "user"
 
     # if message starts with / treat as command
     # when command has been run,
     if msg.content[:1] in ["/"]:
-        for resp in handle_cmd(msg.content, log, confirm):
+        for resp in handle_cmd(msg.content, log, confirm, workspace):
             log.append(resp)
         return True
     return False
@@ -436,6 +438,7 @@ def handle_cmd(
     cmd: str,
     manager: LogManager,
     confirm: ConfirmFunc,
+    workspace: Path | None = None,
 ) -> Generator[Message, None, None]:
     """Handles a command."""
     cmd = cmd.lstrip("/")
@@ -454,7 +457,7 @@ def handle_cmd(
     # Fallback to tool execution
     tooluse = ToolUse(name, [], full_args)
     if tooluse.is_runnable:
-        yield from tooluse.execute(confirm)
+        yield from tooluse.execute(confirm, manager.log, workspace)
     else:
         manager.undo(1, quiet=True)
         print("Unknown command")

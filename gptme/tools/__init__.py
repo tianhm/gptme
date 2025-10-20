@@ -1,8 +1,15 @@
+from __future__ import annotations
+
 import importlib
 import inspect
 import logging
 import pkgutil
 from collections.abc import Generator
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..logmanager import Log
 
 from gptme.config import get_config
 from gptme.constants import INTERRUPT_CONTENT
@@ -186,7 +193,12 @@ def get_toolchain(allowlist: list[str] | None) -> list[ToolSpec]:
 
 
 @trace_function(name="tools.execute_msg", attributes={"component": "tools"})
-def execute_msg(msg: Message, confirm: ConfirmFunc) -> Generator[Message, None, None]:
+def execute_msg(
+    msg: Message,
+    confirm: ConfirmFunc,
+    log: Log | None = None,
+    workspace: Path | None = None,
+) -> Generator[Message, None, None]:
     """Uses any tools called in a message and returns the response."""
     assert msg.role == "assistant", "Only assistant messages can be executed"
 
@@ -194,7 +206,7 @@ def execute_msg(msg: Message, confirm: ConfirmFunc) -> Generator[Message, None, 
         if tooluse.is_runnable:
             with terminal_state_title("🛠️ running {tooluse.tool}"):
                 try:
-                    for tool_response in tooluse.execute(confirm):
+                    for tool_response in tooluse.execute(confirm, log, workspace):
                         yield tool_response.replace(call_id=tooluse.call_id)
                 except KeyboardInterrupt:
                     clear_interruptible()

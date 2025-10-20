@@ -140,10 +140,19 @@ def test_hook_with_arguments():
 
     register_hook("test_hook", HookType.TOOL_PRE_EXECUTE, my_hook)
 
-    list(trigger_hook(HookType.TOOL_PRE_EXECUTE, tool_name="save", path="/tmp/test"))
+    # Create a mock ToolUse for testing
+    from gptme.tools.base import ToolUse
 
-    assert received_args["tool_name"] == "save"
-    assert received_args["path"] == "/tmp/test"
+    tool_use = ToolUse(tool="save", args=[], content=None)
+    list(
+        trigger_hook(
+            HookType.TOOL_PRE_EXECUTE, log=None, workspace=None, tool_use=tool_use
+        )
+    )
+
+    assert received_args["tool_use"].tool == "save"
+    assert received_args["log"] is None
+    assert received_args["workspace"] is None
 
 
 def test_hook_generator():
