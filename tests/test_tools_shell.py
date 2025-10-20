@@ -267,6 +267,18 @@ echo "Hello, World!" | wc -w
     assert out.strip() == "2"
 
 
+@pytest.mark.xfail
+def test_pipeline_with_pipe_in_quotes(shell):
+    script = r"""
+grep -r "A\|B" gptme/ --include="*.py" | grep -v "test_" | grep -v "__pycache__"
+    """
+    ret, out, err = shell.run(script)
+    # This shouldn't happen, but it does
+    assert r"grep: warning: stray \ before white space" not in err.lower()
+    assert ret == 0
+    assert "auto_generate_display_name" in out
+
+
 def test_shorten_stdout_timestamp():
     s = """2021-09-02T08:48:43.123Z
 2021-09-02T08:48:43.123Z
@@ -714,7 +726,6 @@ def test_grep_with_alternation(shell):
     as pipe operators.
     """
     # Create a test file with unique name to avoid collision
-    import tempfile
 
     test_file = tempfile.mktemp(suffix=".txt")
 
