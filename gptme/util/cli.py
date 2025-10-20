@@ -506,12 +506,6 @@ def prompts_expand(prompt: tuple[str, ...]):
 
     Shows exactly how file paths in prompts are expanded into message content,
     using the same logic as the main gptme tool.
-
-    Examples:
-
-        gptme-util prompts expand "fix this bug" test.py
-
-        gptme-util prompts expand "review these files" src/*.py
     """
 
     # Join all prompt arguments
