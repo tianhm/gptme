@@ -1,3 +1,4 @@
+import atexit
 import logging
 import os
 import signal
@@ -165,7 +166,6 @@ def main(
 ):
     """Main entrypoint for the CLI."""
     if profile:
-        import atexit
         import cProfile
         import pstats
         from datetime import datetime
@@ -280,6 +280,12 @@ def main(
     else:
         logdir = get_logdir(name)
         prompt_msgs = inject_stdin(prompt_msgs, piped_input)
+
+    # Register atexit handler to show conversation ID on exit
+    def goodbye_handler():
+        print(f"\nGoodbye! (resume with: gptme --name {logdir.name})")
+
+    atexit.register(goodbye_handler)
 
     if workspace == "@log":
         workspace_path: Path | None = logdir / "workspace"
