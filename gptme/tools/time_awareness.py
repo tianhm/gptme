@@ -118,6 +118,8 @@ The assistant receives periodic updates about how much time has elapsed:
 Time messages are shown at: 1min, 5min, 10min, 15min, 20min, then every 10 minutes.
 """.strip(),
     available=True,
+    # TODO: needs to use post-tool hook instead of message post-process to not cause assistant responding to hint in loop
+    disabled_by_default=True,
     hooks={
         "time_message": (
             HookType.MESSAGE_POST_PROCESS.value,

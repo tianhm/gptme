@@ -154,6 +154,8 @@ This helps the assistant:
 - Manage long-running conversations effectively
 """.strip(),
     available=True,
+    # TODO: needs to use post-tool hook instead of message post-process to not cause assistant responding to hint in loop
+    disabled_by_default=True,
     hooks={
         "token_budget": (
             HookType.SESSION_START.value,
