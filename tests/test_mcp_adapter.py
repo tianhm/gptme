@@ -1,20 +1,20 @@
 """Tests for MCP adapter functionality."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from gptme.config import Config, MCPConfig, MCPServerConfig
-from gptme.tools.mcp_adapter import (
-    create_mcp_tools,
-    create_mcp_execute_function,
-    search_mcp_servers,
-    get_mcp_server_info,
-    load_mcp_server,
-    unload_mcp_server,
-    list_loaded_servers,
-    _dynamic_servers,
-)
 from gptme.mcp.registry import MCPServerInfo
+from gptme.tools.mcp_adapter import (
+    _dynamic_servers,
+    create_mcp_execute_function,
+    create_mcp_tools,
+    get_mcp_server_info,
+    list_loaded_servers,
+    load_mcp_server,
+    search_mcp_servers,
+    unload_mcp_server,
+)
 
 
 @pytest.fixture
@@ -99,7 +99,7 @@ def test_create_mcp_tools_connection_error(mock_config):
         assert isinstance(tools, list)
 
 
-def test_create_mcp_execute_function():
+def test_create_mcp_execute_function(mock_config):
     """Test create_mcp_execute_function creates valid execute function."""
     mock_client = MagicMock()
     mock_tool = MagicMock()
@@ -115,7 +115,9 @@ def test_create_mcp_execute_function():
     mock_result.isError = False
     mock_client.call_tool.return_value = mock_result
 
-    execute_fn = create_mcp_execute_function("server.test_tool", mock_client)
+    execute_fn = create_mcp_execute_function(
+        "server.test_tool", mock_client, mock_config
+    )
 
     # Test that execute function is callable
     assert callable(execute_fn)
