@@ -163,12 +163,12 @@ release: version dist/CHANGELOG.md
 	# Force-update tag to amended commit
 	@VERSION=v$$(poetry version --short) && \
 		echo "Releasing version $${VERSION}"; \
-		awk '/^   releases\// && !done { \
+		grep $${VERSION} docs/changelog.rst || (awk '/^   releases\// && !done { \
 			print "   releases/'"$${VERSION}"'.md"; \
 			done=1; \
 		} \
 		{print}' docs/changelog.rst > docs/changelog.rst.tmp && \
-		mv docs/changelog.rst.tmp docs/changelog.rst && \
+		mv docs/changelog.rst.tmp docs/changelog.rst) && \
 		git add docs/changelog.rst docs/releases/$${VERSION}.md && \
 		git commit --amend --no-edit && \
 		git tag -f $${VERSION} && \
