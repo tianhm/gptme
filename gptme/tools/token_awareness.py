@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 # Cache for incremental token counting (avoids O(N²) behavior)
 _token_totals: dict[str, int] = {}
 _message_counts: dict[str, int] = {}
+_last_warning_tokens: dict[str, int] = {}  # Track when we last showed a warning
+
+# Thresholds for showing warnings
+WARNING_INTERVAL = 10000  # Show warning every 10k tokens
+WARNING_PERCENTAGES = [0.5, 0.75, 0.9, 0.95]  # Show at 50%, 75%, 90%, 95%
 
 
 def add_token_budget(
@@ -54,7 +59,7 @@ def add_token_budget(
         yield Message(
             "system",
             f"<budget:token_budget>{budget}</budget:token_budget>",
-            hide=True,
+            # hide=True,
         )
 
         logger.debug(f"Added token budget: {budget}")
@@ -69,6 +74,7 @@ def add_token_usage_warning(
     """Add token usage warning after tool execution.
 
     Uses incremental token counting to avoid O(N²) behavior.
+    Only shows warnings at meaningful thresholds to avoid noise.
 
     Args:
         log: The conversation log
@@ -76,7 +82,7 @@ def add_token_usage_warning(
         tool_use: The tool being executed (unused)
 
     Yields:
-        System message with token usage warning
+        System message with token usage warning (only at thresholds)
     """
     try:
         from ..llm.models import get_default_model
@@ -107,6 +113,7 @@ def add_token_usage_warning(
                 used = len_tokens(log.messages, model.model)
                 _token_totals[log_id] = used
                 _message_counts[log_id] = current_count
+                _last_warning_tokens[log_id] = 0
             else:
                 # Subsequent times: only count new messages
                 new_messages = log.messages[previous_count:]
@@ -119,19 +126,50 @@ def add_token_usage_warning(
                     # No new messages (shouldn't happen but handle gracefully)
                     used = _token_totals.get(log_id, 0)
 
-        remaining = budget - used
+        # Check if we should show a warning
+        should_warn = False
+        warning_reason = ""
 
-        # Add usage warning as a system message
-        # Using hide=True so it doesn't show in terminal but is sent to the model
-        yield Message(
-            "system",
-            f"<system_warning>Token usage: {used}/{budget}; {remaining} remaining</system_warning>",
-            hide=True,
-        )
+        if log_id:
+            last_warning = _last_warning_tokens.get(log_id, 0)
 
-        logger.debug(
-            f"Token usage: {used}/{budget}; {remaining} remaining (incremental)"
-        )
+            # Check if we've crossed a percentage threshold
+            current_percent = used / budget
+            last_percent = last_warning / budget if last_warning > 0 else 0
+
+            for threshold in WARNING_PERCENTAGES:
+                if current_percent >= threshold and last_percent < threshold:
+                    should_warn = True
+                    warning_reason = f"crossed {int(threshold * 100)}% threshold"
+                    break
+
+            # Check if we've used another WARNING_INTERVAL tokens
+            if not should_warn and (used - last_warning) >= WARNING_INTERVAL:
+                should_warn = True
+                warning_reason = f"used {WARNING_INTERVAL:,} more tokens"
+        else:
+            # No log_id: show warning every time (fallback behavior)
+            should_warn = True
+            warning_reason = "no workspace tracking"
+
+        if should_warn:
+            remaining = budget - used
+
+            # Update last warning tracker
+            if log_id:
+                _last_warning_tokens[log_id] = used
+
+            # Add usage warning as a system message
+            # Using hide=True so it doesn't show in terminal but is sent to the model
+            yield Message(
+                "system",
+                f"<system_warning>Token usage: {used}/{budget}; {remaining} remaining</system_warning>",
+                # hide=True,
+            )
+
+            logger.debug(
+                f"Token usage warning ({warning_reason}): {used}/{budget}; {remaining} remaining"
+            )
 
     except Exception as e:
         logger.exception(f"Error adding token usage warning: {e}")
@@ -147,13 +185,16 @@ This tool provides token budget awareness to the assistant across all LLM provid
 At the start of each conversation, the assistant receives information about the total token budget:
 <budget:token_budget>XXX</budget:token_budget>
 
-After each message is processed, the assistant receives an update on token usage:
+Token usage warnings are shown at meaningful thresholds to avoid noise:
+- When crossing percentage thresholds: 50%, 75%, 90%, 95%
+- Every 10,000 tokens used
 <system_warning>Token usage: X/Y; Z remaining</system_warning>
 
 This helps the assistant:
 - Understand how much context capacity remains
 - Plan responses to fit within the budget
 - Manage long-running conversations effectively
+- Avoid overwhelming the context with frequent status updates
 """.strip(),
     available=True,
     hooks={

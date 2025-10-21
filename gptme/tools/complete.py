@@ -46,11 +46,12 @@ def complete_hook(
     Args:
         manager: Conversation manager with log and workspace
     """
+    # Extract messages from manager
+    messages = manager.log.messages
+
     # Make function a generator for type checking
     if False:
         yield
-
-    messages = manager.log.messages
 
     logger.debug(f"complete_hook: checking {len(messages) if messages else 0} messages")
 
@@ -162,7 +163,7 @@ Make sure you have actually completely finished before calling this tool.
     available=True,
     hooks={
         "complete": (
-            HookType.GENERATION_PRE,
+            HookType.GENERATION_PRE.value,
             complete_hook,
             1000,
         ),  # High priority - prevent generation after complete
