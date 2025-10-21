@@ -35,7 +35,8 @@ def execute_complete(
 
 
 def complete_hook(
-    manager: "LogManager",
+    messages: list[Message],
+    **kwargs,
 ) -> Generator[Message | StopPropagation, None, None]:
     """
     Hook that detects complete tool call and prevents next generation.
@@ -44,11 +45,12 @@ def complete_hook(
     immediately after complete tool is called.
 
     Args:
-        manager: Conversation manager with log and workspace
-    """
-    # Extract messages from manager
-    messages = manager.log.messages
+        messages: List of conversation messages
+        **kwargs: Additional arguments (workspace, manager - currently unused)
 
+    Note: GENERATION_PRE hooks are called with messages as first positional arg,
+    not manager as the Protocol suggests. This is a known type safety issue.
+    """
     # Make function a generator for type checking
     if False:
         yield

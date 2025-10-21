@@ -136,11 +136,15 @@ class GenerationPreHook(Protocol):
     """Hook called before generating response.
 
     Args:
-        manager: Conversation manager with log and workspace
+        messages: List of conversation messages
+        workspace: Workspace directory path (optional)
+        manager: Conversation manager (optional, currently always None)
     """
 
     def __call__(
-        self, manager: "LogManager"
+        self,
+        messages: list[Message],
+        **kwargs: Any,
     ) -> Generator[Message | StopPropagation, None, None]: ...
 
 
