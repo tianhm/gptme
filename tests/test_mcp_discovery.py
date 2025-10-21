@@ -1,7 +1,8 @@
 """Tests for MCP discovery and management functionality."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from gptme.mcp.registry import (
     MCPRegistry,

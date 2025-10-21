@@ -4,6 +4,7 @@ from pathlib import Path
 
 import click
 from click_default_group import DefaultGroup
+
 from gptme.config import set_config_from_workspace
 
 from ..init import init, init_logging

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from gptme.lessons.matcher import MatchResult
 from gptme.lessons.parser import Lesson, LessonMetadata
 from gptme.message import Message
@@ -67,6 +68,7 @@ class TestAutoIncludeLessonsHook:
     def _create_manager(messages):
         """Helper to create a mock manager from a list of messages."""
         from unittest.mock import MagicMock
+
         from gptme.logmanager import Log
 
         manager = MagicMock()
@@ -89,6 +91,7 @@ class TestAutoIncludeLessonsHook:
     def test_hook_no_user_message(self, mock_config):
         """Test hook with no user messages."""
         from unittest.mock import MagicMock
+
         from gptme.logmanager import Log
 
         messages_list = [Message(role="system", content="System message")]

@@ -1,11 +1,12 @@
-from pathlib import Path
 import random
 import time
 from datetime import datetime
-from typing import cast, Any
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import tomlkit  # noqa
+
 from gptme.config import ChatConfig, MCPConfig
 from gptme.llm.models import ModelMeta, get_default_model
 from gptme.prompts import get_prompt

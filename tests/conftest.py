@@ -13,6 +13,7 @@ from contextlib import contextmanager
 
 import pytest
 import requests
+
 from gptme.config import get_config
 from gptme.init import init  # noqa
 from gptme.tools import clear_tools

@@ -12,8 +12,9 @@ from pathlib import Path
 
 import click
 import torch  # type: ignore
-from gptme.util.generate_name import is_generated_name
 from transformers import pipeline  # type: ignore
+
+from gptme.util.generate_name import is_generated_name
 
 logger = logging.getLogger(__name__)
 

@@ -38,9 +38,8 @@ from functools import lru_cache
 import requests
 
 from ..util import console
-from ..util.sound import is_audio_available, play_audio_data
+from ..util.sound import is_audio_available, play_audio_data, stop_audio
 from ..util.sound import set_volume as set_audio_volume
-from ..util.sound import stop_audio
 from .base import ToolSpec
 
 # Setup logging

@@ -1,7 +1,8 @@
 """Tests for complete tool and auto-reply hook."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from gptme.logmanager import Log
 from gptme.message import Message

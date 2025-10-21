@@ -174,7 +174,7 @@ class ExperimentRunner:
             baseline_results = self._generate_fake_results(num_examples)
         else:
             # Use existing evaluation infrastructure with rich results
-            from gptme.eval.dspy.prompt_optimizer import PromptOptimizer, PromptDataset
+            from gptme.eval.dspy.prompt_optimizer import PromptDataset, PromptOptimizer
 
             # Reuse the existing prompt evaluation system
             optimizer = PromptOptimizer(model=self.model)

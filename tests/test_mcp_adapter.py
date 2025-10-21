@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from gptme.config import Config, MCPConfig, MCPServerConfig
 from gptme.mcp.registry import MCPServerInfo
 from gptme.tools.mcp_adapter import (

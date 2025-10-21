@@ -3,6 +3,7 @@ import tempfile
 from collections.abc import Generator
 
 import pytest
+
 from gptme.tools.shell import (
     ShellSession,
     _shorten_stdout,

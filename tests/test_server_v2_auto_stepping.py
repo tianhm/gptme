@@ -6,6 +6,7 @@ import unittest.mock
 
 import pytest
 import requests
+
 from gptme.tools import ToolUse
 
 logger = logging.getLogger(__name__)

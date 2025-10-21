@@ -20,6 +20,7 @@ from pathlib import Path
 import flask
 from dotenv import load_dotenv
 from flask import request
+
 from gptme.config import ChatConfig, Config, set_config
 
 from ..dirs import get_logs_dir

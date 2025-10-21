@@ -9,8 +9,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from gptme.config import get_config
-from gptme.llm.models import get_default_model
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
@@ -25,6 +23,9 @@ from prompt_toolkit.styles import Style
 from pygments.lexer import RegexLexer
 from pygments.token import Name, Text
 from rich.console import Console
+
+from gptme.config import get_config
+from gptme.llm.models import get_default_model
 
 from ..dirs import get_pt_history_file
 

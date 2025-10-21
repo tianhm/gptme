@@ -10,6 +10,8 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
+import dspy
+
 from gptme.codeblock import Codeblock
 from gptme.eval.agents import GPTMe
 from gptme.eval.run import execute
@@ -18,8 +20,6 @@ from gptme.logmanager import LogManager
 from gptme.message import Message
 from gptme.tools import get_tool_for_langtag, init_tools
 from gptme.tools.base import ToolUse
-
-import dspy
 
 from .signatures import PromptEvaluationSignature
 

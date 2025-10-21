@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+
 from gptme.tools import (
     _discover_tools,
     get_available_tools,

@@ -5,10 +5,11 @@
 import argparse
 import logging
 
-from gptme.init import init, init_logging
-from gptme.util.auto_naming import generate_llm_name as generate_name
-from gptme.logmanager import LogManager
 from rich import print as rprint
+
+from gptme.init import init, init_logging
+from gptme.logmanager import LogManager
+from gptme.util.auto_naming import generate_llm_name as generate_name
 
 logger = logging.getLogger(__name__)
 

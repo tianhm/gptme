@@ -9,15 +9,15 @@ import logging
 import os
 from typing import Any
 
+import dspy
+from dspy import GEPA
+from dspy.teleprompt import BootstrapFewShot, MIPROv2
+
 from gptme.eval.agents import GPTMe
 from gptme.eval.run import execute
 from gptme.eval.suites.basic import tests
 from gptme.eval.types import EvalSpec
 from gptme.prompts import prompt_gptme
-
-import dspy
-from dspy import GEPA
-from dspy.teleprompt import BootstrapFewShot, MIPROv2
 
 from .metrics import (
     create_composite_metric,
@@ -296,10 +296,10 @@ class PromptOptimizer:
     def _evaluate_prompt(self, prompt: str, val_data: PromptDataset) -> dict[str, Any]:
         """Evaluate a prompt against validation data with individual metric breakdowns."""
         from .metrics import (
+            compose_metric_scores,
+            create_llm_judge_metric,
             create_task_success_metric,
             create_tool_usage_metric,
-            create_llm_judge_metric,
-            compose_metric_scores,
         )
 
         # Create individual metrics - no duplication, single source of truth

@@ -4,9 +4,9 @@ Simplified task system for prompt optimization using builders and templates.
 Replaces the massive repetitive task definitions with a more maintainable approach.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Callable
 
 from ..types import EvalSpec, Files, ResultContext
 

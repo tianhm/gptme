@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from gptme.lessons import LessonIndex, LessonMatcher, MatchContext
 from gptme.message import Message
 from gptme.tools.lessons import _extract_recent_tools, auto_include_lessons_hook
@@ -204,6 +205,7 @@ class TestDocsLessonsAutoInclude:
     def _create_manager(messages):
         """Helper to create a mock manager from a list of messages."""
         from unittest.mock import MagicMock
+
         from gptme.logmanager import Log
 
         manager = MagicMock()

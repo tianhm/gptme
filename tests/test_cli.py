@@ -4,11 +4,12 @@ import tempfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+from click.testing import CliRunner
+
 import gptme.cli
 import gptme.constants
 import gptme.tools.browser
-import pytest
-from click.testing import CliRunner
 from gptme.tools import ToolUse
 
 project_root = Path(__file__).parent.parent

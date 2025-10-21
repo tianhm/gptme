@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 import pytest
 
 # Check if DSPy is available and handle import errors gracefully
@@ -42,10 +41,10 @@ try:
     )
     from gptme.eval.dspy.tasks import (  # fmt: skip
         analyze_task_coverage,
+        create_advanced_tasks,
+        create_essential_tasks,
         get_prompt_optimization_tasks,
         get_tasks_by_focus_area,
-        create_essential_tasks,
-        create_advanced_tasks,
     )
 except (ImportError, AttributeError) as e:
     pytest.skip(f"DSPy imports failed: {e}", allow_module_level=True)

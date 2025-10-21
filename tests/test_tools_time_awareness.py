@@ -1,7 +1,8 @@
 """Tests for the time-awareness tool."""
 
-import pytest
 from datetime import datetime, timedelta
+
+import pytest
 
 from gptme.hooks import HookType, clear_hooks, get_hooks, trigger_hook
 from gptme.logmanager import Log

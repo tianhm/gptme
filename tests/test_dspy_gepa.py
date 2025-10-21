@@ -3,6 +3,7 @@
 import importlib.util
 
 import pytest
+
 from gptme.eval.types import EvalSpec
 
 if importlib.util.find_spec("dspy") is None:
@@ -10,6 +11,7 @@ if importlib.util.find_spec("dspy") is None:
 
 try:
     import dspy  # fmt: skip
+
     from gptme.eval.dspy.metrics import create_trajectory_feedback_metric  # fmt: skip
     from gptme.eval.dspy.prompt_optimizer import GptmeModule  # fmt: skip
 except (ImportError, ModuleNotFoundError):

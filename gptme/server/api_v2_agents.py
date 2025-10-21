@@ -15,6 +15,7 @@ from pathlib import Path
 
 import flask
 import tomlkit
+
 from gptme.config import AgentConfig, ChatConfig, ProjectConfig, get_project_config
 from gptme.prompts import get_prompt
 

@@ -16,18 +16,19 @@ import sys
 from pathlib import Path
 from typing import Literal
 
+from lxml import etree
+
 from gptme.chat import step as _step
 from gptme.init import init
 from gptme.logmanager import Log
 from gptme.message import Message
 from gptme.prompts import get_prompt
 from gptme.tools import get_tools
+from gptme.tools.precommit import run_precommit_checks
 from gptme.util.context import (
     gather_fresh_context,
     get_changed_files,
 )
-from gptme.tools.precommit import run_precommit_checks
-from lxml import etree
 
 # Set up logging
 logging.basicConfig(

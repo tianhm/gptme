@@ -5,6 +5,7 @@ Tests for auto-compacting functionality that handles conversations with massive 
 from datetime import datetime
 
 import pytest
+
 from gptme.llm.models import get_default_model, get_model
 from gptme.message import Message, len_tokens
 from gptme.tools.autocompact import (
@@ -97,6 +98,7 @@ def test_auto_compact_log_reduces_massive_tool_result():
 def test_create_tool_result_summary():
     """Test the _create_tool_result_summary helper function."""
     from datetime import datetime
+
     from gptme.message import Message
 
     content = "Ran command: `ls -la`\n/usr/bin/file1.txt\n/usr/bin/file2.txt\n..."
@@ -115,6 +117,7 @@ def test_create_tool_result_summary():
 def test_create_tool_result_summary_with_error():
     """Test summary generation for failed tool execution."""
     from datetime import datetime
+
     from gptme.message import Message
 
     content = (

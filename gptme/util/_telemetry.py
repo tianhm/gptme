@@ -75,10 +75,13 @@ try:
     from opentelemetry.sdk.metrics.export import (
         PeriodicExportingMetricReader,  # fmt: skip
     )
+    from opentelemetry.sdk.metrics.view import (  # fmt: skip
+        ExplicitBucketHistogramAggregation,
+        View,
+    )
     from opentelemetry.sdk.resources import Resource  # fmt: skip
     from opentelemetry.sdk.trace import TracerProvider  # fmt: skip
     from opentelemetry.sdk.trace.export import BatchSpanProcessor  # fmt: skip
-    from opentelemetry.sdk.metrics.view import View, ExplicitBucketHistogramAggregation  # fmt: skip
 
     TELEMETRY_AVAILABLE = True
 except ImportError as e:

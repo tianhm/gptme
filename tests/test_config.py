@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
+
 from gptme.config import (
     ChatConfig,
     Config,

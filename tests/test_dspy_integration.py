@@ -23,9 +23,11 @@ try:
         OptimizationExperiment,
         quick_prompt_test,
     )
-    from gptme.eval.dspy.prompt_optimizer import GptmeModule  # fmt: skip
-    from gptme.eval.dspy.prompt_optimizer import PromptDataset  # fmt: skip
-    from gptme.eval.dspy.prompt_optimizer import get_current_gptme_prompt  # fmt: skip
+    from gptme.eval.dspy.prompt_optimizer import (
+        GptmeModule,  # fmt: skip
+        PromptDataset,  # fmt: skip
+        get_current_gptme_prompt,  # fmt: skip
+    )
     from gptme.eval.dspy.tasks import (  # fmt: skip
         get_prompt_optimization_tasks,
         get_task_metadata,

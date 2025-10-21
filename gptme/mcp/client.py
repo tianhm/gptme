@@ -1,14 +1,14 @@
 import asyncio
 import logging
-from contextlib import AsyncExitStack
 import os
-
-from gptme.config import Config, get_config
+from contextlib import AsyncExitStack
 
 import mcp.types as types  # Import all types
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
+
+from gptme.config import Config, get_config
 
 logger = logging.getLogger(__name__)
 

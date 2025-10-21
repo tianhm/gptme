@@ -7,6 +7,7 @@ flask = pytest.importorskip(
 )
 
 from flask.testing import FlaskClient  # fmt: skip
+
 from gptme.llm.models import get_default_model, get_recommended_model  # fmt: skip
 
 
