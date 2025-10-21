@@ -188,7 +188,10 @@ def handle_precommit_command(ctx: CommandContext) -> Generator[Message, None, No
 
 
 def run_precommit_on_file(
-    path: Path, content: str, created: bool = False
+    path: Path,
+    content: str,
+    created: bool = False,
+    **kwargs,
 ) -> Generator[Message, None, None]:
     """Hook function that runs pre-commit on saved files.
 
