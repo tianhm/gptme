@@ -59,6 +59,11 @@ export GPTME_LESSONS_MAX_INCLUDED=3
 
 Lessons are automatically indexed on first use in a conversation.
 
+**See also**:
+- [EXAMPLES.md](EXAMPLES.md) - Real-world lesson examples and patterns
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Guidelines for contributing lessons
+- [TESTING.md](TESTING.md) - Testing and validation across platforms
+
 ## Cursor Rules Integration
 
 gptme supports integration with Cursor editor's `.cursorrules` files, enabling you to use project-specific coding standards and guidelines from Cursor in your gptme workflows.
@@ -201,4 +206,4 @@ gptme --verbose
 
 - [Cursor Rules Documentation](https://cursor.com/docs/context/rules)
 - [gptme-contrib Repository](https://github.com/gptme/gptme-contrib)
-- [Lesson System Architecture](https://github.com/gptme/gptme/blob/master/lessons/README.md)
+- [Lesson System Architecture](https://github.com/gptme/gptme/blob/master/docs/lessons/README.md)
