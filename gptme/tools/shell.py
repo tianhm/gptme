@@ -1065,7 +1065,25 @@ def split_commands(script: str) -> list[str]:
     # Preprocess script to handle quoted heredoc delimiters that bashlex can't parse
     processed_script = _preprocess_quoted_heredocs(script)
 
-    parts = bashlex.parse(processed_script)
+    try:
+        parts = bashlex.parse(processed_script)
+    except Exception as e:
+        # Fall back to treating script as single command if bashlex can't parse it
+        # bashlex (a Python port of GNU bash parser) cannot handle bash reserved words
+        # like 'time', 'coproc', etc. These are special keywords in bash that have
+        # different parsing rules. When bashlex encounters them, it raises an exception:
+        # "type = {time command}, token = {time}"
+        #
+        # We fall back to treating the entire script as a single command, which is
+        # correct behavior since reserved words typically apply to entire command pipelines.
+        # This preserves the user's exact command and allows bash to handle the reserved
+        # word correctly during execution.
+        logger.warning(
+            f"bashlex cannot parse bash reserved words (e.g., 'time'). "
+            f"Treating script as single command. Error: {e}"
+        )
+        return [script]
+
     commands = []
     for part in parts:
         if part.kind == "command":
