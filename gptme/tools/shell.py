@@ -132,6 +132,10 @@ candidates = (
     "pandoc",
     "git",
     "docker",
+    "rg",
+    "ag",
+    "ast-grep",
+    "hyperfine",
 )
 
 
