@@ -268,13 +268,7 @@ def run_precommit_on_file(
 
 def check_precommit_available() -> bool:
     """Check if pre-commit is available."""
-    try:
-        result = subprocess.run(
-            ["pre-commit", "--version"], capture_output=True, timeout=5
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
+    return shutil.which("pre-commit") is not None
 
 
 def run_full_precommit_checks(
