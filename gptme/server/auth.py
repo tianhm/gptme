@@ -2,6 +2,7 @@
 Authentication middleware for gptme-server.
 
 Provides bearer token authentication for API access.
+Authentication is only required when binding to network interfaces.
 """
 
 import logging
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 # Token storage (in-memory, generated on startup)
 _server_token: str | None = None
 
+# Auth state (disabled for local-only binding)
+_auth_enabled: bool = True
+
 
 def generate_token() -> str:
     """Generate a cryptographically secure random token.
@@ -26,12 +30,27 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def is_local_host(host: str) -> bool:
+    """Check if host is a local-only address.
+
+    Args:
+        host: The host address to check.
+
+    Returns:
+        True if host is localhost or 127.0.0.1, False otherwise.
+    """
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
 def get_server_token() -> str | None:
     """Get the server authentication token from environment.
 
+    If GPTME_SERVER_TOKEN is not set, auto-generates a secure token
+    for the server session with a warning.
+
     Returns:
         The current server token from GPTME_SERVER_TOKEN env var,
-        or None if not configured.
+        or an auto-generated token if not configured.
     """
     global _server_token
     if _server_token is None:
@@ -40,7 +59,23 @@ def get_server_token() -> str | None:
         if env_token:
             _server_token = env_token
             logger.info("Using token from GPTME_SERVER_TOKEN environment variable")
-        # No auto-generation - return None if not configured
+        else:
+            # Auto-generate secure token if not configured
+            _server_token = generate_token()
+            logger.warning("=" * 60)
+            logger.warning("⚠️  AUTO-GENERATED TOKEN (Security Notice)")
+            logger.warning("=" * 60)
+            logger.warning(f"Token: {_server_token}")
+            logger.warning("")
+            logger.warning(
+                "GPTME_SERVER_TOKEN was not set, so a random token was generated."
+            )
+            logger.warning("This token is only valid for this server session.")
+            logger.warning("")
+            logger.warning("For persistent authentication, set GPTME_SERVER_TOKEN:")
+            logger.warning("  export GPTME_SERVER_TOKEN=your-secret-token")
+            logger.warning("  gptme-server serve")
+            logger.warning("=" * 60)
     return _server_token
 
 
@@ -58,27 +93,43 @@ def set_server_token(token: str) -> None:
 def require_auth(f):
     """Decorator to require bearer token authentication.
 
-    Usage:
-        @api.route("/api/protected")
-        @require_auth
-        def protected_endpoint():
-            return {"data": "protected"}
+    Authentication is only required when binding to network interfaces.
+    When binding to localhost (127.0.0.1), authentication is disabled
+    for seamless local development.
+
+    Security Warning:
+        Query parameter authentication (via ?token=xxx) is supported but
+        LESS SECURE than Authorization headers because tokens appear in:
+        - Server access logs
+        - Browser history
+        - Referrer headers
+        - Proxy server logs
+
+        Only use query parameters for SSE connections where custom headers
+        aren't supported. For all other requests, use Authorization headers.
+
+        Future: Implement cookie-based authentication for SSE to eliminate this risk.
 
     Returns:
         Decorated function that validates bearer token before execution.
 
     Raises:
-        401 Unauthorized: Missing or invalid authentication credentials.
+        401 Unauthorized: Missing or invalid authentication credentials
+            (only when auth is enabled for network binding).
     """
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Skip authentication if no token is configured
-        server_token = get_server_token()
-        if server_token is None:
+        # Skip authentication for local-only binding
+        if not _auth_enabled:
             return f(*args, **kwargs)
 
-        # Token is configured, require authentication
+        # Authentication is required for network binding
+        server_token = get_server_token()
+        if not server_token:
+            logger.error("Server token not available but auth is enabled")
+            return jsonify({"error": "Authentication system error"}), 500
+
         # Check Authorization header first (preferred method)
         auth_header = request.headers.get("Authorization")
         token = None
@@ -93,9 +144,13 @@ def require_auth(f):
                 logger.warning("Invalid Authorization header format")
                 return jsonify({"error": "Invalid authorization header format"}), 401
         else:
-            # Fallback to query parameter for SSE/EventSource compatibility
-            # (browsers' EventSource API doesn't support custom headers)
+            # ⚠️  SECURITY WARNING: Query parameter fallback for SSE/EventSource
+            # This is LESS SECURE as tokens appear in URLs and logs
+            # Only use for SSE connections where Authorization headers aren't supported
+            # TODO: Replace with cookie-based authentication for SSE
             token = request.args.get("token")
+            if token:
+                logger.debug("Using query parameter authentication (SSE fallback)")
 
         if not token:
             logger.warning("Missing authentication credentials")
@@ -110,36 +165,54 @@ def require_auth(f):
     return decorated_function
 
 
-def init_auth(display: bool = True) -> str | None:
+def init_auth(host: str = "127.0.0.1", display: bool = True) -> str | None:
     """Initialize authentication system.
 
     Args:
+        host: The host address the server is binding to.
         display: Whether to display the token in logs (default: True).
 
     Returns:
-        The server token if configured, None otherwise.
+        The server token (only generated when binding to network,
+        None for local-only binding).
     """
+    global _auth_enabled
+
+    # Disable auth for local-only binding
+    if is_local_host(host):
+        _auth_enabled = False
+        if display:
+            logger.info("=" * 60)
+            logger.info("gptme-server (Local Mode)")
+            logger.info("=" * 60)
+            logger.info(f"Binding to: {host} (local-only)")
+            logger.info("Authentication: DISABLED")
+            logger.info("")
+            logger.info("This is safe for local development.")
+            logger.info("For network access, use --host 0.0.0.0 (enables auth)")
+            logger.info("=" * 60)
+        return None
+
+    # Enable auth for network binding
+    _auth_enabled = True
     token = get_server_token()
 
-    if display:
-        if token:
-            logger.info("=" * 60)
-            logger.info("gptme-server Authentication")
-            logger.info("=" * 60)
+    if display and token:
+        # Check if token is from environment or auto-generated
+        env_token = os.environ.get("GPTME_SERVER_TOKEN")
+        logger.info("=" * 60)
+        logger.info("gptme-server Authentication")
+        logger.info("=" * 60)
+        if env_token:
             logger.info(f"Token: {token}")
             logger.info("")
-            logger.info("Authentication is ENABLED")
+            logger.info("Authentication is ENABLED (token from environment)")
             logger.info("Change token with: GPTME_SERVER_TOKEN=xxx gptme-server serve")
-            logger.info("Or retrieve current token: gptme-server token")
-            logger.info("=" * 60)
         else:
-            logger.info("=" * 60)
-            logger.info("gptme-server Authentication")
-            logger.info("=" * 60)
-            logger.info("Authentication is DISABLED (no token configured)")
-            logger.info("")
-            logger.info("To enable authentication for local network exposure:")
-            logger.info("  GPTME_SERVER_TOKEN=your-secret-token gptme-server serve")
-            logger.info("=" * 60)
+            logger.info("Authentication is ENABLED (auto-generated token)")
+            logger.info("See warning above for the generated token.")
+        logger.info("")
+        logger.info("Retrieve current token: gptme-server token")
+        logger.info("=" * 60)
 
     return token

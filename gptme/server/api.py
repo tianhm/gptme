@@ -468,7 +468,7 @@ def favicon():
     return flask.send_from_directory(media_path, "logo.png")
 
 
-def create_app(cors_origin: str | None = None) -> flask.Flask:
+def create_app(cors_origin: str | None = None, host: str = "127.0.0.1") -> flask.Flask:
     """Create the Flask app.
 
     Args:
@@ -505,5 +505,10 @@ def create_app(cors_origin: str | None = None) -> flask.Flask:
                 }
             },
         )
+
+    # Initialize auth (defaults to local-only, no auth required)
+    from .auth import init_auth  # fmt: skip
+
+    init_auth(host=host, display=False)
 
     return app
