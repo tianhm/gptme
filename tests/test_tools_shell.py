@@ -272,6 +272,100 @@ def test_split_commands_bash_reserved_words():
     assert len(commands) == 1
     assert commands[0] == script_time_redirect
 
+    # Test 'time' with background process
+    script_time_bg = "time sleep 1 &"
+    commands = split_commands(script_time_bg)
+    assert len(commands) == 1
+    assert commands[0] == script_time_bg
+
+    # Test 'coproc' reserved word (another reserved word bashlex can't handle)
+    script_coproc = "coproc cat"
+    commands = split_commands(script_coproc)
+    assert len(commands) == 1
+    assert commands[0] == script_coproc
+
+
+def test_split_commands_bash_reserved_words_with_shell():
+    """Test that reserved word commands actually work when executed in the shell."""
+    shell = ShellSession()
+    try:
+        # Test that 'time' command actually executes correctly
+        ret, out, err = shell.run("time echo 'test'", output=False, timeout=5.0)
+        assert ret == 0
+        assert "test" in out
+        # Note: 'time' output format varies by system, but command should succeed
+    finally:
+        shell.close()
+
+
+def test_split_commands_normal_commands_still_split():
+    """Test that normal commands are still properly split after our changes.
+
+    This ensures our exception handling for reserved words doesn't break
+    normal command splitting.
+    """
+    # Test multiple commands separated by newlines
+    script_multi = """
+echo "first"
+echo "second"
+echo "third"
+"""
+    commands = split_commands(script_multi)
+    assert len(commands) == 3
+    assert any("first" in cmd for cmd in commands)
+    assert any("second" in cmd for cmd in commands)
+    assert any("third" in cmd for cmd in commands)
+
+    # Test commands separated by semicolons (bashlex treats as single "list" command)
+    script_semi = "echo 'a'; echo 'b'; echo 'c'"
+    commands = split_commands(script_semi)
+    assert len(commands) == 1
+    assert commands[0] == script_semi
+
+    # Test pipeline (should remain as single command)
+    script_pipe = "ls -la | grep test | wc -l"
+    commands = split_commands(script_pipe)
+    assert len(commands) == 1
+    assert commands[0] == script_pipe
+
+
+def test_split_commands_syntax_errors_raise():
+    """Test that actual syntax errors raise ValueError instead of falling back.
+
+    This prevents commands with syntax errors from hanging/timing out.
+    """
+    import pytest
+
+    # Test unclosed quote - should raise ValueError
+    with pytest.raises(ValueError, match="Shell syntax error"):
+        split_commands("echo 'unclosed")
+
+    # Test unclosed double quote
+    with pytest.raises(ValueError, match="Shell syntax error"):
+        split_commands('echo "unclosed')
+
+    # Test invalid syntax with backtick
+    with pytest.raises(ValueError, match="Shell syntax error"):
+        split_commands("echo `unclosed")
+
+
+def test_split_commands_mixed_reserved_and_normal():
+    """Test script with both reserved words and normal commands.
+
+    When a script contains a reserved word, the entire script should be
+    treated as a single command since bashlex can't parse any of it.
+    """
+    # Script with 'time' and other commands
+    script_mixed = """
+time echo "timed"
+echo "normal"
+"""
+    commands = split_commands(script_mixed)
+    # The entire script is treated as one command due to 'time'
+    assert len(commands) == 1
+    assert "time echo" in commands[0]
+    assert 'echo "normal"' in commands[0]
+
 
 def test_function(shell):
     script = """
