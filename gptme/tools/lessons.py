@@ -28,6 +28,19 @@ from .base import ToolSpec
 if TYPE_CHECKING:
     from ..logmanager import LogManager
 
+# Try to import ACE integration for hybrid lesson matching
+try:
+    from ace.embedder import LessonEmbedder  # type: ignore[import-not-found]
+    from ace.gptme_integration import (  # type: ignore[import-not-found]
+        GptmeHybridMatcher,
+    )
+
+    ACE_AVAILABLE = True
+except ImportError:
+    ACE_AVAILABLE = False
+    GptmeHybridMatcher = None  # type: ignore
+    LessonEmbedder = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # Thread-local storage for lesson index
@@ -154,6 +167,9 @@ def auto_include_lessons_hook(
         logger.debug("Auto-inclusion disabled")
         return
 
+    # Get hybrid matching configuration
+    use_hybrid = config.get_env_bool("GPTME_LESSONS_USE_HYBRID", False)
+
     try:
         max_lessons = int(config.get_env("GPTME_LESSONS_MAX_INCLUDED") or "5")
     except (ValueError, TypeError):
@@ -182,8 +198,52 @@ def auto_include_lessons_hook(
     # Get lesson index and find matching lessons
     try:
         index = _get_lesson_index()
-        matcher = LessonMatcher()
-        match_results = matcher.match(index.lessons, context)
+
+        # Choose matcher based on configuration
+        if use_hybrid and ACE_AVAILABLE:
+            logger.info("Using ACE hybrid lesson matching")
+            # Initialize embedder with lesson directories from LessonIndex
+            from pathlib import Path
+
+            lesson_dirs = index.lesson_dirs
+
+            # Use first lesson directory for embedder (typically workspace lessons)
+            # Embeddings stored in .gptme/embeddings/lessons/
+            embeddings_dir = Path.cwd() / ".gptme" / "embeddings" / "lessons"
+
+            try:
+                embedder = LessonEmbedder(
+                    lessons_dir=lesson_dirs[0]
+                    if lesson_dirs
+                    else Path.cwd() / "lessons",
+                    embeddings_dir=embeddings_dir,
+                )
+                logger.info(
+                    f"Initialized ACE embedder with lessons_dir={lesson_dirs[0] if lesson_dirs else 'lessons'}"
+                )
+                matcher = GptmeHybridMatcher(embedder=embedder)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to initialize embedder: {e}. Falling back to keyword matching."
+                )
+                matcher = GptmeHybridMatcher(embedder=None)
+        else:
+            if use_hybrid and not ACE_AVAILABLE:
+                logger.warning(
+                    "Hybrid matching requested but ACE not available, falling back to keyword-only"
+                )
+            logger.debug("Using keyword-only lesson matcher")
+            matcher = LessonMatcher()
+
+        # Generate session_id from chat_id for tracking (only for hybrid matcher)
+        session_id = manager.chat_id if hasattr(manager, "chat_id") else None
+
+        # Call matcher with appropriate parameters
+        # Only GptmeHybridMatcher supports session_id parameter
+        if ACE_AVAILABLE and isinstance(matcher, GptmeHybridMatcher):
+            match_results = matcher.match(index.lessons, context, session_id=session_id)
+        else:
+            match_results = matcher.match(index.lessons, context)
 
         # Filter out already included lessons (MatchResult has .lesson attribute)
         new_matches = [
@@ -192,7 +252,7 @@ def auto_include_lessons_hook(
             if str(match.lesson.path) not in included_lessons
         ]
 
-        # Limit number of lessons
+        # Limit number of lessons (matcher may already limit, but ensure it)
         if len(new_matches) > max_lessons:
             logger.debug(f"Limiting lessons from {len(new_matches)} to {max_lessons}")
             new_matches = new_matches[:max_lessons]
