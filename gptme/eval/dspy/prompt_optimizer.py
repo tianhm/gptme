@@ -128,14 +128,29 @@ class GptmeModule(dspy.Module):
                 system_prompt=self.base_system_prompt,
             )
 
-            eval_result = execute(
-                test=eval_spec,
-                agent=agent,
-                timeout=30,
-                parallel=False,
-            )
+            # Fix #130: Export ANTHROPIC_API_KEY for LiteLLM subprocess calls
+            # Get API key from gptme config and ensure it's in environment
+            import os
 
-            # Extract messages from the agent's log if available
+            from gptme.config import get_config
+
+            config = get_config()
+            api_key = config.get_env_required("ANTHROPIC_API_KEY")
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+
+            # Fix #130: Enable output suppression during GEPA optimization
+            # This prevents verbose gptme trajectories from cluttering logs
+            os.environ["GPTME_EVAL_SUPPRESS_OUTPUT"] = "true"
+            try:
+                eval_result = execute(
+                    test=eval_spec,
+                    agent=agent,
+                    timeout=30,
+                    parallel=False,
+                )
+            finally:
+                # Restore normal output after execution (guaranteed cleanup)
+                os.environ.pop("GPTME_EVAL_SUPPRESS_OUTPUT", None)
             messages = []
             if hasattr(agent, "log_dir") and agent.log_dir:
                 try:

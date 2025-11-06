@@ -332,9 +332,24 @@ def act_process(
     os.setpgrp()
     pgrp = os.getpgrp()
 
-    # redirect stdout and stderr to streams
-    stdout = StreamTee(sys.stdout, keep=not parallel)
-    stderr = StreamTee(sys.stderr, keep=not parallel)
+    # Fix #130: Suppress verbose gptme output during optimization
+    # Only keep output if not in parallel mode (i.e., interactive testing)
+    # During GEPA optimization, suppress full trajectories
+    suppress_output = (
+        os.environ.get("GPTME_EVAL_SUPPRESS_OUTPUT", "false").lower() == "true"
+    )
+    if suppress_output:
+        # Redirect to null during optimization
+        import io
+
+        stdout = StreamTee(io.StringIO(), keep=False)
+        stderr = StreamTee(io.StringIO(), keep=False)
+        subprocess_logger.info("Output suppression enabled for GEPA optimization")
+    else:
+        # Normal behavior for interactive testing
+        stdout = StreamTee(sys.stdout, keep=not parallel)
+        stderr = StreamTee(sys.stderr, keep=not parallel)
+
     sys.stdout, sys.stderr = stdout, stderr  # type: ignore
 
     start = time.time()
