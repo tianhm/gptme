@@ -34,8 +34,11 @@ class HybridConfig:
     tool_bonus: float = 0.20  # Additional bonus for tool matches
 
     # Retrieval parameters
-    top_k: int = 20  # Candidate filtering
-    top_n: int = 5  # Final selection
+    top_k: int = 20  # Candidate filtering (Stage 1)
+
+    # Dynamic top-K selection (Phase 5.5)
+    min_score_threshold: float = 0.6  # Minimum score for inclusion
+    max_lessons: int = 10  # Maximum lessons to prevent context explosion
 
     # Recency decay
     recency_decay_days: int = 30  # Half-life for recency score
@@ -96,12 +99,26 @@ class HybridLessonMatcher(LessonMatcher):
         # Stage 2: Hybrid scoring on candidates
         results = self._score_candidates(candidates, context)
 
-        # Filter by threshold
-        results = [r for r in results if r.score >= threshold]
-
-        # Sort and limit
+        # Sort by score (descending)
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[: self.config.top_n]
+
+        # Phase 5.5: Dynamic top-K selection
+        # Strict threshold filtering - quality over quantity
+        threshold = max(threshold, self.config.min_score_threshold)
+        filtered = [r for r in results if r.score >= threshold]
+
+        # No safeguard for minimum lessons - preventing cumulative degradation
+        # Lessons are fetched EVERY TURN (not per-session), so forcing min_lessons
+        # would accumulate sub-threshold lessons across turns:
+        #   Turn 1: Include [0.65, 0.55] (1 good + 1 marginal)
+        #   Turn 2: Include [0.70, 0.58] (1 good + 1 marginal)
+        #   Turn N: Total 20 good + 20 marginal = 40 lessons
+        #
+        # Better: Trust the threshold. If 0-1 lessons match, that's fine.
+        # Quality > quantity. Future turns will provide more relevant lessons.
+
+        # Cap at max_lessons to prevent context explosion
+        return filtered[: self.config.max_lessons]
 
     def _get_candidates(
         self, lessons: list[Lesson], context: MatchContext
