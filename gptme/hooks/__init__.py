@@ -7,7 +7,7 @@ from enum import Enum
 from time import time
 from typing import Any, Literal, overload
 
-from .message import Message
+from ..message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from .logmanager import Log, LogManager
-    from .tools.base import ToolUse
+    from ..logmanager import Log, LogManager
+    from ..tools.base import ToolUse
 
 
 # Protocol classes for different hook signatures
@@ -554,3 +554,11 @@ def clear_hooks(hook_type: HookType | None = None) -> None:
         _registry.hooks[hook_type] = []
     else:
         _registry.hooks.clear()
+
+
+def init_hooks() -> None:
+    """Initialize and register all default hooks."""
+    # Import hook modules to auto-register them
+    from . import markdown_validation
+
+    markdown_validation.register()

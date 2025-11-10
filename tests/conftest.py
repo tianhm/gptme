@@ -113,7 +113,7 @@ def temp_file():
 
 @pytest.fixture(autouse=True)
 def init_():
-    init(None, interactive=False, tool_allowlist=None)
+    init(None, interactive=False, tool_allowlist=None, tool_format="markdown")
 
 
 @pytest.fixture
