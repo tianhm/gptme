@@ -149,6 +149,7 @@ telemetry = [
     "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-openai",
 ]
 dspy = ["dspy", "sentence-transformers"]
+eval = ["dspy", "sentence-transformers"]
 all = [
     # server
     "flask", "flask-cors", "pydantic",
