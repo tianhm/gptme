@@ -826,8 +826,9 @@ def check_with_shellcheck(cmd: str) -> tuple[bool, bool, str]:
 
     # Default excluded codes
     # SC2002: Useless cat. Consider 'cmd < file | ..' or 'cmd file | ..' instead
+    # SC2016: Expressions don't expand in single quotes, use double quotes for that.
     # SC2164: Use 'cd ... || exit' in case cd fails (too noisy for interactive commands)
-    default_excludes = ["SC2002", "SC2164"]
+    default_excludes = ["SC2002", "SC2016", "SC2164"]
 
     # Get custom excludes from environment variable
     custom_excludes = os.environ.get("GPTME_SHELLCHECK_EXCLUDE", "").split(",")
