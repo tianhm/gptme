@@ -8,9 +8,20 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from time import time
-from typing import Any, Literal, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    Protocol,
+    overload,
+)
 
 from ..message import Message
+from ..plugins import register_plugin_hooks
+
+if TYPE_CHECKING:
+    from ..logmanager import Log, LogManager  # fmt: skip
+    from ..tools.base import ToolUse  # fmt: skip
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +68,6 @@ class HookType(str, Enum):
 
     # Loop control
     LOOP_CONTINUE = "loop_continue"  # Decide whether/how to continue the chat loop
-
-
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:
-    from ..logmanager import Log, LogManager
-    from ..tools.base import ToolUse
 
 
 # Protocol classes for different hook signatures
@@ -595,7 +599,7 @@ def init_hooks(allowlist: list[str] | None = None) -> None:
     If allowlist is not provided, it will be loaded from the environment variable
     HOOK_ALLOWLIST or the chat config (if set).
     """
-    from ..config import get_config
+    from ..config import get_config  # fmt: skip
 
     config = get_config()
 
@@ -622,6 +626,9 @@ def init_hooks(allowlist: list[str] | None = None) -> None:
         "token_awareness": lambda: __import__(
             "gptme.hooks.token_awareness", fromlist=["register"]
         ).register(),
+        "active_context": lambda: __import__(
+            "gptme.hooks.active_context", fromlist=["register"]
+        ).register(),
         "test": lambda: __import__(
             "gptme.hooks.test", fromlist=["register_test_hooks"]
         ).register_test_hooks(),
@@ -646,7 +653,6 @@ def init_hooks(allowlist: list[str] | None = None) -> None:
             logger.warning(f"Hook '{hook_name}' not found")
 
     # Register plugin hooks
-    from ..plugins import register_plugin_hooks
 
     if config.project and config.project.plugins and config.project.plugins.paths:
         register_plugin_hooks(

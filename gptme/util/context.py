@@ -30,15 +30,34 @@ logger = logging.getLogger(__name__)
 def use_fresh_context() -> bool:
     """Check if fresh context mode is enabled.
 
-    Fresh context mode (GPTME_FRESH=true) ensures that file contents shown in the context
+    Fresh context mode ensures that file contents shown in the context
     are always up to date by:
     - Adding a context message before each user message
     - Including current git status
     - Including contents of recently modified files
     - Marking outdated file contents in the conversation history
+
+    Configuration:
+        [context]
+        enabled = true  # Opt-in (default: false)
+
+    Backward compatibility:
+        - Checks GPTME_FRESH env var if [context] config not available
+        - Defaults to False (opt-in) if neither is set
     """
-    flag: str = get_config().get_env("GPTME_FRESH", "")  # type: ignore
-    return flag.lower() in ("1", "true", "yes")
+    config = get_config()
+
+    # Check new unified config first
+    if config.project and config.project.context:
+        return config.project.context.enabled
+
+    # Backward compatibility: check GPTME_FRESH env var
+    flag: str | None = config.get_env("GPTME_FRESH")
+    if flag is not None:
+        return flag.lower() in ("1", "true", "yes")
+
+    # Default: opt-in (false)
+    return False
 
 
 def file_to_display_path(f: Path, workspace: Path | None = None) -> Path:
@@ -86,21 +105,30 @@ def textfile_as_codeblock(path: Path) -> str | None:
     return None
 
 
-def append_file_content(
+def embed_attached_file_content(
     msg: Message, workspace: Path | None = None, check_modified=False
 ) -> Message:
-    """Append attached text files to a message."""
+    """Embed attached file contents inline in a message."""
     files = [file_to_display_path(f, workspace).expanduser() for f in msg.files]
     files_text = {}
     for f in files:
-        if not check_modified or f.stat().st_mtime <= datetime.timestamp(msg.timestamp):
+        try:
+            stat = f.stat()
+        except FileNotFoundError:
+            stat = None
+        if not check_modified or (
+            stat and stat.st_mtime <= datetime.timestamp(msg.timestamp)
+        ):
             content = textfile_as_codeblock(f)
             if not content:
                 # Non-text file, skip
                 continue
             files_text[f] = content
         else:
-            files_text[f] = md_codeblock(f, "<file was modified after message>")
+            if not stat:
+                files_text[f] = md_codeblock(f, "<file not found, may have been moved>")
+            else:
+                files_text[f] = md_codeblock(f, "<file was modified after message>")
     return replace(
         msg,
         content=msg.content + "\n\n".join(files_text.values()),
@@ -209,61 +237,7 @@ def get_mentioned_files(msgs: list[Message], workspace: Path | None) -> list[Pat
     return sorted(files.keys(), key=file_score, reverse=True)
 
 
-def gather_fresh_context(
-    msgs: list[Message],
-    workspace: Path | None,
-    git=True,
-    precommit=False,
-) -> Message:
-    """Gather fresh context from files and git status."""
-
-    files = get_mentioned_files(msgs, workspace)
-    sections = []
-
-    # Add pre-commit check results if there are issues
-    if precommit:
-        from ..tools.precommit import run_precommit_checks
-
-        success, precommit_output = run_precommit_checks()
-        if not success and precommit_output:
-            sections.append(precommit_output)
-
-    if git and (git_status_output := git_status()):
-        sections.append(git_status_output)
-
-    # if pr_status_output := gh_pr_status():
-    #     sections.append(pr_status_output)
-
-    # Read contents of most relevant files
-    for f in files[:10]:  # Limit to top 10 files
-        if f.exists():
-            try:
-                with open(f) as file:
-                    content = file.read()
-            except UnicodeDecodeError:
-                logger.debug(f"Skipping binary file: {f}")
-                content = "<binary file>"
-            display_path = file_to_display_path(f, workspace)
-            logger.info(f"Read file: {display_path}")
-            sections.append(md_codeblock(display_path, content))
-        else:
-            logger.info(f"File not found: {f}")
-
-    cwd = Path.cwd()
-    return Message(
-        "system",
-        f"""# Context
-Working directory: {cwd}
-
-This context message is always inserted before the last user message.
-It contains the current state of relevant files and git status at the time of processing.
-The file contents shown in this context message are the source of truth.
-Any file contents shown elsewhere in the conversation history may be outdated.
-This context message will be removed and replaced with fresh context on every new message.
-
-"""
-        + "\n\n".join(sections),
-    )
+# gather_fresh_context removal: Logic moved to gptme.hooks.context
 
 
 def get_changed_files() -> list[Path]:
@@ -285,36 +259,19 @@ def enrich_messages_with_context(
     msgs: list[Message], workspace: Path | None = None
 ) -> list[Message]:
     """
-    Enrich messages with context.
-    Embeds file contents where they occur in the conversation.
+    Enrich messages with context by embedding attached file contents.
 
-    If GPTME_FRESH enabled, a context message will be added that includes:
-    - git status
-    - contents of files modified after their message timestamp
+    Note: Fresh context (git status, modified files) and RAG enhancement are now
+    added at generation time via GENERATION_PRE hooks, not here.
     """
-    from ..tools.rag import rag_enhance_messages  # fmt: skip
-
     # Make a copy of messages to avoid modifying the original
     msgs = copy(msgs)
 
-    # First enhance messages with context, if gptme-rag is available
-    msgs = rag_enhance_messages(msgs, workspace)
-
+    # Embed attached file contents inline
     msgs = [
-        append_file_content(msg, workspace, check_modified=use_fresh_context())
+        embed_attached_file_content(msg, workspace, check_modified=use_fresh_context())
         for msg in msgs
     ]
-    if use_fresh_context():
-        # insert right before the last user message
-        fresh_content_msg = gather_fresh_context(msgs, workspace)
-        logger.info(fresh_content_msg.content)
-        last_user_idx = next(
-            (i for i, msg in enumerate(msgs[::-1]) if msg.role == "user"), None
-        )
-        msgs.insert(-last_user_idx if last_user_idx else -1, fresh_content_msg)
-    else:
-        # Legacy mode: file contents already included at the time of message creation
-        pass
 
     return msgs
 

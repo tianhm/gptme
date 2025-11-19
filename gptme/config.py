@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 from contextvars import ContextVar
@@ -17,6 +18,9 @@ from tomlkit.container import Container
 from tomlkit.exceptions import TOMLKitError
 from typing_extensions import Self
 
+from .context.config import ContextConfig
+from .context.selector.config import ContextSelectorConfig
+from .tools import get_toolchain
 from .util import console, path_with_tilde
 
 if TYPE_CHECKING:
@@ -166,6 +170,10 @@ class ProjectConfig:
     rag: RagConfig = field(default_factory=RagConfig)
     agent: AgentConfig | None = None
     lessons: LessonsConfig = field(default_factory=LessonsConfig)
+
+    # Unified context configuration (replaces GPTME_FRESH + context_selector)
+    context: ContextConfig = field(default_factory=ContextConfig)
+
     plugins: PluginsConfig = field(default_factory=PluginsConfig)
 
     env: dict[str, str] = field(default_factory=dict)
@@ -182,6 +190,24 @@ class ProjectConfig:
             AgentConfig(**config_data.pop("agent")) if "agent" in config_data else None
         )
         lessons = LessonsConfig(dirs=config_data.pop("lessons", {}).get("dirs", []))
+
+        # Handle unified context config (replaces GPTME_FRESH + context_selector)
+        # Support both old and new config formats for backward compatibility
+        context_data = config_data.pop("context", {})
+        context_selector_data = config_data.pop("context_selector", {})
+
+        # If new [context] section exists, use it
+        if context_data:
+            context = ContextConfig.from_dict(context_data)
+        # Otherwise, migrate old config format
+        elif context_selector_data:
+            # Create ContextConfig with selector from old config
+            selector = ContextSelectorConfig.from_dict(context_selector_data)
+            context = ContextConfig(enabled=False, selector=selector)
+        else:
+            # No config, use defaults
+            context = ContextConfig()
+
         plugins_data = config_data.pop("plugins", {})
         plugins = PluginsConfig(
             paths=plugins_data.get("paths", []),
@@ -203,6 +229,7 @@ class ProjectConfig:
             rag=rag,
             agent=agent,
             lessons=lessons,
+            context=context,
             plugins=plugins,
             env=env,
             mcp=mcp,
@@ -331,7 +358,6 @@ def _merge_config_data(main_config: dict, local_config: dict) -> dict:
     For MCP servers, merge by name - local server env vars are merged into main server config.
     For other sections, local config extends/overrides main config.
     """
-    import copy
 
     merged = copy.deepcopy(main_config)
 
@@ -791,7 +817,7 @@ def reload_config() -> Config:
         _config_var.set(config)
 
     # Clear tools cache so MCP tools are recreated with new config
-    from gptme.tools import clear_tools
+    from gptme.tools import clear_tools  # fmt: skip
 
     clear_tools()
 
@@ -814,7 +840,6 @@ def setup_config_from_cli(
 
     Handles the precedence: CLI args -> saved conversation config -> env vars -> config files -> defaults
     """
-    from .tools import get_toolchain
 
     # Load base config from workspace
     set_config_from_workspace(workspace)

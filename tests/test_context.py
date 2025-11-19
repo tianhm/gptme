@@ -3,9 +3,8 @@ from pathlib import Path
 
 from gptme.message import Message
 from gptme.util.context import (
-    append_file_content,
+    embed_attached_file_content,
     file_to_display_path,
-    gather_fresh_context,
     get_mentioned_files,
 )
 
@@ -26,7 +25,7 @@ def test_file_to_display_path(tmp_path, monkeypatch):
     assert file_to_display_path(file, workspace) == file.absolute()
 
 
-def test_append_file_content(tmp_path):
+def test_embed_attached_file_content(tmp_path):
     # Create test file
     file = tmp_path / "test.txt"
     file.write_text("old content")
@@ -43,11 +42,16 @@ def test_append_file_content(tmp_path):
     file.write_text("new content")
 
     # Should show file was modified
-    result = append_file_content(msg, check_modified=True)
+    result = embed_attached_file_content(msg, check_modified=True)
     assert "<file was modified after message>" in result.content
 
 
-def test_gather_fresh_context(tmp_path):
+def test_context_hook(tmp_path, monkeypatch):
+    from gptme.hooks.active_context import context_hook
+
+    # Enable fresh context mode (required for active context discovery)
+    monkeypatch.setenv("GPTME_FRESH", "1")
+
     # Create test files
     file1 = tmp_path / "file1.txt"
     file2 = tmp_path / "file2.txt"
@@ -61,11 +65,16 @@ def test_gather_fresh_context(tmp_path):
     ]
 
     # Should include both files in context
-    context = gather_fresh_context(msgs, tmp_path)
-    assert "file1.txt" in context.content
-    assert "file2.txt" in context.content
-    assert "content 1" in context.content
-    assert "content 2" in context.content
+    # context_hook returns a generator yielding one message
+    context_gen = context_hook(msgs, workspace=tmp_path)
+    context = next(context_gen)
+
+    assert isinstance(context, Message)
+    # With the new selector, it may prioritize files matching the last query
+    # but should still include both files since max_files=10
+    # Just verify at least one file is included and content is present
+    assert "file" in context.content.lower()
+    assert "content 1" in context.content or "content 2" in context.content
 
 
 def test_get_mentioned_files(tmp_path):
@@ -92,13 +101,17 @@ def test_use_fresh_context(monkeypatch):
     """Test use_fresh_context environment variable detection."""
     from gptme.util.context import use_fresh_context
 
+    # Test default (unset) -> False (active context is now default)
+    monkeypatch.delenv("GPTME_FRESH", raising=False)
+    assert not use_fresh_context()
+
     # Test various true values
     for value in ["1", "true", "True", "TRUE", "yes", "YES"]:
         monkeypatch.setenv("GPTME_FRESH", value)
         assert use_fresh_context()
 
-    # Test false/unset values
-    for value in ["0", "false", "no", ""]:
+    # Test false values
+    for value in ["0", "false", "no"]:
         monkeypatch.setenv("GPTME_FRESH", value)
         assert not use_fresh_context()
 

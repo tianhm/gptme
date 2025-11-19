@@ -4,7 +4,7 @@ import logging
 import time
 from collections.abc import Sequence
 
-from ..llm import Message, reply
+from ...message import Message
 from .base import ContextItem, ContextSelector
 from .config import ContextSelectorConfig
 
@@ -53,7 +53,7 @@ class LLMSelector(ContextSelector):
         self.config = config
         self.prompt = DEFAULT_SELECTION_PROMPT
 
-    async def select(
+    def select(
         self,
         query: str,
         candidates: Sequence[ContextItem],
@@ -77,10 +77,13 @@ class LLMSelector(ContextSelector):
         ]
 
         # Call LLM
+        from ...llm import reply  # fmt: skip
+
         start = time.monotonic()
         response = reply(
             messages=messages,
             model=self.config.llm_model,
+            workspace=None,  # Context selection doesn't need context discovery (would be circular)
         )
         duration = time.monotonic() - start
 
