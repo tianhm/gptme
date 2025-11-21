@@ -44,3 +44,26 @@ def test_callable_signature():
         return str(a)
 
     assert callable_signature(h) == 'h(a: Literal["a", "b"]) -> str'
+
+    # Test generic types
+
+    def i(a: list[int]) -> str:
+        return str(a)
+
+    assert callable_signature(i) == "i(a: list[int]) -> str"
+
+    def j(a: list[int] | None) -> str:
+        return str(a)
+
+    assert callable_signature(j) == "j(a: Union[list[int], None]) -> str"
+
+    def k(a: dict[str, int]) -> str:
+        return str(a)
+
+    assert callable_signature(k) == "k(a: dict[str, int]) -> str"
+
+    # Test union types with | syntax
+    def m(a: int | str) -> str:
+        return str(a)
+
+    assert callable_signature(m) == "m(a: Union[int, str]) -> str"
