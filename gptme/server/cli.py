@@ -11,6 +11,7 @@ from ..init import init, init_logging
 from ..telemetry import init_telemetry, shutdown_telemetry
 from .api import create_app
 from .auth import get_server_token, init_auth
+from .constants import DEFAULT_FALLBACK_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +70,49 @@ def serve(
     """
     init_logging(verbose)
     set_config_from_workspace(Path.cwd())
-    init(
-        model,
-        interactive=False,
-        tool_allowlist=None if tools is None else tools.split(","),
-        tool_format="markdown",
-    )
+
+    # Try to initialize with provided/configured model
+    # If init fails due to missing model/API keys, use fallback
+    from gptme.server.exceptions import ModelConfigurationError
+
+    try:
+        init(
+            model,
+            interactive=False,
+            tool_allowlist=None if tools is None else tools.split(","),
+            tool_format="markdown",
+        )
+    except (ValueError, KeyError) as e:
+        # Detect model configuration errors and wrap in custom exception
+        error_msg = str(e)
+        is_config_error = (
+            "No API key found" in error_msg
+            or "No model specified" in error_msg
+            or "not set in env or config" in error_msg
+        )
+
+        if is_config_error:
+            # Wrap in custom exception for type-based error handling
+            raise ModelConfigurationError(
+                f"Model configuration missing: {error_msg}"
+            ) from e
+        else:
+            # Re-raise other exceptions unchanged
+            raise
+    except ModelConfigurationError:
+        # Handle model configuration errors with fallback
+        fallback_model = DEFAULT_FALLBACK_MODEL
+        logger.warning(
+            f"No default model configured. Using fallback: {fallback_model}. "
+            "Set MODEL environment variable or use --model flag for explicit configuration."
+        )
+        # Retry init with fallback model
+        init(
+            fallback_model,
+            interactive=False,
+            tool_allowlist=None if tools is None else tools.split(","),
+            tool_format="markdown",
+        )
 
     # Initialize telemetry (server is API/WebUI driven, not CLI interactive)
     init_telemetry(
