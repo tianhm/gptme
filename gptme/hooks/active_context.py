@@ -57,6 +57,9 @@ def context_hook(
     if status := git_status():
         sections.append(status)
 
+    # TODO: this needs to be smarter (not include large files like poetry.lock)
+    #       should probably have a token-based budget, and should log a message about the token size of message generated
+
     # Read contents of selected files
     for f in files[:10]:
         if f.exists():
@@ -64,7 +67,11 @@ def context_hook(
                 display_path = file_to_display_path(f, workspace)
                 with open(f) as file:
                     content = file.read()
-                logger.info(f"Read file: {display_path}")
+                if len(content) > 100000:
+                    # skip files that are too large
+                    logger.info(f"Skipping large file: {display_path}")
+                    continue
+                logger.info(f"Read file: {display_path} (size={len(content)} bytes)")
                 sections.append(md_codeblock(display_path, content))
             except UnicodeDecodeError:
                 logger.debug(f"Skipping binary file: {f}")
@@ -89,6 +96,7 @@ This context message will be removed and replaced with fresh context on every ne
 
 """ + "\n\n".join(sections)
 
+    logger.info("Length of active context injected: " + str(len(content)))
     yield Message("system", content)
 
 
