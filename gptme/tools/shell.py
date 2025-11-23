@@ -842,8 +842,10 @@ def check_with_shellcheck(cmd: str) -> tuple[bool, bool, str]:
     exclude_str = ",".join(all_excludes)
 
     # Default error codes (should block execution)
+    # SC1011: This apostrophe terminated the single quoted string!
+    # SC1073: Couldn't parse this single quoted string. Fix to allow more checks.
     # SC2006: Use $(...) notation instead of legacy backticks (causes formatting issues in commits/PRs)
-    default_error_codes = ["SC2006"]
+    default_error_codes = ["SC1011", "SC1073", "SC2006"]
 
     # Get custom error codes from environment variable
     custom_error_codes_str = os.environ.get("GPTME_SHELLCHECK_ERROR_CODES", "")
