@@ -50,10 +50,11 @@ def test_discover_plugins_with_valid_plugin():
         # Create __init__.py to make it a valid package
         (plugin_dir / "__init__.py").write_text("# Plugin init")
 
-        # Create tools directory with __init__.py
+        # Create tools directory with __init__.py and a tool file
         tools_dir = plugin_dir / "tools"
         tools_dir.mkdir()
         (tools_dir / "__init__.py").write_text("# Tools init")
+        (tools_dir / "example_tool.py").write_text("# Example tool implementation")
 
         # Discover plugins
         plugins = discover_plugins([Path(tmpdir)])
@@ -65,16 +66,22 @@ def test_discover_plugins_with_valid_plugin():
 
 
 def test_discover_plugins_without_tools():
-    """Test plugin discovery for plugin without tools directory."""
+    """Test plugin discovery for plugin with empty tools directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plugin_dir = Path(tmpdir) / "minimal_plugin"
         plugin_dir.mkdir()
         (plugin_dir / "__init__.py").write_text("# Plugin init")
 
+        # Create empty tools directory to make it a valid plugin
+        tools_dir = plugin_dir / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("# Empty tools package")
+
         plugins = discover_plugins([Path(tmpdir)])
 
         assert len(plugins) == 1
         assert plugins[0].name == "minimal_plugin"
+        # Empty tools directory means no tool modules discovered
         assert plugins[0].tool_modules == []
 
 
@@ -92,21 +99,23 @@ def test_discover_plugins_invalid_package():
 def test_get_plugin_tool_modules():
     """Test getting tool modules from plugins."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create first plugin
+        # Create first plugin with a tool file
         plugin1_dir = Path(tmpdir) / "plugin1"
         plugin1_dir.mkdir()
         (plugin1_dir / "__init__.py").write_text("")
         tools1_dir = plugin1_dir / "tools"
         tools1_dir.mkdir()
         (tools1_dir / "__init__.py").write_text("")
+        (tools1_dir / "tool1.py").write_text("# Tool 1")
 
-        # Create second plugin
+        # Create second plugin with a tool file
         plugin2_dir = Path(tmpdir) / "plugin2"
         plugin2_dir.mkdir()
         (plugin2_dir / "__init__.py").write_text("")
         tools2_dir = plugin2_dir / "tools"
         tools2_dir.mkdir()
         (tools2_dir / "__init__.py").write_text("")
+        (tools2_dir / "tool2.py").write_text("# Tool 2")
 
         # Get tool modules
         tool_modules = get_plugin_tool_modules([Path(tmpdir)])
@@ -123,10 +132,11 @@ def test_discover_plugins_with_commands_package():
         plugin_dir.mkdir()
         (plugin_dir / "__init__.py").write_text("# Plugin init")
 
-        # Create commands directory with __init__.py
+        # Create commands directory with __init__.py and actual command file
         commands_dir = plugin_dir / "commands"
         commands_dir.mkdir()
         (commands_dir / "__init__.py").write_text("# Commands init")
+        (commands_dir / "my_command.py").write_text("# Command implementation")
 
         plugins = discover_plugins([Path(tmpdir)])
 
@@ -191,7 +201,7 @@ def register():
 def test_get_plugin_tool_modules_with_allowlist():
     """Test getting tool modules with plugin allowlist."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create two plugins
+        # Create two plugins with tool files
         for name in ["plugin1", "plugin2"]:
             plugin_dir = Path(tmpdir) / name
             plugin_dir.mkdir()
@@ -199,6 +209,7 @@ def test_get_plugin_tool_modules_with_allowlist():
             tools_dir = plugin_dir / "tools"
             tools_dir.mkdir()
             (tools_dir / "__init__.py").write_text("")
+            (tools_dir / f"{name}_tool.py").write_text(f"# {name} tool")
 
         # Get tool modules with allowlist (only plugin1)
         tool_modules = get_plugin_tool_modules(
@@ -259,10 +270,11 @@ def test_discover_plugins_with_hooks():
         # Create __init__.py
         (plugin_dir / "__init__.py").write_text("# Plugin init")
 
-        # Create hooks directory with __init__.py
+        # Create hooks directory with __init__.py and actual hook file
         hooks_dir = plugin_dir / "hooks"
         hooks_dir.mkdir()
         (hooks_dir / "__init__.py").write_text("# Hooks init")
+        (hooks_dir / "my_hook.py").write_text("# Hook implementation")
 
         # Discover plugins
         plugins = discover_plugins([Path(tmpdir)])
