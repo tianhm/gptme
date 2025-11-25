@@ -14,11 +14,22 @@ except ImportError:
 
 @dataclass
 class LessonMetadata:
-    """Metadata from lesson frontmatter."""
+    """Metadata from lesson frontmatter.
 
+    Supports both:
+    - Lessons: keywords, tools, status
+    - Skills (Anthropic format): name, description
+    """
+
+    # Anthropic skill format fields
+    name: str | None = None
+    description: str | None = None
+
+    # Lesson format fields
     keywords: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     status: str = "active"  # active, automated, deprecated, or archived
+
     # Future extensions:
     # globs: list[str] = field(default_factory=list)
     # semantic: list[str] = field(default_factory=list)
@@ -61,23 +72,32 @@ def _extract_description(content: str) -> str:
 
 
 def parse_lesson(path: Path) -> Lesson:
-    """Parse lesson file with optional YAML frontmatter.
+    """Parse lesson or skill file with optional YAML frontmatter.
 
     Args:
-        path: Path to lesson markdown file
+        path: Path to lesson/skill markdown file
 
     Returns:
         Parsed lesson with metadata and content
 
-    Example lesson format:
+    Supports two formats:
+
+    Lesson format:
         ---
         match:
           keywords: [patch, file, editing]
+        status: active
         ---
-
         # Lesson Title
-
         First paragraph becomes description...
+
+    Skill format (Anthropic):
+        ---
+        name: skill-name
+        description: Brief description of the skill
+        ---
+        # Skill Title
+        Detailed instructions...
     """
     if not path.exists():
         raise FileNotFoundError(f"Lesson file not found: {path}")
@@ -103,11 +123,17 @@ def parse_lesson(path: Path) -> Lesson:
             try:
                 frontmatter = yaml.safe_load(frontmatter_str)
                 if frontmatter:
-                    # Extract match section
+                    # Extract Anthropic skill format fields
+                    name = frontmatter.get("name")
+                    description = frontmatter.get("description")
+
+                    # Extract lesson format fields
                     match_data = frontmatter.get("match", {})
-                    # Extract status (defaults to "active" if not present)
                     status = frontmatter.get("status", "active")
+
                     metadata = LessonMetadata(
+                        name=name,
+                        description=description,
                         keywords=match_data.get("keywords", []),
                         tools=match_data.get("tools", []),
                         status=status,
