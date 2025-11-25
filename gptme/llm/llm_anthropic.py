@@ -13,6 +13,7 @@ from typing import (
 )
 
 from httpx import RemoteProtocolError
+from pydantic import BaseModel  # fmt: skip
 
 from ..constants import TEMPERATURE, TOP_P
 from ..message import Message, msgs2dicts
@@ -37,6 +38,58 @@ logger = logging.getLogger(__name__)
 
 _anthropic: "Anthropic | None" = None
 _is_proxy: bool = False
+
+
+def _inject_schema_instruction(messages, schema_name):
+    """Inject instruction to use schema tool in the last user message.
+
+    Args:
+        messages: List of message dicts
+        schema_name: Name of the schema to use
+
+    Returns:
+        Modified messages list
+    """
+    if not messages:
+        return messages
+
+    # Find last user message
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            last_user_idx = i
+            break
+
+    if last_user_idx is None:
+        return messages
+
+    # Inject instruction in the content
+    instruction = f"\n\nIMPORTANT: Return your response using the `return_{schema_name.lower()}` tool to ensure proper formatting."
+
+    last_msg = messages[last_user_idx]
+    if isinstance(last_msg["content"], str):
+        last_msg["content"] = last_msg["content"] + instruction
+    elif isinstance(last_msg["content"], list):
+        # If content is a list, append as text block
+        last_msg["content"].append({"type": "text", "text": instruction})
+
+    return messages
+
+
+def _extract_schema_result(content_blocks):
+    """Extract structured result from tool call response.
+
+    Args:
+        content_blocks: Response content blocks from Anthropic
+
+    Returns:
+        Extracted tool call result or None
+    """
+    for block in content_blocks:
+        if block.type == "tool_use" and block.name.startswith("return_"):
+            # Return the tool input as the structured result
+            return block.input
+    return None
 
 
 def _record_usage(
@@ -99,7 +152,18 @@ def _handle_anthropic_transient_error(e, attempt, max_retries, base_delay):
     - 429 rate limit errors: Should back off and retry
     - Error messages containing 'overload', 'internal', 'timeout': Known transient issues
     """
+    # Allow tests to override max_retries via environment variable
+    # This breaks out of the retry loop early to prevent test timeouts
     from anthropic import APIStatusError  # fmt: skip
+
+    test_max_retries_str = os.environ.get("GPTME_TEST_MAX_RETRIES")
+    if test_max_retries_str:
+        test_max_retries = int(test_max_retries_str)
+        if attempt >= test_max_retries - 1:
+            logger.warning(
+                f"Test max_retries={test_max_retries} reached (attempt {attempt + 1}), not retrying"
+            )
+            raise e
 
     # Check if this is a transient error we should retry
     should_retry = False
@@ -213,14 +277,65 @@ class CacheControl(TypedDict):
     type: Literal["ephemeral"]
 
 
+def _make_schema_tool(
+    output_schema: "type[BaseModel] | None",
+) -> "anthropic.types.ToolParam | None":
+    """Convert Pydantic BaseModel to Anthropic tool definition for constrained output."""
+    if output_schema is None:
+        return None
+
+    # Extract JSON schema from Pydantic model
+    json_schema = output_schema.model_json_schema()
+    schema_name = output_schema.__name__
+
+    # Convert to Anthropic tool definition
+    return cast(
+        "anthropic.types.ToolParam",
+        {
+            "name": f"return_{schema_name.lower()}",
+            "description": f"Return structured output conforming to {schema_name} schema",
+            "input_schema": json_schema,
+        },
+    )
+
+
 @retry_on_overloaded()
-def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> str:
+def chat(
+    messages: list[Message],
+    model: str,
+    tools: list[ToolSpec] | None,
+    output_schema: type[BaseModel] | None = None,
+) -> str:
     from anthropic import NOT_GIVEN  # fmt: skip
 
     assert _anthropic, "LLM not initialized"
     messages_dicts, system_messages, tools_dict = _prepare_messages_for_api(
         messages, tools
     )
+
+    # Add schema tool for constrained output
+    schema_tool: anthropic.types.ToolParam | None = _make_schema_tool(output_schema)
+    if schema_tool:
+        # Add schema tool to tools
+        if tools_dict:
+            tools_dict.append(schema_tool)
+        else:
+            tools_dict = [schema_tool]
+
+        # Inject instruction in system messages
+        schema_instruction = f"Use the {schema_tool['name']} tool to return your response in the required format."
+        if system_messages:
+            system_messages.append({"type": "text", "text": schema_instruction})
+        else:
+            system_messages = [{"type": "text", "text": schema_instruction}]
+
+        # Inject instruction in last user message
+        assert (
+            output_schema is not None
+        )  # schema_tool exists means output_schema is not None
+        schema_name = output_schema.__name__
+        messages_dicts = _inject_schema_instruction(messages_dicts, schema_name)
+
     api_model = f"anthropic/{model}" if _is_proxy else model
 
     model_meta = get_model(f"anthropic/{model}")
@@ -264,7 +379,10 @@ def chat(messages: list[Message], model: str, tools: list[ToolSpec] | None) -> s
 
 @retry_generator_on_overloaded()
 def stream(
-    messages: list[Message], model: str, tools: list[ToolSpec] | None
+    messages: list[Message],
+    model: str,
+    tools: list[ToolSpec] | None,
+    output_schema: type[BaseModel] | None = None,
 ) -> Generator[str, None, None]:
     import anthropic.types  # fmt: skip
     from anthropic import NOT_GIVEN  # fmt: skip
@@ -273,6 +391,30 @@ def stream(
     messages_dicts, system_messages, tools_dict = _prepare_messages_for_api(
         messages, tools
     )
+
+    # Add schema tool for constrained output
+    schema_tool: anthropic.types.ToolParam | None = _make_schema_tool(output_schema)
+    if schema_tool:
+        # Add schema tool to tools
+        if tools_dict:
+            tools_dict.append(schema_tool)
+        else:
+            tools_dict = [schema_tool]
+
+        # Inject instruction in system messages
+        schema_instruction = f"Use the {schema_tool['name']} tool to return your response in the required format."
+        if system_messages:
+            system_messages.append({"type": "text", "text": schema_instruction})
+        else:
+            system_messages = [{"type": "text", "text": schema_instruction}]
+
+        # Inject instruction in last user message
+        assert (
+            output_schema is not None
+        )  # schema_tool exists means output_schema is not None
+        schema_name = output_schema.__name__
+        messages_dicts = _inject_schema_instruction(messages_dicts, schema_name)
+
     api_model = f"anthropic/{model}" if _is_proxy else model
 
     model_meta = get_model(f"anthropic/{model}")
@@ -513,11 +655,14 @@ def _spec2tool(
         name = spec.block_types[0]
 
     # TODO: are input_schema and parameters the same? (both JSON Schema?)
-    return {
-        "name": name,
-        "description": spec.get_instructions("tool"),
-        "input_schema": parameters2dict(spec.parameters),
-    }
+    return cast(
+        "anthropic.types.ToolParam",
+        {
+            "name": name,
+            "description": spec.get_instructions("tool"),
+            "input_schema": parameters2dict(spec.parameters),
+        },
+    )
 
 
 def _prepare_messages_for_api(
