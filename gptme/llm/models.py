@@ -91,6 +91,15 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
     "openai": OPENAI_MODELS,
     # https://docs.anthropic.com/en/docs/about-claude/models
     "anthropic": {
+        "claude-opus-4-5": {
+            "context": 200_000,
+            "max_output": 64_000,
+            "price_input": 5,
+            "price_output": 25,
+            "supports_vision": True,
+            "supports_reasoning": True,
+            "knowledge_cutoff": datetime(2025, 8, 1),  # "reliable cutoff" is March 2025
+        },
         "claude-sonnet-4-5": {
             "context": 200_000,
             "max_output": 64_000,
@@ -98,7 +107,7 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
             "price_output": 15,
             "supports_vision": True,
             "supports_reasoning": True,
-            "knowledge_cutoff": datetime(2025, 7, 1),
+            "knowledge_cutoff": datetime(2025, 7, 1),  # "reliable cutoff" is Jan 2025
         },
         "claude-haiku-4-5": {
             "context": 200_000,
@@ -107,7 +116,7 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
             "price_output": 5,
             "supports_vision": True,
             "supports_reasoning": True,
-            "knowledge_cutoff": datetime(2025, 2, 1),
+            "knowledge_cutoff": datetime(2025, 7, 1),  # "reliable cutoff" is Feb 2025
         },
         "claude-opus-4-1-20250805": {
             "context": 200_000,
