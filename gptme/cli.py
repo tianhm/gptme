@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+import traceback
 from itertools import islice
 from pathlib import Path
 from typing import Literal
@@ -411,11 +412,30 @@ def main(
             config.chat.tools,
             config.chat.tool_format,
         )
-    except RuntimeError as e:
+    except (RuntimeError, Exception) as e:
+        logger.error("Fatal error occurred")
         if verbose:
             logger.exception(e)
         else:
             logger.error(e)
+            # Print last call site in gptme code for context
+            tb = traceback.extract_tb(sys.exc_info()[2])
+
+            # Get actual gptme package directory
+            import gptme
+
+            gptme_dir = Path(gptme.__file__).parent.resolve()
+
+            # Filter for frames actually in gptme source code
+            gptme_frames = [
+                frame for frame in tb if Path(frame.filename).is_relative_to(gptme_dir)
+            ]
+
+            if gptme_frames:
+                last_frame = gptme_frames[-1]
+                logger.error(
+                    f"  at {last_frame.filename}:{last_frame.lineno} in {last_frame.name}"
+                )
         sys.exit(1)
     finally:
         shutdown_telemetry()
