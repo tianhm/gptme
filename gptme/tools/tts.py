@@ -73,8 +73,25 @@ def is_available() -> bool:
 
 
 def init() -> ToolSpec:
+    global current_speed
+
+    # Set speed from environment variable if provided
+    if speed_env := os.getenv("GPTME_TTS_SPEED"):
+        try:
+            speed = float(speed_env)
+            if 0.5 <= speed <= 2.0:
+                current_speed = speed
+                console.log(f"Using TTS (speed: {speed:.2f}x)")
+            else:
+                console.log(
+                    f"Warning: GPTME_TTS_SPEED={speed} out of range (0.5-2.0), using default"
+                )
+        except ValueError:
+            console.log(f"Warning: Invalid GPTME_TTS_SPEED={speed_env}, using default")
+
     if is_available():
-        console.log("Using TTS")
+        if not speed_env:
+            console.log("Using TTS")
     else:
         console.log("TTS disabled: server not available")
     return tool

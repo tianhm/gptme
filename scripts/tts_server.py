@@ -9,6 +9,8 @@
 #   "kokoro>=0.9.0",
 #   "scipy",
 # ]
+# [tool.uv]
+# exclude-newer = "2025-06-01T00:00:00Z"
 # ///
 """
 Multi-backend TTS server supporting Kokoro and Chatterbox TTS.
