@@ -11,7 +11,7 @@ from ..constants import TEMPERATURE, TOP_P
 from ..message import Message, msgs2dicts
 from ..telemetry import record_llm_request
 from ..tools import ToolSpec
-from .models import ModelMeta, Provider
+from .models import ModelMeta, Provider, is_custom_provider
 from .utils import (
     extract_tool_uses_from_assistant_message,
     parameters2dict,
@@ -23,7 +23,9 @@ if TYPE_CHECKING:
     from openai import OpenAI  # fmt: skip
     from openai.types.chat import ChatCompletionToolParam  # fmt: skip
 
-# Dictionary to store clients for each provider
+    from . import is_custom_provider  # fmt: skip
+
+# Dictionary to store clients for each provider (includes custom providers)
 clients: dict[Provider, "OpenAI"] = {}
 logger = logging.getLogger(__name__)
 
@@ -603,7 +605,14 @@ def _spec2tool(spec: ToolSpec, model: ModelMeta) -> "ChatCompletionToolParam":
         )
         description = description[:1024]
 
-    if model.provider in ["openai", "azure", "openrouter", "deepseek", "local"]:
+    # Custom providers are OpenAI-compatible and support tools API
+    if model.provider in [
+        "openai",
+        "azure",
+        "openrouter",
+        "deepseek",
+        "local",
+    ] or is_custom_provider(model.model):
         return {
             "type": "function",
             "function": {
