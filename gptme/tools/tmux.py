@@ -9,6 +9,7 @@ It allows for inspecting pane contents and sending input.
 import logging
 import shutil
 import subprocess
+import time
 from collections.abc import Generator
 from time import sleep
 
@@ -33,11 +34,10 @@ def _run_tmux_command(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a tmux command with consistent logging and error handling."""
     print(" ".join(cmd))
     result = subprocess.run(
-        " ".join(cmd),
+        cmd,
         check=True,
         capture_output=True,
         text=True,
-        shell=True,
     )
     assert result.returncode == 0
     print(result.stdout, result.stderr)
@@ -62,19 +62,27 @@ def get_sessions() -> list[str]:
 
 
 def _capture_pane(pane_id: str) -> str:
+    """Capture the content of a tmux pane including scrollback history."""
     result = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-t", pane_id],
+        # -p: print to stdout
+        # -S -: start from beginning of scrollback
+        # -E -: end at bottom of scrollback
+        ["tmux", "capture-pane", "-p", "-S", "-", "-E", "-", "-t", pane_id],
         capture_output=True,
         text=True,
     )
-    return result.stdout
+    # Strip trailing whitespace but preserve content
+    return result.stdout.rstrip()
 
 
 def new_session(command: str) -> Message:
     _max_session_id = 0
     for session in get_sessions():
+        # Only parse sessions matching exact pattern "gptme_N" (not gptme_gw0_*, gptme_test_*, etc.)
         if session.startswith("gptme_"):
-            _max_session_id = max(_max_session_id, int(session.split("_")[1]))
+            parts = session.split("_")
+            if len(parts) == 2 and parts[1].isdigit():
+                _max_session_id = max(_max_session_id, int(parts[1]))
     session_id = f"gptme_{_max_session_id + 1}"
     # cmd = ["tmux", "new-session", "-d", "-s", session_id, command]
     cmd = ["tmux", "new-session", "-d", "-s", session_id, "bash"]
@@ -145,6 +153,67 @@ def kill_session(session_id: str) -> Message:
 def list_sessions() -> Message:
     sessions = get_sessions()
     return Message("system", f"Active tmux sessions: {sessions}")
+
+
+def wait_for_output(
+    session_id: str,
+    timeout: int = 60,
+    stable_time: int = 3,
+) -> Message:
+    """Wait for command output to stabilize in a tmux session.
+
+    Monitors the pane output and waits until it remains unchanged for
+    `stable_time` seconds, or until `timeout` is reached.
+
+    Args:
+        session_id: The tmux session ID to monitor
+        timeout: Maximum time to wait in seconds (default: 60)
+        stable_time: Seconds of unchanged output to consider stable (default: 3)
+
+    Returns:
+        Message with the final output and status
+    """
+    if not session_id.startswith("gptme_"):
+        session_id = f"gptme_{session_id}"
+
+    start_time = time.time()
+    last_output: str | None = None  # None means no output captured yet
+    last_change_time = start_time
+    poll_interval = 0.5  # Poll more frequently for responsiveness
+
+    while True:
+        elapsed = time.time() - start_time
+        current_output = _capture_pane(session_id)
+
+        # Check if output changed (comparing stripped content)
+        if last_output is None or current_output != last_output:
+            last_output = current_output
+            last_change_time = time.time()
+
+        # Check if output has been stable long enough
+        # Only declare stable if we have meaningful output (not just empty/whitespace)
+        stable_duration = time.time() - last_change_time
+        if stable_duration >= stable_time:
+            return Message(
+                "system",
+                f"Session `{session_id}` output stabilized after {elapsed:.1f}s "
+                f"(stable for {stable_duration:.1f}s).\n"
+                f"```output\n{current_output}\n```",
+            )
+
+        # Check timeout
+        if elapsed >= timeout:
+            return Message(
+                "system",
+                f"Session `{session_id}` timed out after {timeout}s "
+                f"(output still changing).\n"
+                f"```output\n{current_output}\n```\n"
+                f"Session still active. Use `kill-session {session_id}` to terminate "
+                f"or `send-keys {session_id} C-c` to interrupt.",
+            )
+
+        # Poll at configured interval
+        sleep(poll_interval)
 
 
 def execute_tmux(
@@ -226,6 +295,14 @@ def execute_tmux(
             yield inspect_pane(_args)
         elif command == "kill-session":
             yield kill_session(_args)
+        elif command == "wait":
+            # Parse optional timeout and stable_time from args
+            # Format: wait <session_id> [timeout] [stable_time]
+            wait_parts = _args.split()
+            wait_session_id = wait_parts[0]
+            wait_timeout = int(wait_parts[1]) if len(wait_parts) > 1 else 60
+            wait_stable = int(wait_parts[2]) if len(wait_parts) > 2 else 3
+            yield wait_for_output(wait_session_id, wait_timeout, wait_stable)
         else:
             yield Message("system", f"Error: Unknown command: {command}")
 
@@ -240,10 +317,10 @@ Available commands:
 - new-session <command>: Start a new tmux session with the given command
 - send-keys <session_id> <keys> [<keys>]: Send keys to the specified session
 - inspect-pane <session_id>: Show the current content of the specified pane
+- wait <session_id> [timeout] [stable_time]: Wait for output to stabilize (default: 60s timeout, 3s stable)
 - kill-session <session_id>: Terminate the specified tmux session
 - list-sessions: Show all active tmux sessions
 """
-# TODO: implement smart-wait, where we wait for n seconds and then until output is stable
 # TODO: change the "commands" to Python functions registered with the Python tool?
 
 
@@ -292,6 +369,20 @@ def examples(tool_format):
 > User: List all active tmux sessions
 {ToolUse("tmux", [], "list-sessions").to_output(tool_format)}
 > System: Active tmux sessions ['0', 'gptme_1']
+
+#### Waiting for command completion
+
+> User: Run a build and wait for it to finish
+> Assistant: I'll start the build in tmux and wait for it to complete:
+{ToolUse("tmux", [], "new-session 'npm run build'").to_output(tool_format)}
+> System: Running `npm run build` in session gptme_1.
+> Assistant: Now let's wait for the build to finish:
+{ToolUse("tmux", [], "wait gptme_1 120").to_output(tool_format)}
+> System: Session `gptme_1` output stabilized after 45.2s (stable for 3.0s).
+```output
+...build output...
+Build completed successfully!
+```
 
 #### Ending a session
 
