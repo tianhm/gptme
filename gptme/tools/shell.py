@@ -229,6 +229,7 @@ class ShellSession:
     stdout_fd: int
     stderr_fd: int
     delimiter: str
+    start_marker: str  # Fix for Issue #408: Add start marker to prevent output mixing
 
     def __init__(self) -> None:
         self._init()
@@ -249,6 +250,7 @@ class ShellSession:
         self.stdout_fd = self.process.stdout.fileno()  # type: ignore
         self.stderr_fd = self.process.stderr.fileno()  # type: ignore
         self.delimiter = "END_OF_COMMAND_OUTPUT"
+        self.start_marker = "START_OF_COMMAND_OUTPUT"
 
         # set GIT_PAGER=cat
         self.run("export PAGER=")
@@ -317,7 +319,25 @@ class ShellSession:
         except ValueError as e:
             logger.warning(f"Failed shlex parsing command, using raw command: {e}")
 
-        full_command = f"{command}\n"
+        # Issue #408: Drain any leftover stderr from previous commands BEFORE sending new command
+        # This ensures we don't mix stderr from previous commands with the current one
+        while True:
+            pre_drain_rlist, _, _ = select.select([self.stderr_fd], [], [], 0.05)
+            if not pre_drain_rlist:
+                break
+            pre_drain_data = os.read(self.stderr_fd, 2**16).decode("utf-8")
+            if not pre_drain_data:
+                break
+            # Discard leftover stderr from previous commands
+            if pre_drain_data.strip():
+                logger.debug(f"Shell: Pre-command stderr drain: {pre_drain_data[:80]}")
+
+        # Generate unique command ID to prevent output mixing (Issue #408)
+        cmd_id = f"{time.time_ns()}"
+        start_marker_pattern = f"{self.start_marker}_{cmd_id}"
+
+        full_command = f"echo {start_marker_pattern}\n"  # Start marker first
+        full_command += f"{command}\n"
         full_command += f"echo ReturnCode:$? {self.delimiter}\n"
         try:
             self.process.stdin.write(full_command)
@@ -335,6 +355,9 @@ class ShellSession:
 
         self.process.stdin.flush()
 
+        # Issue #408: Track whether we've seen the start marker for this command
+        seen_start_marker = False
+        
         stdout: list[str] = []
         stderr: list[str] = []
         return_code: int | None = None
@@ -388,6 +411,18 @@ class ShellSession:
                     lines = data.splitlines(keepends=True)
                     re_returncode = re.compile(r"ReturnCode:(\d+)")
                     for line in lines:
+                        # Issue #408: Skip stdout until we see the start marker
+                        # Only apply to stdout - stderr should pass through unfiltered
+                        if fd == self.stdout_fd and not seen_start_marker:
+                            if start_marker_pattern in line:
+                                seen_start_marker = True
+                                logger.debug(f"Shell: Start marker detected: {start_marker_pattern[:50]}")
+                            else:
+                                # Discard output before start marker (leftover from previous commands)
+                                if line.strip():  # Only log non-empty lines
+                                    logger.debug(f"Shell: Discarding pre-marker output: {line[:80]}")
+                            continue
+                        
                         if "ReturnCode:" in line and self.delimiter in line:
                             # Diagnostic logging for Issue #408: Log delimiter detection
                             logger.debug(
@@ -412,6 +447,28 @@ class ShellSession:
                                 ex, pwd, _ = self._run("pwd", output=False)
                                 assert ex == 0
                                 os.chdir(pwd.strip())
+
+                            # Issue #408: Drain any remaining stderr before returning
+                            # This prevents stderr from leaking to the next command
+                            # Use multiple attempts with longer initial timeout to ensure
+                            # stderr has time to arrive from bash
+                            drain_empty_count = 0
+                            while drain_empty_count < 2:  # Require 2 empty reads to be sure
+                                drain_rlist, _, _ = select.select(
+                                    [self.stderr_fd], [], [], 0.1
+                                )
+                                if not drain_rlist:
+                                    drain_empty_count += 1
+                                    continue
+                                drain_data = os.read(self.stderr_fd, 2**16).decode("utf-8")
+                                if not drain_data:
+                                    drain_empty_count += 1
+                                    continue
+                                # Reset counter when we get data
+                                drain_empty_count = 0
+                                stderr.append(drain_data)
+                                if output:
+                                    print(drain_data, end="", file=sys.stderr)
                             return (
                                 return_code,
                                 "".join(stdout).strip(),
