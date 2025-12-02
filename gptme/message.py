@@ -46,6 +46,7 @@ class Message:
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
     files: list[Path] = field(default_factory=list)
+    file_hashes: dict[str, str] = field(default_factory=dict)  # {filepath: hash}
     call_id: str | None = None
 
     pinned: bool = False
@@ -87,6 +88,8 @@ class Message:
         if self.files:
             # Resolve to absolute paths to prevent issues when working directory changes
             d["files"] = [str(f.resolve()) for f in self.files]
+        if self.file_hashes:
+            d["file_hashes"] = self.file_hashes
         if self.pinned:
             d["pinned"] = True
         if self.hide:
@@ -140,7 +143,13 @@ class Message:
             flags.append("hide")
         flags_toml = "\n".join(f"{flag} = true" for flag in flags)
         files_toml = f"files = {[str(f) for f in self.files]}" if self.files else ""
-        extra = (flags_toml + "\n" + files_toml).strip()
+        # Serialize file_hashes as TOML inline table
+        if self.file_hashes:
+            items = ", ".join(f'"{k}" = "{v}"' for k, v in self.file_hashes.items())
+            file_hashes_toml = f"file_hashes = {{ {items} }}"
+        else:
+            file_hashes_toml = ""
+        extra = (flags_toml + "\n" + files_toml + "\n" + file_hashes_toml).strip()
 
         # doublequotes need to be escaped
         # content = self.content.replace('"', '\\"')
@@ -176,6 +185,7 @@ call_id = "{self.call_id}"
             pinned=msg.get("pinned", False),
             hide=msg.get("hide", False),
             files=[Path(f) for f in msg.get("files", [])],
+            file_hashes=msg.get("file_hashes", {}),
             timestamp=isoparse(msg["timestamp"]),
             call_id=msg.get("call_id", None),
         )
