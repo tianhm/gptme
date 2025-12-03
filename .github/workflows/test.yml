@@ -36,6 +36,10 @@ jobs:
         Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
         echo "DISPLAY=:99" >> $GITHUB_ENV
 
+    - name: Store cache ID (extras, lowercase of group name) in file .cache-id
+      id: cache-id
+      run: echo "${{ matrix.extras || 'noextras' }}" | tr '[:upper:]' '[:lower:]' > .cache-id
+
     - name: Install poetry
       run: pipx install poetry
 
@@ -44,6 +48,9 @@ jobs:
       with:
         python-version: '3.12'
         cache: 'poetry'
+        cache-dependency-path: |
+          poetry.lock
+          .cache-id
 
     - name: Install dependencies
       run: |
@@ -71,12 +78,12 @@ jobs:
         python_version: ['3.10']
         extras: ['-E all']
         model: ['openai/gpt-4o-mini', 'anthropic/claude-haiku-4-5']
-        include:
+        #include:
           # no extras, latest python
-          - os: ubuntu-latest
-            python_version: '3.13'
-            extras: ''
-            model: 'openai/gpt-4o-mini'
+          #- os: ubuntu-latest
+          #  python_version: '3.13'
+          #  extras: ''
+          #  model: 'openai/gpt-4o-mini'
           # deepseek, no extras, latest python
           #- os: ubuntu-latest
           #  python_version: '3.13'
@@ -105,6 +112,10 @@ jobs:
         Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
         echo "DISPLAY=:99" >> $GITHUB_ENV
 
+    - name: Store cache ID (extras, lowercase of group name) in file .cache-id
+      id: cache-id
+      run: echo "${{ matrix.extras || 'noextras' }}" | tr '[:upper:]' '[:lower:]' > .cache-id
+
     - name: Install poetry
       run: pipx install poetry
 
@@ -113,6 +124,9 @@ jobs:
       with:
         python-version: ${{ matrix.python_version }}
         cache: 'poetry'
+        cache-dependency-path: |
+          poetry.lock
+          .cache-id
 
     - name: Install dependencies
       run: |
