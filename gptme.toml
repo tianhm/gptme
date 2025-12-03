@@ -6,13 +6,13 @@ files = ["README.md", "Makefile"]
 dirs = ["docs/lessons"]
 
 # Unified context configuration
-[context]
-enabled = true  # Master switch (replaces GPTME_FRESH)
+#[context]
+#enabled = true  # Master switch (replaces GPTME_FRESH)
 
-[context.selector]
-enabled = true
-strategy = "hybrid"
-max_candidates = 30
+#[context.selector]
+#enabled = true
+#strategy = "hybrid"
+#max_candidates = 30
 
 #[rag]
 #enabled = true
