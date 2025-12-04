@@ -67,16 +67,46 @@ def worker_id():
 
 @pytest.fixture(autouse=True)
 def cleanup_sessions(worker_id):
-    """Clean up any test sessions before and after each test."""
+    """Clean up worker-specific test sessions before and after each test.
+    
+    Only cleans up sessions with worker prefix (gptme_{worker_id}_*) to avoid
+    race conditions in parallel test runs. Tests that use new_session() directly
+    should use the cleanup_new_session_sessions fixture instead.
+    """
 
     def cleanup():
         for session in get_sessions():
-            # Only clean up sessions with our worker prefix to avoid killing other workers' sessions
+            # Clean up sessions with our worker prefix (for parallel test isolation)
             if session.startswith(f"gptme_{worker_id}_"):
                 subprocess.run(
                     ["tmux", "kill-session", "-t", session],
                     capture_output=True,
                 )
+
+    cleanup()
+    yield
+    cleanup()
+
+
+@pytest.fixture
+def cleanup_new_session_sessions():
+    """Clean up gptme_N sessions for tests that use new_session() directly.
+    
+    This fixture is NOT autouse - only apply to specific tests that need it.
+    Tests using this should also use @pytest.mark.xdist_group("tmux_new_session")
+    to ensure they run serially and avoid race conditions with other workers.
+    """
+    import re
+
+    def cleanup():
+        for session in get_sessions():
+            if session.startswith("gptme_"):
+                # Match gptme_N where N is just digits (not gptme_gw0_*, etc.)
+                if re.fullmatch(r"gptme_\d+", session):
+                    subprocess.run(
+                        ["tmux", "kill-session", "-t", session],
+                        capture_output=True,
+                    )
 
     cleanup()
     yield
@@ -94,16 +124,21 @@ class TestGetSessions:
         assert len(worker_sessions) == 0
 
 
+@pytest.mark.xdist_group("tmux_new_session")
 class TestNewSession:
-    """Tests for new_session function."""
+    """Tests for new_session function.
+    
+    These tests use new_session() directly which creates gptme_N sessions.
+    They are grouped to run serially to avoid race conditions.
+    """
 
-    def test_creates_session(self):
+    def test_creates_session(self, cleanup_new_session_sessions):
         """Should create a new tmux session."""
         msg = new_session("echo 'hello world'")
         assert "gptme_" in msg.content
         assert "hello world" in msg.content or "Running" in msg.content
 
-    def test_increments_session_id(self):
+    def test_increments_session_id(self, cleanup_new_session_sessions):
         """Should create sessions with incrementing IDs."""
         msg1 = new_session("echo 'first'")
         msg2 = new_session("echo 'second'")
@@ -122,32 +157,29 @@ class TestNewSession:
 class TestListSessions:
     """Tests for list_sessions function."""
 
-    def test_lists_created_sessions(self):
-        """Should list sessions that were created."""
-        msg = new_session("echo 'test'")
-        # Extract the session ID from the creation message
-        import re
+    def test_lists_created_sessions(self, worker_id):
+        """Should list sessions that were created.
 
-        match = re.search(r"gptme_(\d+)", msg.content)
-        assert match
-        session_id = f"gptme_{match.group(1)}"
+        Uses worker-isolated session to avoid race conditions in parallel tests.
+        """
+        # Create a worker-isolated session to avoid race conditions
+        # where other workers' cleanup might remove our session
+        session_id = _create_test_session("echo 'test'", worker_id)
 
         msg = list_sessions()
         assert session_id in msg.content
 
 
 class TestKillSession:
-    """Tests for kill_session function."""
+    """Tests for kill_session function.
+    
+    Uses worker-isolated sessions to avoid race conditions in parallel tests.
+    """
 
-    def test_kills_session(self):
+    def test_kills_session(self, worker_id):
         """Should kill an existing session."""
-        msg = new_session("echo 'to kill'")
-        # Extract the session ID from the creation message
-        import re
-
-        match = re.search(r"gptme_(\d+)", msg.content)
-        assert match
-        session_id = f"gptme_{match.group(1)}"
+        # Use worker-isolated session to avoid race conditions
+        session_id = _create_test_session("echo 'to kill'", worker_id, 1)
 
         msg = kill_session(session_id)
         assert "Killed" in msg.content
@@ -187,8 +219,12 @@ class TestWaitForOutput:
         assert "timed out" in msg.content
         assert elapsed >= 4  # Should have waited for timeout
 
-    def test_auto_prefixes_session_id(self):
-        """Should automatically add gptme_ prefix if missing."""
+    @pytest.mark.xdist_group("tmux_new_session")
+    def test_auto_prefixes_session_id(self, cleanup_new_session_sessions):
+        """Should automatically add gptme_ prefix if missing.
+        
+        Uses new_session() directly, so grouped with other new_session tests.
+        """
         # This test verifies the prefix behavior of wait_for_output
         # We use new_session here because we need a gptme_N style session
         msg = new_session("echo 'prefix test'")
