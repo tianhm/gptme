@@ -6,7 +6,7 @@ import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 import tomlkit
 from dateutil.parser import isoparse
@@ -26,6 +26,51 @@ from .util.tokens import len_tokens
 logger = logging.getLogger(__name__)
 
 
+class MessageMetadata(TypedDict, total=False):
+    """
+    Metadata stored with each message.
+
+    All fields are optional for compact storage - only non-None values are serialized.
+
+    Token/cost fields are populated for assistant messages when telemetry is enabled.
+
+    Uses flat token format (matches cost_tracker and common industry conventions):
+        {
+            "model": "claude-sonnet",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 80,
+            "cache_creation_tokens": 10,
+            "cost": 0.005
+        }
+    """
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost: float  # Cost in USD
+
+
+def _format_toml_value(value: object) -> str:
+    """Format a value for TOML inline table."""
+    if isinstance(value, str):
+        return f'"{value}"'
+    elif isinstance(value, float):
+        return f"{value:.6f}"
+    else:
+        return str(value)
+
+
+def _format_metadata_toml(metadata: MessageMetadata) -> str:
+    """Format metadata as TOML inline table."""
+    meta_items = []
+    for k, v in metadata.items():
+        meta_items.append(f'"{k}" = {_format_toml_value(v)}')
+    return f"metadata = {{ {', '.join(meta_items)} }}"
+
+
 @dataclass(frozen=True, eq=False)
 class Message:
     """
@@ -40,6 +85,7 @@ class Message:
         hide: Whether this message should be hidden from the chat output (but still be sent to the assistant).
         quiet: Whether this message should be printed on execution (will still print on resume, unlike hide).
                This is not persisted to the log file.
+        metadata: Optional metadata including token usage and cost information.
     """
 
     role: Literal["system", "user", "assistant"]
@@ -52,6 +98,9 @@ class Message:
     pinned: bool = False
     hide: bool = False
     quiet: bool = False
+
+    # Metadata for token usage and cost tracking
+    metadata: MessageMetadata | None = None
 
     def __post_init__(self):
         assert isinstance(self.timestamp, datetime)
@@ -96,6 +145,9 @@ class Message:
             d["hide"] = True
         if self.call_id:
             d["call_id"] = self.call_id
+        # Only serialize metadata if it has content (compact storage)
+        if self.metadata:
+            d["metadata"] = dict(self.metadata)
         if keys:
             return {k: d[k] for k in keys if k in d}
         return d
@@ -149,7 +201,20 @@ class Message:
             file_hashes_toml = f"file_hashes = {{ {items} }}"
         else:
             file_hashes_toml = ""
-        extra = (flags_toml + "\n" + files_toml + "\n" + file_hashes_toml).strip()
+        # Serialize metadata as TOML inline table if present
+        if self.metadata:
+            metadata_toml = _format_metadata_toml(self.metadata)
+        else:
+            metadata_toml = ""
+        extra = (
+            flags_toml
+            + "\n"
+            + files_toml
+            + "\n"
+            + file_hashes_toml
+            + "\n"
+            + metadata_toml
+        ).strip()
 
         # doublequotes need to be escaped
         # content = self.content.replace('"', '\\"')
@@ -179,6 +244,11 @@ call_id = "{self.call_id}"
         assert "message" in t and isinstance(t["message"], dict)
         msg: dict = t["message"]  # type: ignore
 
+        # Parse metadata if present
+        metadata: MessageMetadata | None = None
+        if "metadata" in msg and msg["metadata"]:
+            metadata = MessageMetadata(**msg["metadata"])
+
         return cls(
             msg["role"],
             msg["content"].strip(),
@@ -188,6 +258,7 @@ call_id = "{self.call_id}"
             file_hashes=msg.get("file_hashes", {}),
             timestamp=isoparse(msg["timestamp"]),
             call_id=msg.get("call_id", None),
+            metadata=metadata,
         )
 
     def get_codeblocks(self) -> list[Codeblock]:
@@ -337,6 +408,9 @@ def toml_to_msgs(toml: str) -> list[Message]:
             pinned=msg.get("pinned", False),
             hide=msg.get("hide", False),
             timestamp=isoparse(msg["timestamp"]),
+            metadata=MessageMetadata(**msg["metadata"])
+            if msg.get("metadata")
+            else None,
         )
         for msg in msgs
     ]
