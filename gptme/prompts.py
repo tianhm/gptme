@@ -78,6 +78,11 @@ def get_prompt(
         if tools:
             core_msgs.extend(prompt_tools(tools=tools, tool_format=tool_format))
 
+    # TODO: generate context_cmd outputs seperately and put them last in a "dynamic context" section
+    #       with context known not to cache well across conversation starts, so that cache points can be set before and better utilized/changed less frequently.
+    #       probably together with chat history since it's also dynamic/live context.
+    #       as opposed to static (core/system prompt) and semi-static (workspace/project prompt, like files).
+
     # Generate workspace messages separately
     workspace_msgs = (
         list(prompt_workspace(workspace)) if workspace != agent_path else []
