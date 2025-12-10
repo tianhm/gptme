@@ -312,7 +312,39 @@ MODELS: dict[Provider, dict[str, _ModelDictMeta]] = {
             "price_output": 0.79,
         },
     },
+    # https://docs.x.ai/docs/models
     "xai": {
+        "grok-4-1-fast": {
+            "context": 2_000_000,
+            "max_output": 30_000,
+            "price_input": 0.2,
+            "price_output": 0.5,
+            "supports_vision": True,
+            "supports_reasoning": True,
+        },
+        "grok-code-fast-1": {
+            "context": 256_000,
+            "max_output": 10_000,
+            "price_input": 0.2,
+            "price_output": 1.5,
+            "supports_reasoning": True,
+        },
+        "grok-4-fast": {
+            "context": 2_000_000,
+            "max_output": 30_000,
+            "price_input": 0.2,
+            "price_output": 0.5,
+            "supports_reasoning": True,
+            "supports_vision": True,
+        },
+        "grok-4": {
+            "context": 256_000,
+            "max_output": 256_000,
+            "price_input": 3,
+            "price_output": 15,
+            "supports_reasoning": True,
+            "supports_vision": True,
+        },
         "grok-beta": {
             "context": 131_072,
             "max_output": 4096,  # guess
@@ -521,6 +553,8 @@ def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
         return "gemini-2.5-pro"
     elif provider == "anthropic":
         return "claude-sonnet-4-5"
+    elif provider == "xai":
+        return "grok-4"
     else:
         raise ValueError(f"Provider {provider} did not have a recommended model")
 
@@ -536,6 +570,8 @@ def get_summary_model(provider: Provider) -> str:  # pragma: no cover
         return "claude-haiku-4-5"
     elif provider == "deepseek":
         return "deepseek-chat"
+    elif provider == "xai":
+        return "grok-4-1-fast"
     else:
         raise ValueError(f"Provider {provider} did not have a summary model")
 
