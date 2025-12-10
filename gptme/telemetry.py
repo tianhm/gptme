@@ -321,10 +321,10 @@ def record_llm_request(
     logger.debug(f"tokens out: {output_tokens}")
 
     if total_tokens:
-        # check that total_tokens matches sum of parts
-        if not total_tokens == total_in + total_out:
+        diff_pct = abs(total_tokens - (total_in + total_out)) / total_tokens
+        if diff_pct > 0.01:  # Suppress if <1% discrepancy (normal for providers)
             logger.warning(
-                f"Total tokens {total_tokens} does not match sum of parts {total_in + total_out}, this is an implementation issue."
+                f"Total tokens {total_tokens} ({diff_pct:.1%} diff) does not match sum of parts {total_in + total_out}, this is an implementation issue."
             )
 
     cost = _calculate_llm_cost(
