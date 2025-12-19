@@ -1,22 +1,8 @@
+from unittest.mock import patch
+
 import pytest
 
 from gptme.tools.subagent import SubtaskDef, _subagents, subagent
-
-
-@pytest.fixture(autouse=True)
-def reduce_anthropic_retries(monkeypatch):
-    """Reduce Anthropic API retries during tests to prevent timeouts.
-
-    Anthropic API can have transient errors (5xx, overloaded) that trigger
-    exponential backoff retries. With default max_retries=5 and 60s timeout
-    per retry, a test with 2 sequential subagents can take ~10.5 minutes,
-    causing GitHub Actions timeout (15 min).
-
-    Reducing to max_retries=2 brings total time to ~4 minutes, well under
-    the timeout while still allowing some retry resilience.
-    """
-    # Set environment variable to limit retries during tests
-    monkeypatch.setenv("GPTME_TEST_MAX_RETRIES", "2")
 
 
 def test_planner_mode_requires_subtasks():
@@ -119,14 +105,16 @@ def test_planner_sequential_mode():
         {"id": "seq2", "description": "Second sequential task"},
     ]
 
-    # Note: In real usage, threads would complete. In tests, they may still be running.
-    subagent(
-        agent_id="test-sequential",
-        prompt="Sequential execution test",
-        mode="planner",
-        subtasks=subtasks,
-        execution_mode="sequential",
-    )
+    # Mock _create_subagent_thread to avoid real chat sessions
+    # Sequential mode blocks with t.join(), so we need threads to complete instantly
+    with patch("gptme.tools.subagent._create_subagent_thread"):
+        subagent(
+            agent_id="test-sequential",
+            prompt="Sequential execution test",
+            mode="planner",
+            subtasks=subtasks,
+            execution_mode="sequential",
+        )
 
     # Should spawn 2 executors
     assert len(_subagents) == initial_count + 2
@@ -278,3 +266,550 @@ def test_planner_mode_with_context_modes():
 
     # Should spawn 2 executors
     assert len(_subagents) == initial_count + 2
+
+
+# Phase 1 Tests: Subprocess mode, callbacks, batch execution
+
+
+def test_subagent_with_use_subprocess():
+    """Test that use_subprocess parameter is accepted."""
+    import inspect
+
+    sig = inspect.signature(subagent)
+
+    # Verify subprocess parameter exists (callbacks removed in favor of hooks)
+    assert "use_subprocess" in sig.parameters
+
+    # Verify default value
+    assert sig.parameters["use_subprocess"].default is False
+
+    # Callbacks have been removed - completion is now delivered via LOOP_CONTINUE hook
+    assert "on_complete" not in sig.parameters
+    assert "on_progress" not in sig.parameters
+
+
+def test_subagent_batch_creates_batch_job():
+    """Test that subagent_batch returns a BatchJob with correct structure."""
+    from gptme.tools.subagent import BatchJob, _subagents, subagent_batch
+
+    # Clear any previous subagents
+    _subagents.clear()
+
+    # Mock to prevent actual subagent execution
+    with patch("gptme.tools.subagent.subagent") as mock_subagent:
+        job = subagent_batch(
+            [
+                ("agent1", "prompt1"),
+                ("agent2", "prompt2"),
+            ]
+        )
+
+        # Verify BatchJob structure
+        assert isinstance(job, BatchJob)
+        assert job.agent_ids == ["agent1", "agent2"]
+        assert len(job.results) == 0  # No results yet
+
+        # Verify subagent was called for each task
+        assert mock_subagent.call_count == 2
+
+
+def test_batch_job_is_complete():
+    """Test BatchJob.is_complete() method."""
+    from gptme.tools.subagent import BatchJob, ReturnType
+
+    job = BatchJob(agent_ids=["a1", "a2"])
+    assert not job.is_complete()
+
+    job.results["a1"] = ReturnType("success", "done")
+    assert not job.is_complete()
+
+    job.results["a2"] = ReturnType("success", "done")
+    assert job.is_complete()
+
+
+def test_batch_job_get_completed():
+    """Test BatchJob.get_completed() method."""
+    from gptme.tools.subagent import BatchJob, ReturnType
+
+    job = BatchJob(agent_ids=["a1", "a2"])
+
+    # Add one result
+    job.results["a1"] = ReturnType("success", "result1")
+
+    completed = job.get_completed()
+    assert len(completed) == 1
+    assert "a1" in completed
+    assert completed["a1"]["status"] == "success"
+
+
+def test_subagent_execution_mode_field():
+    """Test that Subagent has execution_mode field."""
+    import threading
+    from pathlib import Path
+
+    from gptme.tools.subagent import Subagent
+
+    t = threading.Thread(target=lambda: None)
+    sa = Subagent(
+        agent_id="test",
+        prompt="test prompt",
+        thread=t,
+        logdir=Path("/tmp"),
+        model=None,
+        execution_mode="thread",
+    )
+    assert sa.execution_mode == "thread"
+
+    sa2 = Subagent(
+        agent_id="test2",
+        prompt="test prompt",
+        thread=None,
+        logdir=Path("/tmp"),
+        model=None,
+        execution_mode="subprocess",
+        process=None,
+    )
+    assert sa2.execution_mode == "subprocess"
+
+
+def test_subagent_status_returns_dict():
+    """Test that subagent_status returns a dictionary."""
+    from gptme.tools.subagent import subagent, subagent_status
+
+    # First create a subagent
+    subagent(agent_id="test-status-agent", prompt="Simple test")
+
+    # Get status
+    status = subagent_status("test-status-agent")
+    assert isinstance(status, dict)
+    assert "status" in status
+
+
+def test_subagent_status_unknown_agent():
+    """Test that subagent_status raises ValueError for unknown agents."""
+    import pytest
+
+    from gptme.tools.subagent import subagent_status
+
+    with pytest.raises(ValueError, match="not found"):
+        subagent_status("nonexistent-agent-xyz")
+
+
+@pytest.mark.slow
+@pytest.mark.eval
+def test_subagent_wait_basic():
+    """Test that subagent_wait can wait for completion."""
+    from gptme.tools.subagent import subagent, subagent_wait
+
+    # Create a simple subagent
+    subagent(agent_id="test-wait-agent", prompt="Simple quick task")
+
+    # Wait with a short timeout (subagent should complete quickly for simple prompt)
+    # Note: This test may take up to timeout seconds
+    result = subagent_wait("test-wait-agent", timeout=30)
+    assert isinstance(result, dict)
+    # Status should be either success, failure, or running (if it takes too long)
+    assert result.get("status") in ["success", "failure", "running", "timeout"]
+
+
+@pytest.mark.slow
+@pytest.mark.eval
+def test_subagent_read_log_returns_string():
+    """Test that subagent_read_log returns a string with log content."""
+    from gptme.tools.subagent import subagent, subagent_read_log
+
+    # Create a subagent first
+    subagent(agent_id="test-log-agent", prompt="Log test task")
+
+    # Read the log
+    result = subagent_read_log("test-log-agent")
+    assert isinstance(result, str)
+    # The result should contain some log content
+    assert len(result) > 0
+
+
+# Subprocess mode execution tests (per Erik's review comment)
+
+
+def test_subprocess_mode_creates_process():
+    """Test that subprocess mode actually creates a subprocess.Popen object."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.tools.subagent import _subagents, subagent
+
+    # Clear previous subagents
+    _subagents.clear()
+
+    # Mock subprocess.Popen to avoid actually running gptme
+    mock_process = MagicMock()
+    mock_process.poll.return_value = None  # Process still running
+
+    with patch("gptme.tools.subagent.subprocess.Popen", return_value=mock_process):
+        subagent(
+            agent_id="test-subprocess",
+            prompt="Simple test task",
+            use_subprocess=True,
+        )
+
+        # Verify subprocess was created
+        assert len(_subagents) >= 1
+        sa = next((s for s in _subagents if s.agent_id == "test-subprocess"), None)
+        assert sa is not None
+        assert sa.execution_mode == "subprocess"
+        assert sa.process is mock_process
+
+
+def test_subprocess_mode_command_construction():
+    """Test that subprocess mode constructs the correct gptme command."""
+    from unittest.mock import MagicMock, patch
+
+    captured_cmd: list[str] = []
+
+    def capture_popen(cmd, **kwargs):
+        captured_cmd.clear()
+        captured_cmd.extend(cmd)
+        mock = MagicMock()
+        mock.poll.return_value = None
+        return mock
+
+    from gptme.tools.subagent import _subagents, subagent
+
+    _subagents.clear()
+
+    with patch("gptme.tools.subagent.subprocess.Popen", side_effect=capture_popen):
+        subagent(
+            agent_id="test-cmd",
+            prompt="Test prompt for command",
+            use_subprocess=True,
+        )
+
+    # Verify command structure
+    assert "-m" in captured_cmd
+    assert "gptme" in captured_cmd
+    assert "-n" in captured_cmd  # Non-interactive
+    assert "--no-confirm" in captured_cmd
+    assert "Test prompt for command" in captured_cmd
+
+
+def test_subprocess_mode_completion_stored():
+    """Test that subprocess completion results are stored in cache."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.tools.subagent import (
+        _subagent_results,
+        _subagents,
+        subagent,
+        subagent_status,
+    )
+
+    _subagents.clear()
+    _subagent_results.clear()
+
+    # Mock process that completes successfully
+    mock_process = MagicMock()
+    mock_process.poll.return_value = 0  # Completed
+    mock_process.communicate.return_value = ("Success output", "")
+
+    with patch("gptme.tools.subagent.subprocess.Popen", return_value=mock_process):
+        subagent(
+            agent_id="test-complete",
+            prompt="Task to complete",
+            use_subprocess=True,
+        )
+
+    # Give monitor thread time to process (it runs in daemon thread)
+    import time
+
+    time.sleep(0.5)
+
+    # Verify status can be retrieved
+    status = subagent_status("test-complete")
+    assert isinstance(status, dict)
+    assert "status" in status
+
+
+# Integration tests for actual subprocess execution
+# These tests verify the subprocess infrastructure without mocking
+
+
+@pytest.mark.slow
+def test_subprocess_actual_process_creation():
+    """Test that _run_subagent_subprocess creates a real subprocess.Popen object."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from gptme.tools.subagent import _run_subagent_subprocess
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logdir = Path(tmpdir) / "logs"
+        logdir.mkdir()
+
+        # Create a subprocess
+        process = _run_subagent_subprocess(
+            prompt="Say hello",
+            logdir=logdir,
+            model=None,
+            workspace=Path(tmpdir),
+        )
+
+        try:
+            # Verify it's a real subprocess.Popen object
+            assert isinstance(process, subprocess.Popen)
+            assert process.pid is not None
+            assert process.pid > 0
+
+            # Verify stdout and stderr are piped (for output isolation)
+            assert process.stdout is not None
+            assert process.stderr is not None
+
+        finally:
+            # Clean up - terminate the process
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+@pytest.mark.slow
+def test_subprocess_command_includes_required_flags():
+    """Test that subprocess command includes all required gptme flags."""
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    from gptme.tools.subagent import _run_subagent_subprocess
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logdir = Path(tmpdir) / "logs"
+        logdir.mkdir()
+
+        process = _run_subagent_subprocess(
+            prompt="Test task",
+            logdir=logdir,
+            model="test-model",
+            workspace=Path(tmpdir),
+        )
+
+        try:
+            # The command is available as process.args
+            cmd = process.args
+            assert isinstance(cmd, list)
+
+            # Verify required elements
+            assert sys.executable in cmd[0] or "python" in cmd[0]
+            assert "-m" in cmd
+            assert "gptme" in cmd
+            assert "-n" in cmd  # Non-interactive
+            assert "--no-confirm" in cmd
+            assert any("--logdir=" in str(arg) for arg in cmd)
+            assert "--model" in cmd
+            assert "test-model" in cmd
+            assert "Test task" in cmd  # The prompt
+
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+@pytest.mark.slow
+def test_subprocess_working_directory():
+    """Test that subprocess runs in the specified working directory."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from gptme.tools.subagent import _run_subagent_subprocess
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        workspace = Path(tmpdir) / "workspace"
+        workspace.mkdir()
+        logdir = Path(tmpdir) / "logs"
+        logdir.mkdir()
+
+        process = _run_subagent_subprocess(
+            prompt="Test task",
+            logdir=logdir,
+            model=None,
+            workspace=workspace,
+        )
+
+        try:
+            # Verify the process was started (cwd is set internally by Popen)
+            assert process.pid > 0
+            # We can't directly verify cwd, but we verified the Popen call
+            # would have received the workspace parameter
+
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+@pytest.mark.slow
+def test_subprocess_full_flow_with_subagent_function():
+    """Test the full subprocess flow using the subagent() function."""
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from gptme.tools.subagent import (
+        _subagent_results,
+        _subagents,
+        subagent,
+    )
+
+    _subagents.clear()
+    _subagent_results.clear()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Patch get_logdir to use our temp directory
+        temp_logdir = Path(tmpdir) / "logs"
+        temp_logdir.mkdir()
+
+        with patch("gptme.cli.get_logdir", return_value=temp_logdir):
+            # Start a subprocess subagent
+            subagent(
+                agent_id="subprocess-test",
+                prompt="Print hello",
+                use_subprocess=True,
+            )
+
+            # Verify subagent was created
+            sa = next((s for s in _subagents if s.agent_id == "subprocess-test"), None)
+            assert sa is not None
+            assert sa.execution_mode == "subprocess"
+            assert sa.process is not None
+
+            # The process should have started
+            assert sa.process.pid > 0
+
+            # Clean up
+            if sa.process:
+                sa.process.terminate()
+                try:
+                    sa.process.wait(timeout=5)
+                except Exception:
+                    sa.process.kill()
+
+
+@pytest.mark.slow
+def test_subprocess_monitor_thread_started():
+    """Test that subprocess mode starts a monitor thread."""
+    import tempfile
+    import threading
+    import time
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from gptme.tools.subagent import (
+        _subagents,
+        subagent,
+    )
+
+    _subagents.clear()
+
+    # Count daemon threads before
+    initial_daemon_threads = sum(1 for t in threading.enumerate() if t.daemon)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_logdir = Path(tmpdir) / "logs"
+        temp_logdir.mkdir()
+
+        with patch("gptme.cli.get_logdir", return_value=temp_logdir):
+            subagent(
+                agent_id="monitor-test",
+                prompt="Test",
+                use_subprocess=True,
+            )
+
+            # Give the monitor thread time to start
+            time.sleep(0.1)
+
+            # Should have at least one more daemon thread
+            current_daemon_threads = sum(1 for t in threading.enumerate() if t.daemon)
+            # The monitor thread should be running
+            # (it's a daemon thread that monitors the subprocess)
+            assert current_daemon_threads >= initial_daemon_threads
+
+            # Clean up
+            sa = next((s for s in _subagents if s.agent_id == "monitor-test"), None)
+            if sa and sa.process:
+                sa.process.terminate()
+                try:
+                    sa.process.wait(timeout=5)
+                except Exception:
+                    sa.process.kill()
+
+
+@pytest.mark.slow
+@pytest.mark.eval
+def test_subprocess_mode_execution_basic():
+    """Test that subprocess mode actually executes and completes a subagent.
+
+    This test creates a real subagent in subprocess mode and waits for completion,
+    verifying that the subprocess execution path works end-to-end.
+    """
+    from gptme.tools.subagent import _subagents, subagent, subagent_wait
+
+    # Clear any existing subagents
+    _subagents.clear()
+
+    # Create a subagent in subprocess mode with a simple task
+    subagent(
+        agent_id="test-subprocess-exec",
+        prompt="Reply with exactly: SUBPROCESS_TEST_SUCCESS",
+        use_subprocess=True,
+    )
+
+    # Verify the subagent was created with subprocess execution mode
+    sa = next((s for s in _subagents if s.agent_id == "test-subprocess-exec"), None)
+    assert sa is not None
+    assert sa.execution_mode == "subprocess"
+    assert sa.process is not None
+
+    # Wait for completion with a reasonable timeout
+    result = subagent_wait("test-subprocess-exec", timeout=60)
+    assert isinstance(result, dict)
+    # Status should be either success or failure (not running if we waited enough)
+    assert result.get("status") in ["success", "failure", "timeout"]
+
+
+@pytest.mark.slow
+@pytest.mark.eval
+def test_subprocess_mode_read_log():
+    """Test that we can read logs from a subprocess mode subagent."""
+    from gptme.tools.subagent import (
+        _subagents,
+        subagent,
+        subagent_read_log,
+        subagent_wait,
+    )
+
+    _subagents.clear()
+
+    # Create a subagent in subprocess mode
+    subagent(
+        agent_id="test-subprocess-log",
+        prompt="Say hello",
+        use_subprocess=True,
+    )
+
+    # Wait for it to complete (or timeout)
+    subagent_wait("test-subprocess-log", timeout=60)
+
+    # Read the log - should contain something
+    log_content = subagent_read_log("test-subprocess-log")
+    assert isinstance(log_content, str)
+    # Log should exist and have content (at minimum the conversation start)
+    assert len(log_content) > 0

@@ -89,6 +89,22 @@ def auth_headers():
 
 
 @pytest.fixture(autouse=True)
+def reduce_anthropic_retries(monkeypatch):
+    """Reduce Anthropic API retries during tests to prevent timeouts.
+
+    Anthropic API can have transient errors (5xx, overloaded) that trigger
+    exponential backoff retries. With default max_retries=5 and 60s timeout
+    per retry, a test with 2 sequential subagents can take ~10.5 minutes,
+    causing GitHub Actions timeout (15 min).
+
+    Reducing to max_retries=2 brings total time to ~4 minutes, well under
+    the timeout while still allowing some retry resilience.
+    """
+    # Set environment variable to limit retries during tests
+    monkeypatch.setenv("GPTME_TEST_MAX_RETRIES", "2")
+
+
+@pytest.fixture(autouse=True)
 def clear_tools_before():
     # Clear all tools and cache to prevent test conflicts
     clear_tools()
@@ -113,16 +129,26 @@ def cleanup_shell_after():
 
 @pytest.fixture(autouse=True)
 def cleanup_subagents_after():
-    """Clean up subagent threads after each test.
+    """Clean up subagent threads and subprocesses after each test.
 
     Subagent threads are daemon threads that should die with the parent,
     but explicitly clearing them prevents potential issues.
+    Subprocesses in subprocess mode need explicit termination.
     """
     yield
     # Wait briefly for any running subagent threads to complete
     for subagent in _subagents:
-        if subagent.thread.is_alive():
+        # Clean up threads
+        if subagent.thread is not None and subagent.thread.is_alive():
             subagent.thread.join(timeout=5.0)
+        # Clean up subprocesses (subprocess mode)
+        if subagent.process is not None and subagent.process.poll() is None:
+            subagent.process.terminate()
+            try:
+                subagent.process.wait(timeout=5.0)
+            except Exception:
+                # Force kill if graceful termination fails
+                subagent.process.kill()
     # Clear the subagents list
     _subagents.clear()
 
