@@ -161,6 +161,26 @@ The interface provides user commands that can be used to interact with the syste
     is_flag=True,
     help="Enable profiling and save results to gptme-profile-{timestamp}.prof",
 )
+@click.option(
+    "--context-mode",
+    "context_mode",
+    type=click.Choice(["full", "instructions-only", "selective"]),
+    default=None,
+    help="Context mode for subagent-style execution. 'full' includes all context, 'instructions-only' minimal context, 'selective' uses --context-include.",
+)
+@click.option(
+    "--context-include",
+    "context_include",
+    multiple=True,
+    default=None,
+    help="Context components to include when using --context-mode=selective. Can be specified multiple times. Options: agent, tools, workspace.",
+)
+@click.option(
+    "--output-schema",
+    "output_schema",
+    default=None,
+    help="Schema for structured output in format 'module:ClassName'. The class should be a Pydantic BaseModel.",
+)
 def main(
     ctx: click.Context,
     prompts: list[str],
@@ -180,6 +200,9 @@ def main(
     agent_path: str | None,
     profile: bool,
     parallel: bool | None,
+    context_mode: str | None,
+    context_include: tuple[str, ...],
+    output_schema: str | None,
 ):
     """Main entrypoint for the CLI."""
     import os
@@ -408,11 +431,31 @@ def main(
             model=config.chat.model,
             workspace=workspace_path,
             agent_path=config.chat.agent,
+            context_mode=context_mode,  # type: ignore[arg-type]  # click returns str
+            context_include=list(context_include) if context_include else None,
         )
 
     # register a handler for Ctrl-C
     set_interruptible()  # prepare, user should be able to Ctrl+C until user prompt ready
     signal.signal(signal.SIGINT, handle_keyboard_interrupt)
+
+    # Parse output_schema if provided (format: "module:ClassName")
+    output_schema_type: type | None = None
+    if output_schema:
+        try:
+            if ":" in output_schema:
+                module_name, class_name = output_schema.rsplit(":", 1)
+                import importlib
+
+                module = importlib.import_module(module_name)
+                output_schema_type = getattr(module, class_name)
+            else:
+                logger.warning(
+                    f"Invalid output_schema format: {output_schema}. "
+                    "Expected 'module:ClassName'"
+                )
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Could not load output_schema {output_schema}: {e}")
 
     try:
         chat(
@@ -427,6 +470,7 @@ def main(
             show_hidden,
             config.chat.tools,
             config.chat.tool_format,
+            output_schema_type,
         )
     except (RuntimeError, Exception) as e:
         logger.error("Fatal error occurred")
