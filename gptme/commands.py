@@ -35,8 +35,6 @@ from .tools import (
     get_tools,
 )
 from .util.auto_naming import generate_llm_name
-from .util.cost import log_costs
-from .util.cost_tracker import CostTracker
 from .util.export import export_chat_to_html
 from .util.useredit import edit_text_with_editor
 
@@ -59,6 +57,7 @@ Actions = Literal[
     "commit",
     "clear",
     "setup",
+    "restart",
     "help",
     "exit",
 ]
@@ -80,6 +79,7 @@ action_descriptions: dict[Actions, str] = {
     "commit": "Ask assistant to git commit",
     "clear": "Clear the terminal screen",
     "setup": "Setup gptme with completions and configuration",
+    "restart": "Restart gptme process",
     "help": "Show this help message",
     "exit": "Exit the program",
 }
@@ -290,6 +290,33 @@ def cmd_exit(ctx: CommandContext) -> None:
     sys.exit(0)
 
 
+@command("restart")
+def cmd_restart(ctx: CommandContext) -> None:
+    """Restart the gptme process.
+
+    Useful for:
+    - Applying configuration changes that require a restart
+    - Reloading tools after code modifications
+    - Recovering from state issues
+    """
+    from .tools.restart import _do_restart
+
+    ctx.manager.undo(1, quiet=True)
+
+    if not ctx.confirm("Restart gptme? This will exit and restart the process."):
+        print("Restart cancelled.")
+        return
+
+    # Ensure everything is synced to disk
+    ctx.manager.write(sync=True)
+
+    conversation_name = ctx.manager.logdir.name
+    print(f"Restarting gptme with conversation: {conversation_name}")
+
+    # Perform the restart
+    _do_restart(conversation_name)
+
+
 @command("replay")
 def cmd_replay(ctx: CommandContext) -> None:
     """Replay the conversation or specific tool operations."""
@@ -413,33 +440,20 @@ def cmd_impersonate(ctx: CommandContext) -> Generator[Message, None, None]:
 def cmd_tokens(ctx: CommandContext) -> None:
     """Show token usage and costs.
 
-    Uses CostTracker for accurate costs when available (tracks actual API usage),
-    falls back to approximation from message history otherwise.
+    Shows session costs (current session) and conversation costs (all messages)
+    when both are available. Falls back to approximation for old conversations.
     """
-    from .util import console
+    from .util.cost_display import (
+        display_costs,
+        gather_conversation_costs,
+        gather_session_costs,
+    )
 
     ctx.manager.undo(1, quiet=True)
 
-    # Try to get accurate costs from CostTracker first
-    summary = CostTracker.get_summary()
-    if summary and summary.request_count > 0:
-        # Use accurate tracked costs
-        tokens_msg = f"Tokens: {summary.total_input_tokens:,}/{summary.total_output_tokens:,} in/out"
-        if summary.cache_read_tokens > 0 or summary.cache_creation_tokens > 0:
-            tokens_msg += f" (cache: {summary.cache_read_tokens:,} read, {summary.cache_creation_tokens:,} created)"
-
-        console.log(tokens_msg)
-
-        if summary.total_cost > 0:
-            cost_msg = f"Cost:   ${summary.total_cost:.4f}"
-            if summary.cache_hit_rate > 0:
-                cost_msg += f" (cache hit rate: {summary.cache_hit_rate*100:.1f}%)"
-            console.log(cost_msg)
-
-        console.log(f"Requests: {summary.request_count}")
-    else:
-        # Fall back to approximation from message history
-        log_costs(ctx.manager.log.messages)
+    session = gather_session_costs()
+    conversation = gather_conversation_costs(ctx.manager.log.messages)
+    display_costs(session, conversation)
 
 
 @command("tools")
@@ -454,6 +468,74 @@ def cmd_tools(ctx: CommandContext) -> None:
     {tool.desc.rstrip(".")}
     tokens (example): {len_tokens(tool.get_examples(get_tool_format()), "gpt-4")}"""
         )
+
+
+@command("context")
+def cmd_context(ctx: CommandContext) -> None:
+    """Show context token usage breakdown."""
+    from collections import defaultdict
+
+    from .llm.models import get_default_model
+    from .util import console
+    from .util.tokens import len_tokens
+
+    ctx.manager.undo(1, quiet=True)
+
+    # Try to use the current model's tokenizer, fallback to gpt-4
+    current_model = get_default_model()
+    tokenizer_model = "gpt-4"
+    is_approximate = True
+
+    if current_model:
+        # Use matching tokenizer for OpenAI models
+        if current_model.provider == "openai" or (
+            current_model.provider == "openrouter"
+            and current_model.model.startswith("openai/")
+        ):
+            tokenizer_model = current_model.model.split("/")[-1]
+            is_approximate = False
+
+    # Track token counts by category
+    by_role: dict[str, int] = defaultdict(int)
+    by_type: dict[str, int] = defaultdict(int)
+
+    # Analyze each message (including hidden, since they're sent to the model)
+    for msg in ctx.manager.log.messages:
+        content_tokens = len_tokens(msg.content, tokenizer_model)
+
+        # Count by role
+        by_role[msg.role] += content_tokens
+
+        # Categorize content type
+        # Check for tool uses
+        tool_uses = list(ToolUse.iter_from_content(msg.content))
+        if tool_uses:
+            by_type["tool_use"] += content_tokens
+        # Check for thinking blocks (Anthropic uses <thinking> tags)
+        elif "<thinking>" in msg.content or "<think>" in msg.content:
+            by_type["thinking"] += content_tokens
+        else:
+            by_type["message"] += content_tokens
+
+    # Calculate totals
+    total_tokens = sum(by_role.values())
+
+    # Display breakdown
+    console.log("[bold]Token Usage by Role:[/bold]")
+    for role in ["system", "user", "assistant"]:
+        tokens = by_role.get(role, 0)
+        pct = (tokens / total_tokens * 100) if total_tokens > 0 else 0
+        console.log(f"  {role:10s}: {tokens:6,} ({pct:5.1f}%)")
+
+    console.log("\n[bold]Token Usage by Type:[/bold]")
+    for type_name, tokens in sorted(by_type.items(), key=lambda x: x[1], reverse=True):
+        pct = (tokens / total_tokens * 100) if total_tokens > 0 else 0
+        console.log(f"  {type_name:10s}: {tokens:6,} ({pct:5.1f}%)")
+
+    console.log(f"\n[bold]Total Context:[/bold] {total_tokens:,} tokens")
+
+    if is_approximate:
+        console.log(f"[dim](approximate, using {tokenizer_model} tokenizer)[/dim]")
 
 
 @command("model", aliases=["models"])
