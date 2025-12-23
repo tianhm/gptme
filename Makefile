@@ -212,7 +212,9 @@ analyze-compression: ## Analyze compression ratios of conversation logs
 cloc: cloc-core cloc-tools cloc-server cloc-tests  ## Run cloc to count lines of code
 
 FILES_LLM=gptme/llm/*.py
-FILES_CORE=gptme/*.py $(FILES_LLM) gptme/util/*.py gptme/tools/__init__.py gptme/tools/base.py
+FILES_TOOLS=gptme/tools/*.py gptme/hooks/*.py gptme/plugins/*.py
+FILES_TOOLS_CORE=gptme/tools/base.py gptme/tools/__init__.py gptme/hooks/__init__.py gptme/plugins/__init__.py
+FILES_CORE=gptme/*.py $(FILES_LLM) gptme/util/*.py $(FILES_TOOLS_CORE) gptme/lessons/*.py
 cloc-core:
 	cloc $(FILES_CORE) --by-file
 
@@ -220,7 +222,7 @@ cloc-llm:
 	cloc $(FILES_LLM) --by-file
 
 cloc-tools:
-	cloc gptme/tools/*.py --by-file
+	cloc $(FILES_TOOLS) --by-file
 
 cloc-server:
 	cloc gptme/server --by-file
