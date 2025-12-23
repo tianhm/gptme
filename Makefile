@@ -216,25 +216,25 @@ FILES_TOOLS=gptme/tools/*.py gptme/hooks/*.py gptme/plugins/*.py
 FILES_TOOLS_CORE=gptme/tools/base.py gptme/tools/__init__.py gptme/hooks/__init__.py gptme/plugins/__init__.py
 FILES_CORE=gptme/*.py $(FILES_LLM) gptme/util/*.py $(FILES_TOOLS_CORE) gptme/lessons/*.py
 cloc-core:
-	cloc $(FILES_CORE) --by-file
+	cloc $(FILES_CORE) --by-file --hide-rate --quiet | tail -n +2
 
 cloc-llm:
-	cloc $(FILES_LLM) --by-file
+	cloc $(FILES_LLM) --by-file --hide-rate --quiet | tail -n +2
 
 cloc-tools:
-	cloc $(FILES_TOOLS) --by-file
+	cloc $(FILES_TOOLS) --by-file --hide-rate --quiet | tail -n +2
 
 cloc-server:
-	cloc gptme/server --by-file
+	cloc gptme/server --by-file --hide-rate --quiet | tail -n +2
 
 cloc-tests:
-	cloc tests --by-file
+	cloc tests --by-file --hide-rate --quiet | tail -n +2
 
 cloc-eval:
-	cloc gptme/eval/**.py --by-file
+	cloc gptme/eval/**.py --by-file --hide-rate --quiet | tail -n +2
 
 cloc-total:
-	cloc ${SRCFILES} --by-file
+	cloc ${SRCFILES} --by-file --hide-rate --quiet | tail -n +2
 
 # Code metrics
 .PHONY: metrics
