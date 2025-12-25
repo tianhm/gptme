@@ -5,13 +5,19 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
 import requests
+from openai import NOT_GIVEN
 
 from ..config import Config, get_config
 from ..constants import TEMPERATURE, TOP_P
 from ..message import Message, MessageMetadata, msgs2dicts
-from ..telemetry import record_llm_request
+from ..telemetry import _calculate_llm_cost, record_llm_request
 from ..tools import ToolSpec
-from .models import ModelMeta, Provider, is_custom_provider
+from .models import (
+    CustomProvider,
+    ModelMeta,
+    Provider,
+    is_custom_provider,
+)
 from .utils import (
     apply_cache_control,
     extract_tool_uses_from_assistant_message,
@@ -79,7 +85,6 @@ def _record_usage(usage, model: str) -> MessageMetadata | None:
     )
 
     # Calculate cost for metadata
-    from ..telemetry import _calculate_llm_cost
 
     cost = _calculate_llm_cost(
         provider=provider,
@@ -119,7 +124,6 @@ def _make_response_format(output_schema):
     Returns:
         OpenAI response_format dict or NOT_GIVEN if no schema
     """
-    from openai import NOT_GIVEN
 
     if output_schema is None:
         return NOT_GIVEN
@@ -408,7 +412,7 @@ def stream(
     stop_reason = None
 
     for chunk_raw in client.chat.completions.create(
-        model=api_model,
+        model=api_model.split("@")[0],
         messages=messages_dicts,  # type: ignore
         temperature=TEMPERATURE if not is_reasoner else NOT_GIVEN,
         top_p=TOP_P if not is_reasoner else NOT_GIVEN,
@@ -787,7 +791,6 @@ def _get_local_models(
 
 def _local_model_to_modelmeta(model_data: dict, provider_name: str) -> ModelMeta:
     """Convert local/ollama model data to ModelMeta object."""
-    from .models import CustomProvider
 
     model_id = model_data.get("id", model_data.get("name", "unknown"))
 
