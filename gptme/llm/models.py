@@ -644,6 +644,84 @@ def _apply_model_filters(
     return filtered_models
 
 
+# Cache for model list (used by completers and CLI)
+_model_list_cache: list[ModelMeta] | None = None
+_model_list_cache_time: float = 0
+_MODEL_LIST_CACHE_TTL = 300  # 5 minutes
+
+
+def get_model_list(
+    provider_filter: str | None = None,
+    vision_only: bool = False,
+    reasoning_only: bool = False,
+    dynamic_fetch: bool = True,
+) -> list[ModelMeta]:
+    """
+    Get list of available models with optional filtering.
+
+    This is the underlying function used by list_models() and command completers.
+    Results are cached for 5 minutes when dynamic_fetch=True to avoid repeated API calls.
+
+    Args:
+        provider_filter: Only include models from this provider
+        vision_only: Only include models with vision support
+        reasoning_only: Only include models with reasoning support
+        dynamic_fetch: Fetch dynamic models from APIs where available
+
+    Returns:
+        List of ModelMeta objects
+    """
+    import time
+
+    from ..config import get_config  # fmt: skip
+
+    global _model_list_cache, _model_list_cache_time
+
+    # Check cache for unfiltered dynamic fetches
+    current_time = time.time()
+    use_cache = (
+        dynamic_fetch and not provider_filter and not vision_only and not reasoning_only
+    )
+
+    if (
+        use_cache
+        and _model_list_cache is not None
+        and current_time - _model_list_cache_time < _MODEL_LIST_CACHE_TTL
+    ):
+        return _model_list_cache
+
+    all_models: list[ModelMeta] = []
+
+    # Get custom providers from config
+    config = get_config()
+    custom_providers: list[Provider] = [
+        CustomProvider(p.name) for p in config.user.providers
+    ]
+
+    # Combine built-in and custom providers
+    all_providers: list[Provider] = (
+        list(cast(list[Provider], list(MODELS.keys()))) + custom_providers
+    )
+
+    for provider in all_providers:
+        if provider_filter and provider != provider_filter:
+            continue
+
+        # Get models for this provider
+        models = _get_models_for_provider(provider, dynamic_fetch)
+
+        # Apply filters
+        filtered_models = _apply_model_filters(models, vision_only, reasoning_only)
+        all_models.extend(filtered_models)
+
+    # Update cache for unfiltered results
+    if use_cache:
+        _model_list_cache = all_models
+        _model_list_cache_time = current_time
+
+    return all_models
+
+
 def _print_simple_format(models: list[ModelMeta]) -> None:
     """Print models in simple format (one per line)."""
     for model in models:
@@ -724,45 +802,39 @@ def list_models(
         simple_format: Output one model per line as provider/model
         dynamic_fetch: Fetch dynamic models from APIs where available
     """
-    from ..config import get_config  # fmt: skip
+    if simple_format:
+        # Simple format: just get all models and print them
+        all_models = get_model_list(
+            provider_filter=provider_filter,
+            vision_only=vision_only,
+            reasoning_only=reasoning_only,
+            dynamic_fetch=dynamic_fetch,
+        )
+        _print_simple_format(all_models)
+    else:
+        # Detailed format: print by provider with formatting
+        from ..config import get_config  # fmt: skip
 
-    if not simple_format:
         print("Available models:")
 
-    all_models = []
+        config = get_config()
+        custom_providers: list[Provider] = [
+            CustomProvider(p.name) for p in config.user.providers
+        ]
+        all_providers: list[Provider] = (
+            list(cast(list[Provider], list(MODELS.keys()))) + custom_providers
+        )
 
-    # Get custom providers from config
-    config = get_config()
-    custom_providers: list[Provider] = [
-        CustomProvider(p.name) for p in config.user.providers
-    ]
+        for provider in all_providers:
+            if provider_filter and provider != provider_filter:
+                continue
 
-    # Combine built-in and custom providers
-    all_providers: list[Provider] = (
-        list(cast(list[Provider], list(MODELS.keys()))) + custom_providers
-    )
+            models = _get_models_for_provider(provider, dynamic_fetch)
+            filtered_models = _apply_model_filters(models, vision_only, reasoning_only)
 
-    for provider in all_providers:
-        if provider_filter and provider != provider_filter:
-            continue
+            if not filtered_models:
+                continue
 
-        # Get models for this provider
-        models = _get_models_for_provider(provider, dynamic_fetch)
-
-        # Apply filters
-        filtered_models = _apply_model_filters(models, vision_only, reasoning_only)
-
-        if not filtered_models:
-            continue
-
-        # Output models
-        if simple_format:
-            all_models.extend(filtered_models)
-        else:
             _print_detailed_format(
                 provider, filtered_models, show_pricing, dynamic_fetch
             )
-
-    # Print all models in simple format at the end
-    if simple_format:
-        _print_simple_format(all_models)
