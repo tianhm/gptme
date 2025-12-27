@@ -208,11 +208,19 @@ def new_session(command: str) -> Message:
 
 
 def send_keys(pane_id: str, keys: str) -> Message:
+    import shlex
+
     if not pane_id.startswith("gptme_"):
         pane_id = f"gptme_{pane_id}"
+    # Parse keys into separate arguments to avoid shell injection
+    # shlex.split properly handles quoted strings and escapes
+    try:
+        key_args = shlex.split(keys)
+    except ValueError:
+        # Fall back to single argument if shlex can't parse (unmatched quotes, etc.)
+        key_args = [keys]
     result = subprocess.run(
-        f"tmux send-keys -t {pane_id} {keys}",
-        shell=True,
+        ["tmux", "send-keys", "-t", pane_id, *key_args],
         capture_output=True,
         text=True,
     )
