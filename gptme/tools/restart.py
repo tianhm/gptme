@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 _triggered_restart = False
 
 
+# Flags that take a value (next argument)
+_FLAGS_WITH_VALUES = {
+    "--name",
+    "-m",
+    "--model",
+    "-w",
+    "--workspace",
+    "--agent-path",
+    "--system",
+    "-t",
+    "--tools",
+    "--tool-format",
+    "--context-mode",
+    "--context-include",
+    "--output-schema",
+}
+
+
 def _do_restart(conversation_name: str | None = None):
     """Restart gptme by manually triggering cleanup and then execing.
 
@@ -33,25 +51,102 @@ def _do_restart(conversation_name: str | None = None):
     """
     import atexit
 
-    # Build restart command with explicit conversation name
+    # Build restart command, filtering out positional arguments (prompts)
+    # since they are already in the conversation log (Issue #1011)
     # Use sys.argv[0] (gptme script) not sys.executable (python interpreter)
-    restart_args = sys.argv[:]
+    filtered_args = [sys.argv[0]]  # Keep script name
+    skip_next = False
+    i = 1
+
+    skip_value = False  # True when we need to skip the next value (for --name)
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+
+        if skip_next:
+            # This arg is a value for the previous flag, keep it
+            filtered_args.append(arg)
+            skip_next = False
+            i += 1
+            continue
+
+        if skip_value:
+            # This arg is a value for --name/--resume, skip it
+            skip_value = False
+            i += 1
+            continue
+
+        if arg.startswith("-"):
+            # This is a flag
+            # Flags that are persisted to the chat config and loaded on resume
+            # These should NOT be re-passed on restart since they're in the conversation config
+            _PERSISTED_FLAGS = {
+                "--name",  # we add explicitly with conversation name
+                "-r",
+                "--resume",  # boolean flags for resuming
+                "-m",
+                "--model",  # model is persisted
+                "-t",
+                "--tools",  # tools allowlist is persisted
+                "--tool-format",  # tool format is persisted
+                "--stream",
+                "--no-stream",  # streaming preference
+                "-n",
+                "--non-interactive",  # interactive mode
+                "--agent-path",  # agent path
+                "-w",
+                "--workspace",  # workspace path
+                "--multi-tool",
+                "--no-multi-tool",  # multi-tool mode
+                "--context-mode",  # context mode
+                "--context-include",  # context includes
+            }
+            if arg in _PERSISTED_FLAGS:
+                # Skip flags that are persisted to chat config
+                if arg in _FLAGS_WITH_VALUES:
+                    skip_value = True  # Also skip the value
+                # Don't add to filtered_args
+            elif arg in _FLAGS_WITH_VALUES:
+                # Flag takes a value, keep flag and mark to keep next arg
+                filtered_args.append(arg)
+                skip_next = True
+            elif "=" in arg:
+                # Flag with inline value (--flag=value), keep it
+                # But skip if it's a persisted flag (loaded from chat config)
+                flag_name = arg.split("=")[0]
+                _PERSISTED_FLAGS_INLINE = {
+                    "--name",
+                    "--resume",
+                    "-r",
+                    "-m",
+                    "--model",
+                    "-t",
+                    "--tools",
+                    "--tool-format",
+                    "--stream",
+                    "--no-stream",
+                    "-n",
+                    "--non-interactive",
+                    "--agent-path",
+                    "-w",
+                    "--workspace",
+                    "--multi-tool",
+                    "--no-multi-tool",
+                    "--context-mode",
+                    "--context-include",
+                }
+                if flag_name not in _PERSISTED_FLAGS_INLINE:
+                    filtered_args.append(arg)
+            else:
+                # Boolean flag (no value), keep it
+                filtered_args.append(arg)
+        # else: positional argument (prompt) - skip it (Issue #1011)
+
+        i += 1
+
+    restart_args = filtered_args
 
     # Ensure we have the conversation name in the args
     if conversation_name:
-        # Remove any existing --name or --resume args and their values
-        filtered_args = []
-        skip_next = False
-        for arg in restart_args:
-            if skip_next:
-                skip_next = False
-                continue
-            if arg in ["--name", "-r", "--resume"]:
-                skip_next = True  # Skip this flag and the next argument (its value)
-                continue
-            filtered_args.append(arg)
-        restart_args = filtered_args
-
         # Add explicit --name to resume this conversation
         restart_args.extend(["--name", conversation_name])
 
