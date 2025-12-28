@@ -92,14 +92,36 @@ def docker_reexec(argv: list[str]) -> None:
             check=True,
         )
 
+    # Collect environment variables to pass through
+    # These are common LLM provider API keys that may be needed
+    env_vars_to_pass = [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "XAI_API_KEY",
+        "GEMINI_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+    ]
+
+    # Get config to also check config.toml for API keys
+    config = get_config()
+
+    env_args = []
+    for var in env_vars_to_pass:
+        # Check both environment variables and config.toml
+        value = config.get_env(var)
+        if value:
+            env_args.extend(["-e", f"{var}={value}"])
+
     # Construct docker run command
     docker_cmd = [
         "docker",
         "run",
         "--rm",
-        "-v",
-        # use separate config dir for gptme-eval (only stores API keys)
-        f"{Path.home()}/.config/gptme-eval:/home/appuser/.config/gptme",
+        *env_args,
         "-v",
         f"{git_root}/eval_results:/app/eval_results",
         "-v",
@@ -109,7 +131,26 @@ def docker_reexec(argv: list[str]) -> None:
         image,
     ] + argv
 
-    logger.info(f"Re-executing inside Docker: {' '.join(docker_cmd)}")
+    # Redact API keys in log output for security
+    def redact_env_args(cmd: list[str]) -> list[str]:
+        """Redact API key values from docker command for safe logging."""
+        redacted = []
+        i = 0
+        while i < len(cmd):
+            if cmd[i] == "-e" and i + 1 < len(cmd):
+                env_assignment = cmd[i + 1]
+                if "=" in env_assignment:
+                    var_name = env_assignment.split("=", 1)[0]
+                    if "KEY" in var_name or "TOKEN" in var_name:
+                        redacted.append(cmd[i])
+                        redacted.append(f"{var_name}=***REDACTED***")
+                        i += 2
+                        continue
+            redacted.append(cmd[i])
+            i += 1
+        return redacted
+
+    logger.info(f"Re-executing inside Docker: {' '.join(redact_env_args(docker_cmd))}")
 
     # Run and exit with same code
     result = subprocess.run(docker_cmd)
