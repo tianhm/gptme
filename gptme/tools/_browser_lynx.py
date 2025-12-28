@@ -4,9 +4,28 @@ Browser tool by calling lynx --dump
 
 import os
 import subprocess
+from urllib.parse import urlparse
 
 
-def read_url(url, cookies: dict | None = None) -> str:
+def _validate_url_scheme(url: str) -> None:
+    """Validate that URL uses a safe scheme (http/https only).
+
+    Security: Prevents file:// protocol from reading local files.
+    See: https://github.com/gptme/gptme/issues/1021
+    """
+    parsed = urlparse(url)
+    allowed_schemes = {"http", "https"}
+    if parsed.scheme.lower() not in allowed_schemes:
+        raise ValueError(
+            f"URL scheme '{parsed.scheme}' not allowed. "
+            f"Only {allowed_schemes} are permitted for security reasons."
+        )
+
+
+def read_url(url: str, cookies: dict | None = None) -> str:
+    # Security: validate URL scheme before passing to lynx
+    _validate_url_scheme(url)
+
     env = os.environ.copy()
     # TODO: create and set LYNX_CFG to use custom lynx config file (needed to save cookies, which I need to debug how cookies should be read)
     # env["LYNX_CFG"] = str(Path("~/.config/lynx/lynx.cfg").expanduser())
@@ -26,7 +45,7 @@ def read_url(url, cookies: dict | None = None) -> str:
     return p.stdout.decode("utf-8", errors="replace")
 
 
-def search(query, engine="duckduckgo"):
+def search(query: str, engine: str = "duckduckgo") -> str:
     if engine == "google":
         # TODO: we need to figure out a way to remove the consent banner to access google search results
         #       otherwise google is not usable
