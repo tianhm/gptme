@@ -19,6 +19,11 @@ from ..hooks import HookType, StopPropagation
 from ..llm.models import get_default_model, get_model
 from ..logmanager import Log, prepare_messages
 from ..message import Message, len_tokens
+from ..util.master_context import (
+    MessageByteRange,
+    build_master_context_index,
+    create_master_context_reference,
+)
 from ..util.output_storage import create_tool_result_summary
 from ..util.reduce import reduce_log
 from .base import ToolSpec
@@ -201,6 +206,12 @@ def auto_compact_log(
     achieve target token reduction with minimal information loss by prioritizing
     the largest outputs for truncation.
 
+    Master Context Architecture:
+    The original conversation.jsonl serves as the master context - an append-only
+    log that is never compacted. When truncating content, we include byte range
+    references to the master context for exact recovery. This allows aggressive
+    compaction while preserving full context accessibility.
+
     Args:
         log: List of messages to compact
         limit: Token limit (defaults to 80% of model context)
@@ -208,6 +219,17 @@ def auto_compact_log(
         reasoning_strip_age_threshold: Strip reasoning from messages >N positions back
         logdir: Path to conversation directory for saving removed outputs
     """
+
+    # Build master context index for byte-range references
+    master_context_index: list[MessageByteRange] = []
+    master_logfile: Path | None = None
+    if logdir:
+        master_logfile = logdir / "conversation.jsonl"
+        if master_logfile.exists():
+            master_context_index = build_master_context_index(master_logfile)
+            logger.debug(
+                f"Built master context index with {len(master_context_index)} entries"
+            )
 
     # get the token limit
     model = get_default_model() or get_model("gpt-4")
@@ -318,6 +340,26 @@ def auto_compact_log(
                 logdir=logdir,
                 tool_name="autocompact",
             )
+
+            # Add master context reference for exact recovery
+            # Note: idx must match the message position in conversation.jsonl
+            # This is safe because Phase 1-2 preserve message positions (1:1 mapping)
+            if master_logfile and idx < len(master_context_index):
+                byte_range = master_context_index[idx]
+                # Get first line as preview
+                preview = msg.content.split("\n")[0] if msg.content else None
+                master_ref = create_master_context_reference(
+                    logfile=master_logfile,
+                    byte_range=byte_range,
+                    original_tokens=msg_tokens,
+                    preview=preview,
+                )
+                summary_content += f"\n\n{master_ref}"
+                logger.debug(
+                    f"Added master context reference for idx {idx}: "
+                    f"bytes {byte_range.byte_start}-{byte_range.byte_end}"
+                )
+
             summary_msg = msg.replace(content=summary_content)
             compacted_log[idx] = summary_msg
             truncated_indices.add(idx)
@@ -350,6 +392,24 @@ def auto_compact_log(
             compressed_tokens = len_tokens(compressed_content, model.model)
 
             if compressed_tokens < msg_tokens:
+                # Add master context reference for exact recovery
+                # Note: idx must match the message position in conversation.jsonl
+                # This is safe because Phases 1-3 preserve message positions (1:1 mapping)
+                if master_logfile and idx < len(master_context_index):
+                    byte_range = master_context_index[idx]
+                    # Get first line as preview
+                    preview = msg.content.split("\n")[0] if msg.content else None
+                    master_ref = create_master_context_reference(
+                        logfile=master_logfile,
+                        byte_range=byte_range,
+                        original_tokens=msg_tokens,
+                        preview=preview,
+                    )
+                    compressed_content += f"\n\n{master_ref}"
+                    logger.debug(
+                        f"Added master context reference for compressed idx {idx}"
+                    )
+
                 compacted_log[idx] = msg.replace(content=compressed_content)
                 compression_saved = msg_tokens - compressed_tokens
                 tokens_saved += compression_saved
@@ -570,12 +630,17 @@ def _compact_auto(ctx, msgs: list[Message]) -> Generator[Message, None, None]:
     ctx.manager.log = Log(compacted_msgs)
     ctx.manager.write()
 
+    reduction_pct = (
+        ((original_tokens - compacted_tokens) / original_tokens * 100)
+        if original_tokens > 0
+        else 0.0
+    )
     yield Message(
         "system",
         f"✅ Auto-compacting completed:\n"
         f"• Messages: {original_count} → {compacted_count}\n"
         f"• Tokens: {original_tokens:,} → {compacted_tokens:,} "
-        f"({((original_tokens - compacted_tokens) / original_tokens * 100):.1f}% reduction)",
+        f"({reduction_pct:.1f}% reduction)",
     )
 
 
@@ -737,24 +802,7 @@ def autocompact_hook(
     logger.info("Auto-compacting triggered: conversation has massive tool results")
     _last_autocompact_time = current_time
 
-    # Create compacted fork (original stays as backup)
-    fork_name = _get_compacted_name(manager.logfile.parent.name)
-    try:
-        # Fork creates compacted conversation (manager switches to fork automatically)
-        manager.fork(fork_name)
-
-        logger.info(f"Created compacted conversation: '{fork_name}'")
-    except Exception as e:
-        logger.error(f"Failed to fork conversation: {e}")
-        yield Message(
-            "system",
-            f"⚠️ Auto-compact: Failed to fork conversation: {e}\n"
-            "Skipping auto-compact to preserve safety.",
-            hide=False,
-        )
-        return
-
-    # Apply auto-compacting with comprehensive error handling
+    # Apply auto-compacting to get compacted messages
     try:
         compacted_msgs = list(auto_compact_log(messages, logdir=manager.logdir))
 
@@ -765,18 +813,25 @@ def autocompact_hook(
         original_tokens = len_tokens(messages, m.model) if m else 0
         compacted_tokens = len_tokens(compacted_msgs, m.model) if m else 0
 
-        # Replace the log with compacted version
-        manager.log = Log(compacted_msgs)
-        manager.write()
+        # Create a view branch with compacted content
+        # Master branch (main) stays intact with full history
+        view_name = manager.get_next_view_name()
+        manager.create_view(view_name, compacted_msgs)
+        manager.switch_view(view_name)
 
+        reduction_pct = (
+            ((original_tokens - compacted_tokens) / original_tokens * 100)
+            if original_tokens > 0
+            else 0.0
+        )
         # Yield a message indicating what happened
         yield Message(
             "system",
-            f"🔄 Auto-compacted conversation due to massive tool results:\n"
+            f"🔄 Auto-compacted conversation to view branch:\n"
             f"• Messages: {original_count} → {compacted_count}\n"
             f"• Tokens: {original_tokens:,} → {compacted_tokens:,} "
-            f"({((original_tokens - compacted_tokens) / original_tokens * 100):.1f}% reduction)\n"
-            f"Original state preserved in '{fork_name}'.",
+            f"({reduction_pct:.1f}% reduction)\n"
+            f"• View: {view_name} (master branch preserved with full history)",
             hide=True,  # Hide to prevent triggering responses
         )
     except Exception as e:
