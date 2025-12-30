@@ -158,6 +158,53 @@ def inject_pending_warning(
     yield from ()
 
 
+def session_end_cost_summary(
+    manager: "LogManager", **kwargs
+) -> Generator[Message | StopPropagation, None, None]:
+    """Display brief cost summary at session end.
+
+    Args:
+        manager: The LogManager for the session
+        **kwargs: Additional arguments (e.g., logdir)
+
+    Yields:
+        Nothing - just prints to console
+    """
+    from ..util import console
+
+    costs = CostTracker.get_session_costs()
+    if not costs or not costs.entries:
+        return
+
+    total = costs.total_cost
+    if total == 0:
+        return
+
+    # Count turns (assistant responses)
+    turns = len(costs.entries)
+
+    # Final context size from last request (input + cache tokens)
+    last = costs.entries[-1]
+    final_context = (
+        last.input_tokens + last.cache_read_tokens + last.cache_creation_tokens
+    )
+
+    # Format context size (use k suffix for readability)
+    if final_context >= 1000:
+        context_str = f"{final_context / 1000:.0f}k"
+    else:
+        context_str = str(final_context)
+
+    # Brief summary on exit
+    cache_pct = costs.cache_hit_rate * 100
+    console.log(
+        f"[dim]Session: ${total:.2f} | {turns} turns | "
+        f"{context_str} context | {cache_pct:.0f}% cached[/dim]"
+    )
+
+    yield from ()
+
+
 def register() -> None:
     """Register the cost awareness hooks with the hook system."""
     register_hook(
@@ -177,5 +224,11 @@ def register() -> None:
         HookType.GENERATION_PRE,
         inject_pending_warning,
         priority=5,  # Run early but after critical pre-processing
+    )
+    register_hook(
+        "cost_awareness.session_end",
+        HookType.SESSION_END,
+        session_end_cost_summary,
+        priority=-10,  # Low priority to run last
     )
     logger.debug("Registered cost awareness hooks")
