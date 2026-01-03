@@ -223,7 +223,7 @@ class Message:
         # content = self.content.replace('"', '\\"')
         content = escape_string(self.content)
         content = content.replace("\\n", "\n")
-        content = content.strip()
+        # Don't strip - preserve whitespace for data integrity
 
         return f'''[message]
 role = "{self.role}"
@@ -254,7 +254,7 @@ call_id = "{self.call_id}"
 
         return cls(
             msg["role"],
-            msg["content"].strip(),
+            _fix_toml_content(msg["content"]),
             pinned=msg.get("pinned", False),
             hide=msg.get("hide", False),
             files=[Path(f) for f in msg.get("files", [])],
@@ -394,6 +394,19 @@ def msgs_to_toml(msgs: list[Message]) -> str:
     return t
 
 
+def _fix_toml_content(content: str) -> str:
+    """
+    Remove exactly one trailing newline that TOML multiline format adds.
+
+    TOML multiline strings (using triple quotes) add a newline before the
+    closing delimiter. This function removes that artifact while preserving
+    all other whitespace.
+    """
+    if content.endswith("\n"):
+        content = content[:-1]
+    return content
+
+
 def toml_to_msgs(toml: str) -> list[Message]:
     """
     Converts a TOML string to a list of messages.
@@ -407,7 +420,7 @@ def toml_to_msgs(toml: str) -> list[Message]:
     return [
         Message(
             msg["role"],
-            msg["content"].strip(),
+            _fix_toml_content(msg["content"]),
             pinned=msg.get("pinned", False),
             hide=msg.get("hide", False),
             timestamp=isoparse(msg["timestamp"]),
