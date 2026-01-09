@@ -234,13 +234,11 @@ def api_conversation_post(logfile: str):
     Add a new message to an existing conversation.
     """
     req_json = flask.request.json
-    branch = (req_json or {}).get("branch", "main")
-    tool_allowlist = (req_json or {}).get("tools", None)
-    init_tools(tool_allowlist)
-    log = LogManager.load(logfile, branch=branch)
-    assert req_json
-    assert "role" in req_json
-    assert "content" in req_json
+    # Validate request body (use proper checks, not assert which can be disabled with -O)
+    if not req_json:
+        return flask.jsonify({"error": "No JSON data provided"}), 400
+    if "role" not in req_json or "content" not in req_json:
+        return flask.jsonify({"error": "Missing required fields (role, content)"}), 400
 
     # Validate role against allowed values
     valid_roles = ("system", "user", "assistant")
@@ -252,6 +250,10 @@ def api_conversation_post(logfile: str):
             400,
         )
 
+    branch = req_json.get("branch", "main")
+    tool_allowlist = req_json.get("tools", None)
+    init_tools(tool_allowlist)
+    log = LogManager.load(logfile, branch=branch)
     msg = Message(
         req_json["role"], req_json["content"], files=req_json.get("files", [])
     )
@@ -281,10 +283,13 @@ def api_conversation_generate(logfile: str):
     req_json = flask.request.json or {}
     stream = req_json.get("stream", False)  # Default to no streaming (backward compat)
     default_model = get_default_model()
-    assert (
-        default_model is not None
-    ), "No model loaded and no model specified in request"
-    model = req_json.get("model", default_model.full)
+    # Get model from request first, fall back to default
+    model = req_json.get("model")
+    if model is None:
+        # No model in request, use default
+        if default_model is None:
+            return flask.jsonify({"error": "No model available (none loaded and none specified in request)"}), 500
+        model = default_model.full
 
     # load conversation
     # NOTE: we load without lock since otherwise we have issues with
