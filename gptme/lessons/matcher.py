@@ -4,9 +4,24 @@ import logging
 import os
 from dataclasses import dataclass
 
+from gptme._keyword_matching import (
+    _compile_pattern,
+    _keyword_to_pattern,
+    _match_keyword,
+    _match_pattern,
+)
+
 from .parser import Lesson
 
 logger = logging.getLogger(__name__)
+
+# Re-export for backward compatibility
+__all__ = [
+    "_keyword_to_pattern",
+    "_compile_pattern",
+    "_match_keyword",
+    "_match_pattern",
+]
 
 
 @dataclass
@@ -71,11 +86,17 @@ class LessonMatcher:
             score = 0.0
             matched_by = []
 
-            # Keyword matching (lesson format)
+            # Keyword matching (lesson format) - supports wildcards (*)
             for keyword in lesson.metadata.keywords:
-                if keyword.lower() in message_lower:
+                if _match_keyword(keyword, message_lower):
                     score += 1.0
                     matched_by.append(f"keyword:{keyword}")
+
+            # Pattern matching (full regex)
+            for pattern in lesson.metadata.patterns:
+                if _match_pattern(pattern, message_lower):
+                    score += 1.0
+                    matched_by.append(f"pattern:{pattern[:30]}...")
 
             # Skill name matching (Anthropic format)
             # Match if skill name appears in message
@@ -218,7 +239,13 @@ class LessonMatcher:
                 continue
             seen_paths.add(resolved_path)
 
-            matched_keywords = [kw for kw in keywords if kw in lesson.metadata.keywords]
+            # Check if input keywords match lesson's keyword patterns (with wildcard support)
+            matched_keywords = []
+            for input_kw in keywords:
+                for lesson_kw in lesson.metadata.keywords:
+                    if _match_keyword(lesson_kw, input_kw):
+                        matched_keywords.append(input_kw)
+                        break  # Found a match for this input keyword
 
             if matched_keywords:
                 score = float(len(matched_keywords))

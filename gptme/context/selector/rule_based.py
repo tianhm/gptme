@@ -3,6 +3,11 @@
 import logging
 from collections.abc import Sequence
 
+from gptme._keyword_matching import (
+    _match_keyword,
+    _match_pattern,
+)
+
 from .base import ContextItem, ContextSelector
 from .config import ContextSelectorConfig
 
@@ -39,11 +44,21 @@ class RuleBasedSelector(ContextSelector):
             if isinstance(keywords, str):
                 keywords = [keywords]
 
-            # Match keywords
+            # Match keywords (supports wildcards)
             for keyword in keywords:
-                if isinstance(keyword, str) and keyword.lower() in query_lower:
+                if isinstance(keyword, str) and _match_keyword(keyword, query_lower):
                     score += 1.0
                     matched_by.append(f"keyword:{keyword}")
+
+            # Match patterns (full regex)
+            patterns = metadata.get("patterns", [])
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            for pattern in patterns:
+                if isinstance(pattern, str) and pattern.strip():
+                    if _match_pattern(pattern, query_lower):
+                        score += 1.0
+                        matched_by.append(f"pattern:{pattern[:30]}...")
 
             # Priority boost (for lessons/tasks)
             priority = metadata.get("priority")
