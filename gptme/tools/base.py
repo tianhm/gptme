@@ -388,9 +388,9 @@ class ToolUse:
             tool = get_tool(self.tool)
             if tool and tool.execute:
                 try:
-                    # Trigger pre-execution hooks
+                    # Trigger pre-execution hooks (tool.execute.pre)
                     if pre_hook_msgs := trigger_hook(
-                        HookType.TOOL_PRE_EXECUTE,
+                        HookType.TOOL_EXECUTE_PRE,
                         log=log,
                         workspace=workspace,
                         tool_use=self,
@@ -432,9 +432,9 @@ class ToolUse:
                         tool_format=self._format,
                     )
 
-                    # Trigger post-execution hooks
+                    # Trigger post-execution hooks (tool.execute.post)
                     if post_hook_msgs := trigger_hook(
-                        HookType.TOOL_POST_EXECUTE,
+                        HookType.TOOL_EXECUTE_POST,
                         log=log,
                         workspace=workspace,
                         tool_use=self,
