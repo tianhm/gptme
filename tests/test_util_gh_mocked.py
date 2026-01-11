@@ -513,3 +513,220 @@ def test_malformed_suggestion_block():
     # Should handle gracefully - unclosed blocks shouldn't cause extraction
     # The raw body will still contain the suggestion marker
     assert "```suggestion" in content or "unclosed block" in content
+
+
+# Tests for the truncation helper function
+from gptme.util.gh import _truncate_body
+
+
+class TestTruncateBody:
+    """Tests for comment body truncation."""
+
+    def test_short_body_unchanged(self):
+        """Short bodies should pass through unchanged."""
+        body = "This is a short comment."
+        result = _truncate_body(body)
+        assert result == body
+
+    def test_empty_body(self):
+        """Empty body should return empty."""
+        assert _truncate_body("") == ""
+
+    def test_long_body_truncated(self):
+        """Long bodies should be truncated from middle."""
+        # Create a body that exceeds 1000 tokens (4000 chars)
+        body = "A" * 5000  # 5000 chars = ~1250 tokens
+
+        result = _truncate_body(body)
+
+        # Should be truncated
+        assert len(result) < len(body)
+        # Should have truncation indicator
+        assert "[... truncated" in result
+        assert "chars" in result
+        # Should preserve beginning and end
+        assert result.startswith("A" * 100)
+        assert result.endswith("A" * 100)
+
+    def test_custom_max_tokens(self):
+        """Custom max_tokens should be respected."""
+        body = "B" * 2000  # 2000 chars = ~500 tokens
+
+        # With default (1000 tokens), this should NOT be truncated
+        result_default = _truncate_body(body)
+        assert result_default == body
+
+        # With 200 tokens (800 chars), this SHOULD be truncated
+        result_custom = _truncate_body(body, max_tokens=200)
+        assert "[... truncated" in result_custom
+        assert len(result_custom) < len(body)
+
+    def test_truncation_preserves_structure(self):
+        """Truncation should preserve beginning and end content."""
+        # Create a body with identifiable start and end
+        body = "START_MARKER" + ("X" * 5000) + "END_MARKER"
+
+        result = _truncate_body(body)
+
+        # Beginning should be preserved
+        assert "START_MARKER" in result
+        # End should be preserved
+        assert "END_MARKER" in result
+        # Middle X's should be truncated
+        assert "[... truncated" in result
+
+    def test_truncated_output_within_limit(self):
+        """Verify truncated output stays within max_chars limit."""
+        # Test various body sizes
+        test_cases = [
+            ("A" * 5000, 1000),  # default 1000 tokens = 4000 chars
+            ("B" * 10000, 500),  # 500 tokens = 2000 chars
+            ("C" * 3000, 200),  # 200 tokens = 800 chars
+        ]
+
+        for body, max_tokens in test_cases:
+            result = _truncate_body(body, max_tokens=max_tokens)
+            max_chars = max_tokens * 4
+
+            # Output should not exceed max_chars
+            assert len(result) <= max_chars, (
+                f"Truncated output ({len(result)} chars) exceeds "
+                f"max_chars ({max_chars}) for max_tokens={max_tokens}"
+            )
+            # Should still have truncation indicator
+            assert "[... truncated" in result
+
+    def test_edge_case_small_overage(self):
+        """Edge case: body just slightly over limit shouldn't grow."""
+        max_tokens = 100  # 400 chars
+        # Body is just 10 chars over limit
+        body = "X" * 410
+
+        result = _truncate_body(body, max_tokens=max_tokens)
+
+        # Result should be truncated AND shorter than original
+        assert len(result) <= len(body), "Truncation made output longer!"
+        # Should also stay within the limit
+        assert len(result) <= 400, f"Result ({len(result)}) exceeds 400 chars"
+
+
+def test_truncation_in_pr_content():
+    """Test that truncation is applied to review comments in PR content."""
+    # Create a mock response with a very long review comment
+    long_body = "Long comment: " + ("X" * 5000)  # Exceeds 1000 tokens
+
+    mock_response = {
+        "pr_view": "Test PR #123\nOpen\n@testuser\n\nTest",
+        "pr_comments": "",
+        "pr_details": {"number": 123, "title": "Test PR"},
+        "review_comments": [
+            {
+                "id": 1009,
+                "user": {"login": "verbose-bot"},
+                "body": long_body,
+                "path": "test.py",
+                "line": 10,
+                "diff_hunk": "",
+            }
+        ],
+        "graphql_threads": {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "isResolved": False,
+                                    "comments": {"nodes": [{"databaseId": 1009}]},
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    with patch("subprocess.run", side_effect=mock_subprocess_run(mock_response)):
+        content = get_github_pr_content("https://github.com/owner/repo/pull/123")
+
+    assert content is not None
+    # Should have truncation indicator
+    assert "[... truncated" in content
+    # Should still have the comment metadata
+    assert "@verbose-bot" in content
+    # Full body should not be present
+    assert long_body not in content
+
+
+def test_suggestion_preserved_from_truncated_comment(monkeypatch):
+    """Test that code suggestions are extracted from original body before truncation.
+
+    When a long comment containing a suggestion is truncated, the suggestion
+    should still be extracted from the original body, not lost in the truncation.
+    """
+    from gptme.util import gh
+
+    # Create a long comment with a suggestion in the middle (where truncation would remove it)
+    padding = "x" * 3000  # Enough to trigger truncation (>4000 chars)
+    suggestion_body = f"""Some initial analysis text.
+
+{padding}
+
+Here's a suggested fix:
+```suggestion
+fixed_code = True
+```
+
+{padding}
+
+More analysis at the end."""
+
+    mock_review_comments = [
+        {
+            "user": {"login": "reviewer"},
+            "body": suggestion_body,
+            "path": "test.py",
+            "id": 12345,
+            "line": 10,
+        }
+    ]
+
+    def mock_run(cmd, **kwargs):
+        class MockResult:
+            returncode = 0
+            stdout = ""
+
+        if "api" in cmd and "/pulls/" in str(cmd) and "/comments" in str(cmd):
+            MockResult.stdout = json.dumps(mock_review_comments)
+        elif "pr" in cmd and "view" in cmd and "--json" in cmd:
+            MockResult.stdout = json.dumps({"head": {"sha": "abc123"}})
+        elif "pr" in cmd and "view" in cmd:
+            MockResult.stdout = "PR Title\nPR Body"
+        elif "api" in cmd and "graphql" in cmd:
+            MockResult.stdout = json.dumps(
+                {
+                    "data": {
+                        "repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}
+                    }
+                }
+            )
+        elif "api" in cmd and "check-runs" in cmd:
+            MockResult.stdout = json.dumps({"check_runs": []})
+
+        return MockResult()
+
+    import json
+
+    monkeypatch.setattr("subprocess.run", mock_run)
+
+    result = gh.get_github_pr_content("https://github.com/test/repo/pull/1")
+    assert result is not None
+
+    # Verify the body was truncated (indicator present)
+    assert "[... truncated" in result
+
+    # Most importantly: verify the suggestion was STILL extracted
+    # even though it was in the middle of the truncated content
+    assert "Suggested change:" in result
+    assert "fixed_code = True" in result
