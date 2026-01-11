@@ -52,7 +52,7 @@ class LessonMatcher:
 
         Supports two formats:
         - Lessons: match by `keywords` in frontmatter
-        - Skills (Anthropic format): match by `name` and `description` in frontmatter
+        - Skills (Anthropic format): match by `name` in frontmatter
 
         Deduplication: Lessons are deduplicated by resolved path (realpath) to handle:
         - Symlinks pointing to the same file
@@ -114,18 +114,11 @@ class LessonMatcher:
                         matched_by.append(f"skill:{lesson.metadata.name}")
                         break
 
-            # Skill description matching (Anthropic format)
-            # Extract significant words from description and match
-            if lesson.metadata.description and not matched_by:
-                # Only use description matching if not already matched
-                # (avoids duplicate matching from keywords, name, or tools)
-                desc_words = self._extract_description_keywords(
-                    lesson.metadata.description
-                )
-                matched_desc_words = [w for w in desc_words if w in message_lower]
-                if len(matched_desc_words) >= 2:  # Require at least 2 matches
-                    score += 0.5 * len(matched_desc_words)
-                    matched_by.append(f"description:{','.join(matched_desc_words[:3])}")
+            # NOTE: Description-based word matching has been removed.
+            # It caused 100% trigger rates for skills with common words
+            # (e.g., "context", "agent", "model") in descriptions.
+            # Skills should use explicit `keywords:` in frontmatter for matching.
+            # See: https://github.com/gptme/gptme-contrib/issues/139
 
             # Tool matching
             if context.tools_used and lesson.metadata.tools:
@@ -142,73 +135,6 @@ class LessonMatcher:
         # Sort by score, descending
         results.sort(key=lambda r: r.score, reverse=True)
         return results
-
-    def _extract_description_keywords(self, description: str) -> list[str]:
-        """Extract significant keywords from skill description.
-
-        Args:
-            description: Skill description text
-
-        Returns:
-            List of significant keywords (lowercase)
-        """
-        # Common stop words to exclude
-        stop_words = {
-            "a",
-            "an",
-            "the",
-            "and",
-            "or",
-            "but",
-            "in",
-            "on",
-            "at",
-            "to",
-            "for",
-            "of",
-            "with",
-            "by",
-            "from",
-            "as",
-            "is",
-            "was",
-            "are",
-            "were",
-            "been",
-            "be",
-            "have",
-            "has",
-            "had",
-            "do",
-            "does",
-            "did",
-            "will",
-            "would",
-            "could",
-            "should",
-            "may",
-            "might",
-            "must",
-            "can",
-            "this",
-            "that",
-            "these",
-            "those",
-            "it",
-            "its",
-        }
-
-        # Split on non-word characters and filter
-        import re
-
-        words = re.split(r"\W+", description.lower())
-        keywords = [
-            w
-            for w in words
-            if len(w) > 2 and w not in stop_words  # Min 3 chars
-        ]
-
-        return keywords
 
     def match_keywords(
         self, lessons: list[Lesson], keywords: list[str]
