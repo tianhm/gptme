@@ -9,6 +9,7 @@ unless explicitly needed.
 import logging
 import os
 import socket
+import time
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
@@ -24,18 +25,38 @@ _session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
 
 
 class TelemetryConnectionErrorFilter(logging.Filter):
-    """Filter to truncate verbose connection error stack traces from OpenTelemetry."""
+    """Filter to debounce and truncate verbose connection error traces from OpenTelemetry.
+
+    This filter:
+    1. Simplifies verbose stack traces to single-line messages
+    2. Debounces repeated errors (shows first, then suppresses for cooldown period)
+    3. Periodically shows a count of suppressed errors
+
+    The filter ensures users see at least one error message when telemetry fails,
+    but prevents spam from repeated connection failures.
+    """
+
+    def __init__(self, cooldown_seconds: float = 300.0):
+        super().__init__()
+        self._error_counts: dict[str, int] = {}
+        self._last_logged: dict[str, float] = {}
+        self._cooldown_seconds = cooldown_seconds  # 5 minutes between repeated errors
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Truncate connection error messages to a single line.
+        """Filter and debounce connection error messages.
 
-        Note: Returns True to allow the modified record to pass through.
-        We want to show the error but without the verbose stack trace.
+        Returns True to allow the (possibly modified) record through.
+        Returns False to suppress duplicate errors within cooldown period.
         """
-        # Check if this is a connection error from OpenTelemetry exporters
+        # Only filter opentelemetry loggers (root logger or children)
+        if not (
+            record.name == "opentelemetry" or record.name.startswith("opentelemetry.")
+        ):
+            return True
+
+        # Check if this is a connection error
         if (
-            record.name.startswith("opentelemetry.")
-            and record.levelno == logging.ERROR
+            record.levelno == logging.ERROR
             and hasattr(record, "exc_info")
             and record.exc_info
         ):
@@ -46,10 +67,38 @@ class TelemetryConnectionErrorFilter(logging.Filter):
                 or "NewConnectionError" in exc_type.__name__
                 or "MaxRetryError" in exc_type.__name__
             ):
-                # Replace the full stack trace with a simple message
-                record.exc_info = None
-                record.exc_text = None
-                record.msg = f"Telemetry connection failed: {exc_value}"
+                # Create error key for deduplication (type + truncated message)
+                error_key = f"{exc_type.__name__}"
+
+                # Track occurrence count
+                now = time.time()
+                count = self._error_counts.get(error_key, 0) + 1
+                self._error_counts[error_key] = count
+
+                last_logged = self._last_logged.get(error_key, 0)
+                time_since_last = now - last_logged
+
+                # Show first occurrence, or after cooldown expires
+                if count == 1 or time_since_last > self._cooldown_seconds:
+                    self._last_logged[error_key] = now
+
+                    # Replace verbose stack trace with simple message
+                    record.exc_info = None
+                    record.exc_text = None
+
+                    if count == 1:
+                        record.msg = f"Telemetry connection failed: {exc_value}"
+                    else:
+                        # Show count of suppressed errors
+                        record.msg = (
+                            f"Telemetry connection still failing "
+                            f"({count} occurrences): {exc_value}"
+                        )
+                    return True
+                else:
+                    # Suppress duplicate within cooldown period
+                    return False
+
         return True
 
 
@@ -83,6 +132,32 @@ class NotGivenAttributeFilter(logging.Filter):
 _telemetry_enabled = False
 _tracer = None
 _meter = None
+
+# Singleton filter instance for consistent debouncing across all loggers
+# Used by both setup_telemetry() and init_logging() in init.py
+_connection_error_filter: "TelemetryConnectionErrorFilter | None" = None
+
+
+def get_connection_error_filter(
+    cooldown_seconds: float = 300.0,
+) -> "TelemetryConnectionErrorFilter":
+    """Get or create the singleton TelemetryConnectionErrorFilter instance.
+
+    This ensures consistent debouncing state across all OpenTelemetry loggers,
+    whether filters are applied in setup_telemetry() or init_logging().
+
+    Args:
+        cooldown_seconds: Time between repeated error messages (default: 5 minutes)
+
+    Returns:
+        The singleton filter instance
+    """
+    global _connection_error_filter
+    if _connection_error_filter is None:
+        _connection_error_filter = TelemetryConnectionErrorFilter(cooldown_seconds)
+    return _connection_error_filter
+
+
 _token_counter = None
 _request_histogram = None
 _tool_counter = None
@@ -449,7 +524,8 @@ def init_telemetry(
         _telemetry_enabled = True
 
         # Apply filters to OpenTelemetry loggers
-        connection_filter = TelemetryConnectionErrorFilter()
+        # Use singleton to ensure consistent debouncing state
+        connection_filter = get_connection_error_filter()
         notgiven_filter = NotGivenAttributeFilter()
 
         # Connection error filter truncates verbose stack traces to single lines
