@@ -21,8 +21,13 @@ def generate_conversation_name(
     dash_separated: bool = False,
     existing_names: set[str] | None = None,
     max_attempts: int = 3,
-) -> str:
-    """Generate a conversation name using the specified strategy."""
+) -> str | None:
+    """Generate a conversation name using the specified strategy.
+
+    Returns None if strategy is "llm" and LLM fails to generate a name
+    (insufficient context, etc.). This allows callers to retry on subsequent
+    turns when more context is available.
+    """
     # Determine strategy
     if strategy == "auto":
         strategy = "llm" if messages and model and len(messages) > 1 else "random"
@@ -31,9 +36,14 @@ def generate_conversation_name(
         if strategy == "random":
             name = generate_name()
         elif strategy == "llm":
-            name = (
-                _generate_llm_name(messages, model, dash_separated) or generate_name()
-            )
+            # Don't fall back to random - return None so caller can retry
+            # on subsequent turns when more context is available
+            name = _generate_llm_name(messages, model, dash_separated)
+            if not name:
+                logger.info(
+                    "LLM naming failed, returning None to allow retry on next turn"
+                )
+                return None
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -119,6 +129,22 @@ def _generate_llm_name(
             logger.warning("no context for auto-name")
             return None
 
+        # Check if context has enough substance for meaningful naming
+        # Strip role prefixes and check actual content length
+        content_only = context.replace("User:", "").replace("Assistant:", "").strip()
+        min_context_length = (
+            50  # Minimum characters needed for LLM to generate meaningful title
+        )
+        if len(content_only) < min_context_length:
+            logger.info(
+                f"Context too short for LLM naming ({len(content_only)} chars < {min_context_length}), "
+                "using random name fallback"
+            )
+            return None
+
+        # Sentinel string for when LLM cannot generate a meaningful title
+        no_name_sentinel = "NO_NAME"
+
         # Create prompt based on format
         if dash_separated:
             prompt = f"""Generate a descriptive name for this conversation.
@@ -130,31 +156,31 @@ The name should be 3-6 words describing the conversation, separated by dashes. E
 
 Focus on the main and/or initial topic of the conversation. Avoid using names that are too generic or too specific.
 
-IMPORTANT: output only the name, no preamble or postamble.
+CRITICAL RULES:
+- Output ONLY the name itself, nothing else
+- If there is truly insufficient context to generate a meaningful name, return exactly "{no_name_sentinel}" (nothing else)
+- NEVER explain, apologize, or return error messages
 
 Conversation:
-{context}
-
-Name:"""
+{context}"""
         else:
             prompt = f"""Your task: Create a 2-4 word title for this conversation.
 
 Rules:
-- Respond with ONLY the title
-- No explanations or extra text
+- Respond with ONLY the title, nothing else
 - Maximum 4 words
 - Capture the main topic
+- If there is truly insufficient context to generate a meaningful title, return exactly "{no_name_sentinel}" (nothing else)
+- NEVER explain, apologize, or return error messages
 
-Examples:
+Examples of GOOD titles:
 - "Python debugging help"
 - "Website creation task"
-- "CSS layout issue"
-- "API integration guide"
+- "Quick greeting"
+- "General assistance"
 
 Conversation:
-{context}
-
-Title:"""
+{context}"""
 
         # Use summary model directly (no fallback)
         response, _metadata = _chat_complete(
@@ -179,12 +205,85 @@ Title:"""
 
         name = response.strip().strip('"').strip("'").split("\n")[0][:50]
         if name:
+            # Check for explicit sentinel indicating LLM couldn't generate name
+            if name.upper() == no_name_sentinel:
+                logger.info("LLM indicated insufficient context for naming (NO_NAME)")
+                return None
+            # Validate that the response is a proper title, not an error message
+            # (fallback safety net for models that don't follow sentinel instruction)
+            if _is_invalid_title(name):
+                logger.warning(f"LLM returned invalid title: {name}")
+                return None
             return name
 
     except Exception as e:
         logger.warning(f"LLM naming failed: {e}")
 
     return None
+
+
+def _is_invalid_title(name: str) -> bool:
+    """Check if the generated title looks like an error message or explanation.
+
+    Returns True if the title should be rejected.
+    """
+    # Reject empty or whitespace-only titles
+    if not name or not name.strip():
+        return True
+
+    name_lower = name.lower()
+
+    # Reject error-like patterns
+    error_patterns = [
+        "conversation content missing",
+        "missing conversation",
+        "content missing",
+        "no conversation",
+        "unable to",
+        "cannot generate",
+        "i don't have",
+        "i cannot",
+        "i'm sorry",
+        "sorry,",
+        "unfortunately",
+        "not enough",
+        "insufficient",
+        "no information",
+        "no context",
+        "empty conversation",
+        "missing details",
+        "details missing",
+        "conversation details",
+        "n/a",
+        "not applicable",
+        "not available",
+        "title:",  # Model repeating the prompt
+        "name:",  # Model repeating the prompt
+    ]
+
+    for pattern in error_patterns:
+        if pattern in name_lower:
+            return True
+
+    # Reject if it starts with common explanation prefixes
+    explanation_prefixes = [
+        "i ",
+        "the conversation ",
+        "this conversation ",
+        "based on ",
+        "here is ",
+        "here's ",
+    ]
+
+    for prefix in explanation_prefixes:
+        if name_lower.startswith(prefix):
+            return True
+
+    # Reject if it's too long to be a proper title (likely an explanation)
+    if len(name.split()) > 8:
+        return True
+
+    return False
 
 
 def _starts_with_date(name: str) -> bool:
@@ -206,16 +305,24 @@ def auto_generate_display_name(messages: list[Message], model: str) -> str | Non
     name="auto_naming.generate_llm_name", attributes={"component": "auto_naming"}
 )
 def generate_llm_name(messages: list[Message]) -> str:
-    """Generate a dash-separated LLM name for conversation renaming."""
+    """Generate a dash-separated LLM name for conversation renaming.
+
+    Unlike auto_generate_display_name, this function always returns a string
+    because it's used for explicit renaming where a name is required.
+    Falls back to random name if LLM naming fails.
+    """
     try:
         from ..llm.models import get_default_model_summary
 
         model = get_default_model_summary()
         if model:
-            return generate_conversation_name(
+            name = generate_conversation_name(
                 strategy="llm", messages=messages, model=model.full, dash_separated=True
             )
+            if name:
+                return name
     except Exception:
         pass
 
-    return generate_conversation_name(strategy="random")
+    # Fallback to random name - always returns a string
+    return generate_name()

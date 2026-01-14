@@ -164,3 +164,118 @@ def test_auto_naming_meaningful_content(event_listener, wait_for_event):
     ]
     has_relevant_content = any(keyword in name for keyword in relevant_keywords)
     assert has_relevant_content, f"Generated name '{chat_config.name}' doesn't seem contextually relevant. Expected keywords: {relevant_keywords}"
+
+
+# Unit tests for validation function
+def test_minimum_context_threshold():
+    """Test that LLM naming returns None when context is too short."""
+    from gptme.message import Message
+    from gptme.util.auto_naming import _generate_llm_name
+
+    # Very short conversation - should skip LLM naming due to minimum threshold
+    short_messages = [
+        Message("system", "You are a helpful assistant."),
+        Message("user", "hi"),
+        Message("assistant", "Hello!"),
+    ]
+
+    # This should return None because context is too short (< 50 chars)
+    # without even attempting an LLM call
+    result = _generate_llm_name(short_messages, "test/model")
+    assert result is None, "Expected None for short context"
+
+    # Slightly longer but still under threshold
+    borderline_messages = [
+        Message("user", "Hello there"),
+        Message("assistant", "Hi! How can I help?"),
+    ]
+    result = _generate_llm_name(borderline_messages, "test/model")
+    assert result is None, "Expected None for borderline short context"
+
+
+def test_invalid_title_detection():
+    """Test that error-like title responses are correctly identified."""
+    from gptme.util.auto_naming import _is_invalid_title
+
+    # These should be detected as invalid
+    invalid_titles = [
+        # Edge cases
+        "",  # Empty string
+        "   ",  # Whitespace only
+        "\t\n",  # Tab and newline only
+        # Error patterns
+        "Conversation content missing",
+        "Missing Conversation Details",
+        "content missing",
+        "Unable to generate title",
+        "I cannot determine the topic",
+        "I don't have enough information",
+        "I'm sorry, but I can't",
+        "Sorry, cannot generate",
+        "Unfortunately there's not enough context",
+        "Not enough information",
+        "Insufficient context",
+        "No information available",
+        "No context provided",
+        "Empty conversation",
+        "Missing details here",
+        "Details missing from context",
+        "N/A",
+        "Not applicable",
+        "Not available",
+        "Title: Python Help",  # Model repeating prompt
+        "Name: Debug Session",  # Model repeating prompt
+        "I think this is about debugging Python code and it seems to be related to web development",  # Too long
+        "The conversation appears to be about Python",  # Starts with explanation
+        "Based on the context provided",  # Explanation prefix
+        "Here is a title for this conversation",  # Explanation prefix
+    ]
+
+    for title in invalid_titles:
+        assert _is_invalid_title(title), f"Expected '{title}' to be invalid"
+
+    # These should be valid titles
+    valid_titles = [
+        "Python debugging help",
+        "CSS layout issue",
+        "API integration guide",
+        "Website creation task",
+        "Debug script error",
+        "Install dependencies",
+        "Fix login bug",
+        "Update database schema",
+        "Exactly eight words to test the boundary here",  # 8 words (boundary case)
+    ]
+
+    for title in valid_titles:
+        assert not _is_invalid_title(title), f"Expected '{title}' to be valid"
+
+
+def test_generate_conversation_name_returns_none_on_llm_failure():
+    """Test that generate_conversation_name returns None (not random) when LLM strategy fails.
+
+    This allows callers to retry on subsequent turns when more context is available,
+    rather than immediately falling back to a random name.
+    """
+    from gptme.message import Message
+    from gptme.util.auto_naming import generate_conversation_name
+
+    # Short conversation that will cause LLM naming to fail
+    short_messages = [
+        Message("user", "hi"),
+        Message("assistant", "Hello!"),
+    ]
+
+    # With LLM strategy, should return None (not a random name) when context is insufficient
+    result = generate_conversation_name(
+        strategy="llm",
+        messages=short_messages,
+        model="test/model",
+    )
+
+    # Should be None to allow retry, not a random name
+    assert result is None, (
+        f"Expected None when LLM naming fails, got '{result}'. "
+        "generate_conversation_name should not fall back to random names when "
+        "LLM strategy is explicitly requested."
+    )
