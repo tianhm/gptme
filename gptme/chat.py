@@ -9,6 +9,7 @@ from pathlib import Path
 from .commands import execute_cmd
 from .config import ChatConfig, get_config
 from .constants import (
+    DECLINED_CONTENT,
     INTERRUPT_CONTENT,
     MAX_MESSAGE_LENGTH,
     MAX_PROMPT_QUEUE_SIZE,
@@ -320,6 +321,12 @@ def _process_message_conversation(
             ):
                 return
 
+        # Check if user declined execution - return to prompt without generating response
+        # This makes "n" at confirm prompt behave like Ctrl+C (return to user prompt)
+        if any(msg.content == DECLINED_CONTENT for msg in response_msgs):
+            console.log("Execution declined, returning to prompt.")
+            break
+
         # Auto-generate display name after first assistant response if not already set
         # Runs in background thread to avoid blocking the chat loop
         # TODO: Consider implementing via hook system to streamline with server implementation
@@ -390,26 +397,26 @@ def _should_prompt_for_input(log: Log) -> bool:
     """
     last_msg = log[-1] if log else None
 
-    # Check if there's an interrupt message after the last assistant message
-    # This handles cases where hooks (like cost_awareness) add messages after the interrupt
-    has_recent_interrupt = False
+    # Check if there's an interrupt or decline message after the last assistant message
+    # This handles cases where hooks (like cost_awareness) add messages after the interrupt/decline
+    has_recent_interrupt_or_decline = False
     for msg in reversed(log):
         if msg.role == "assistant":
             break
-        if msg.content == INTERRUPT_CONTENT:
-            has_recent_interrupt = True
+        if msg.content in (INTERRUPT_CONTENT, DECLINED_CONTENT):
+            has_recent_interrupt_or_decline = True
             break
 
     # Ask for input when:
     # - No messages at all
     # - Last message was from assistant (normal flow)
-    # - There was an interrupt after the last assistant message
+    # - There was an interrupt or decline after the last assistant message
     # - Last message was pinned
     # - No user messages exist in the entire log
     return (
         not last_msg
         or (last_msg.role in ["assistant"])
-        or has_recent_interrupt
+        or has_recent_interrupt_or_decline
         or last_msg.pinned
         or not any(role == "user" for role in [m.role for m in log])
     )
