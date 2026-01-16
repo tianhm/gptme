@@ -19,7 +19,7 @@ gptme/eval/dspy/
 ├── __init__.py           # Module exports and initialization
 ├── signatures.py         # DSPy signatures for optimization tasks
 ├── metrics.py            # Evaluation metrics for prompt performance
-├── prompt_optimizer.py   # Core optimization logic using DSPy
+├── prompt_optimizer.py   # Core optimization logic using DSPy (GptmeModule)
 ├── experiments.py        # High-level experiment management
 ├── tasks.py              # Specialized evaluation tasks
 ├── cli.py                # Command-line interface
