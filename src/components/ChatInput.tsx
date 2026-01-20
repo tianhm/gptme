@@ -31,7 +31,6 @@ interface Props {
   isReadOnly?: boolean;
   defaultModel?: string;
   autoFocus$: Observable<boolean>;
-  hasSession$: Observable<boolean>;
   value?: string;
   onChange?: (value: string) => void;
 }
@@ -206,7 +205,6 @@ export const ChatInput: FC<Props> = ({
   isReadOnly,
   defaultModel = '',
   autoFocus$,
-  hasSession$,
   value,
   onChange,
 }) => {
@@ -221,8 +219,25 @@ export const ChatInput: FC<Props> = ({
   const conversation$ = conversationId ? conversations$.get(conversationId) : null;
   const conversationModel = conversation$?.chatConfig?.get()?.chat?.model;
 
-  const [internalMessage, setInternalMessage] = useState('');
+  // Initialize message from localStorage for persistence across page reloads
+  const storageKey = conversationId ? `gptme-draft-${conversationId}` : 'gptme-draft-new';
+  const [internalMessage, setInternalMessage] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(storageKey) || '';
+    }
+    return '';
+  });
   const [streamingEnabled, setStreamingEnabled] = useState(true);
+
+  // Persist message to localStorage when it changes
+  // Note: We only save non-empty messages, we don't clear on empty.
+  // This ensures drafts persist until a new message is typed, preventing
+  // data loss if send fails (the draft would already be cleared otherwise).
+  useEffect(() => {
+    if (typeof window !== 'undefined' && internalMessage) {
+      localStorage.setItem(storageKey, internalMessage);
+    }
+  }, [internalMessage, storageKey]);
 
   // Track if user has explicitly selected a model (temporary override)
   const [hasExplicitModelSelection, setHasExplicitModelSelection] = useState(false);
@@ -273,17 +288,15 @@ export const ChatInput: FC<Props> = ({
   const autoFocus = use$(autoFocus$);
   const conversation = conversationId ? use$(conversations$.get(conversationId)) : undefined;
   const isGenerating = conversation?.isGenerating || !!conversation?.executingTool;
-  const hasSession = use$(hasSession$);
-
   const placeholder = isReadOnly
     ? 'This is a demo conversation (read-only)'
     : !isConnected
       ? 'Connect to gptme to send messages'
-      : !hasSession
-        ? 'Waiting for chat session to be established...'
-        : "What's on your mind...";
+      : "What's on your mind...";
 
-  const isDisabled = isReadOnly || !isConnected || !hasSession;
+  // Don't disable input while waiting for session - let users type
+  // Session will be established by the time they finish typing
+  const isDisabled = isReadOnly || !isConnected;
 
   // Focus the textarea when autoFocus is true and component is interactive
   useEffect(() => {
