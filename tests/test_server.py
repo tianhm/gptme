@@ -143,4 +143,6 @@ def test_debug_errors_enabled(monkeypatch):
     # Test falsy values
     for value in ["0", "false", "no", ""]:
         monkeypatch.setenv("GPTME_DEBUG_ERRORS", value)
-        assert _is_debug_errors_enabled() is False, f"Should be False for value: {value}"
+        assert (
+            _is_debug_errors_enabled() is False
+        ), f"Should be False for value: {value}"

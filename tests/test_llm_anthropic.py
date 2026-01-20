@@ -337,6 +337,8 @@ def test_retry_generator_preserves_return_value():
 
     assert chunks == ["chunk1", "chunk2"]
     assert return_value == {"metadata": "value"}
+
+
 def test_web_search_tool_enabled():
     """Test that web search tool is included when environment variable is set."""
     # Set environment variable

@@ -206,7 +206,9 @@ def api_conversation_put(logfile: str):
         if msg.get("role") not in valid_roles:
             return (
                 flask.jsonify(
-                    {"error": f"Invalid role: {msg.get('role')}. Must be one of: {valid_roles}"}
+                    {
+                        "error": f"Invalid role: {msg.get('role')}. Must be one of: {valid_roles}"
+                    }
                 ),
                 400,
             )
@@ -262,7 +264,9 @@ def api_conversation_post(logfile: str):
     if req_json["role"] not in valid_roles:
         return (
             flask.jsonify(
-                {"error": f"Invalid role: {req_json['role']}. Must be one of: {valid_roles}"}
+                {
+                    "error": f"Invalid role: {req_json['role']}. Must be one of: {valid_roles}"
+                }
             ),
             400,
         )
@@ -305,7 +309,11 @@ def api_conversation_generate(logfile: str):
     if model is None:
         # No model in request, use default
         if default_model is None:
-            return flask.jsonify({"error": "No model available (none loaded and none specified in request)"}), 500
+            return flask.jsonify(
+                {
+                    "error": "No model available (none loaded and none specified in request)"
+                }
+            ), 500
         model = default_model.full
 
     # load conversation
@@ -350,7 +358,11 @@ def api_conversation_generate(logfile: str):
 
         except Exception as e:
             logger.exception("Error during generation")
-            error_msg = str(e) if _is_debug_errors_enabled() else "An internal error occurred during generation"
+            error_msg = (
+                str(e)
+                if _is_debug_errors_enabled()
+                else "An internal error occurred during generation"
+            )
             return flask.jsonify({"error": error_msg}), 500
 
     # Streaming response
@@ -466,7 +478,11 @@ def api_conversation_generate(logfile: str):
             raise
         except Exception as e:
             logger.exception("Error during generation")
-            error_msg = str(e) if _is_debug_errors_enabled() else "An internal error occurred during generation"
+            error_msg = (
+                str(e)
+                if _is_debug_errors_enabled()
+                else "An internal error occurred during generation"
+            )
             yield f"data: {flask.json.dumps({'error': error_msg})}\n\n"
         finally:
             logger.info("Generation completed")

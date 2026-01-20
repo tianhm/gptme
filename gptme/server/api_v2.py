@@ -196,7 +196,9 @@ def api_conversation_put(conversation_id: str):
         if msg.get("role") not in valid_roles:
             return (
                 flask.jsonify(
-                    {"error": f"Invalid role: {msg.get('role')}. Must be one of: {valid_roles}"}
+                    {
+                        "error": f"Invalid role: {msg.get('role')}. Must be one of: {valid_roles}"
+                    }
                 ),
                 400,
             )
@@ -257,7 +259,9 @@ def api_conversation_post(conversation_id: str):
     if req_json["role"] not in valid_roles:
         return (
             flask.jsonify(
-                {"error": f"Invalid role: {req_json['role']}. Must be one of: {valid_roles}"}
+                {
+                    "error": f"Invalid role: {req_json['role']}. Must be one of: {valid_roles}"
+                }
             ),
             400,
         )

@@ -119,9 +119,7 @@ def api_agents_put():
         ), 504
     if clone_result.returncode != 0:
         logger.error(f"Git clone failed: {clone_result.stderr.decode()}")
-        return flask.jsonify(
-            {"error": "Failed to clone template repository"}
-        ), 500
+        return flask.jsonify({"error": "Failed to clone template repository"}), 500
 
     # Pull in any git submodules
     try:
@@ -141,9 +139,7 @@ def api_agents_put():
         # Delete the temp dir if the submodule update failed
         logger.error(f"Submodule update failed: {submodule_result.stderr.decode()}")
         shutil.rmtree(temp_dir)
-        return flask.jsonify(
-            {"error": "Failed to update submodules"}
-        ), 500
+        return flask.jsonify({"error": "Failed to update submodules"}), 500
     logger.info(f"Cloned template repo to {temp_dir}")
 
     # Run the post-fork command
@@ -167,9 +163,7 @@ def api_agents_put():
             if path.exists():
                 shutil.rmtree(path)
 
-            return flask.jsonify(
-                {"error": "Failed to run post-fork command"}
-            ), 500
+            return flask.jsonify({"error": "Failed to run post-fork command"}), 500
     except Exception as e:
         # Delete the temp dir and workspace if the post-fork command failed
         logger.exception(f"Post-fork command exception: {e}")

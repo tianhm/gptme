@@ -127,9 +127,7 @@ def test_message_pre_process_hook(client: FlaskClient, monkeypatch):
 
     # Check if test STEP_PRE hook message is in the log
     test_hook_messages = [
-        m
-        for m in messages
-        if "TEST_STEP_PRE hook triggered" in m.get("content", "")
+        m for m in messages if "TEST_STEP_PRE hook triggered" in m.get("content", "")
     ]
     assert (
         len(test_hook_messages) > 0
@@ -184,9 +182,7 @@ def test_message_post_process_hook(client: FlaskClient, monkeypatch):
 
     # Check if test TURN_POST hook message is in the log
     test_hook_messages = [
-        m
-        for m in messages
-        if "TEST_TURN_POST hook triggered" in m.get("content", "")
+        m for m in messages if "TEST_TURN_POST hook triggered" in m.get("content", "")
     ]
     assert (
         len(test_hook_messages) > 0
@@ -295,9 +291,7 @@ def test_hooks_work_with_tools(client: FlaskClient, monkeypatch):
         if "TEST_SESSION_START hook triggered" in m.get("content", "")
     ]
     pre_process_messages = [
-        m
-        for m in messages
-        if "TEST_STEP_PRE hook triggered" in m.get("content", "")
+        m for m in messages if "TEST_STEP_PRE hook triggered" in m.get("content", "")
     ]
 
     assert len(session_start_messages) > 0, "Should have SESSION_START hook message"
