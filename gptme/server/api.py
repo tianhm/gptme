@@ -28,6 +28,7 @@ from ..llm.models import get_default_model
 from ..logmanager import LogManager, get_user_conversations, prepare_messages
 from ..message import Message
 from ..tools import ToolUse, execute_msg, init_tools
+from ..util.uri import URI
 from .auth import require_auth
 from .openapi_docs import (
     ConversationCreateRequest,
@@ -96,8 +97,15 @@ def api_conversations():
     return flask.jsonify(conversations)
 
 
-def _abs_to_rel_workspace(path: str | Path, workspace: Path) -> str:
-    """Convert an absolute path to a relative path."""
+def _abs_to_rel_workspace(path: str | Path | URI, workspace: Path) -> str:
+    """Convert an absolute path to a relative path.
+
+    URIs are returned as-is since they are not workspace-relative.
+    """
+    # URIs should be returned as-is (they're not workspace-relative)
+    if isinstance(path, URI):
+        return str(path)
+
     path = Path(path).resolve()
     if path.is_relative_to(workspace):
         return str(path.relative_to(workspace))

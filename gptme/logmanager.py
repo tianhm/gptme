@@ -27,6 +27,7 @@ from .message import Message, len_tokens, print_msg
 from .tools import ToolUse
 from .util.context import enrich_messages_with_context
 from .util.reduce import limit_log, reduce_log
+from .util.uri import URI
 
 PathLike: TypeAlias = str | Path
 
@@ -335,6 +336,9 @@ class LogManager:
 
         file_hashes = dict(msg.file_hashes)  # Start with existing hashes
         for filepath in msg.files:
+            # Skip URIs - they can't be stored locally
+            if isinstance(filepath, URI):
+                continue
             if not filepath.exists():
                 continue
             # Store by hash and record the mapping
@@ -792,10 +796,12 @@ def check_for_modifications(log: Log) -> bool:
 
 
 def _gen_read_jsonl(path: PathLike) -> Generator[Message, None, None]:
+    from .util.uri import parse_file_reference
+
     with open(path) as file:
         for line in file.readlines():
             json_data = json.loads(line)
-            files = [Path(f) for f in json_data.pop("files", [])]
+            files = [parse_file_reference(f) for f in json_data.pop("files", [])]
             file_hashes = json_data.pop("file_hashes", {})
             if "timestamp" in json_data:
                 json_data["timestamp"] = isoparse(json_data["timestamp"])
