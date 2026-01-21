@@ -34,6 +34,11 @@ _registry = MCPRegistry()
 _dynamic_servers: dict[str, MCPClient] = {}
 
 
+def _get_mcp_client(server_name: str) -> MCPClient | None:
+    """Get MCP client from either pre-configured or dynamically loaded servers."""
+    return _mcp_clients.get(server_name) or _dynamic_servers.get(server_name)
+
+
 def _restart_mcp_client(server_name: str, config: Config) -> MCPClient:
     """Restart an MCP client by reconnecting to the server"""
     logger.info(f"Restarting MCP client for server: {server_name}")
@@ -389,6 +394,13 @@ def load_mcp_server(name: str, config_override: dict | None = None) -> str:
         if "env" in config_override:
             server_config.env = config_override["env"]
 
+    # Add to config BEFORE connecting (connect() looks up server by name in config)
+    config_added = False
+    if server_config not in config.mcp.servers:
+        config.mcp.servers.append(server_config)
+        set_config(config)
+        config_added = True
+
     try:
         # Create client and connect
         client = MCPClient(config=config)
@@ -397,15 +409,14 @@ def load_mcp_server(name: str, config_override: dict | None = None) -> str:
         # Store in dynamic servers
         _dynamic_servers[name] = client
 
-        # Add to config
-        if server_config not in config.mcp.servers:
-            config.mcp.servers.append(server_config)
-            set_config(config)
-
         tool_names = [tool.name for tool in tools.tools]
         return f"Successfully loaded server '{name}' with {len(tool_names)} tools: {', '.join(tool_names)}"
 
     except Exception as e:
+        # If connection failed and we added the config, remove it to maintain consistency
+        if config_added:
+            config.mcp.servers = [s for s in config.mcp.servers if s.name != name]
+            set_config(config)
         logger.error(f"Failed to load server '{name}': {e}")
         return f"Failed to load server '{name}': {e}"
 
@@ -461,3 +472,131 @@ def list_loaded_servers() -> str:
         output.append("")
 
     return "\n".join(output)
+
+
+def list_mcp_resources(server_name: str) -> str:
+    """
+    List available resources from an MCP server.
+
+    Args:
+        server_name: Name of the loaded MCP server
+
+    Returns:
+        Formatted list of available resources
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        result = client.list_resources()
+        resources = result.resources if hasattr(result, "resources") else []
+
+        if not resources:
+            return f"No resources available from server '{server_name}'."
+
+        output = [f"# Resources from {server_name}\n"]
+        for resource in resources:
+            output.append(f"## {resource.name}")
+            output.append(f"**URI:** `{resource.uri}`")
+            if hasattr(resource, "description") and resource.description:
+                output.append(f"**Description:** {resource.description}")
+            if hasattr(resource, "mimeType") and resource.mimeType:
+                output.append(f"**MIME Type:** {resource.mimeType}")
+            output.append("")
+
+        return "\n".join(output)
+    except MCPInterruptedError:
+        return "MCP operation interrupted. The server is still running."
+    except Exception as e:
+        logger.error(f"Failed to list resources from {server_name}: {e}")
+        return f"Error listing resources: {e}"
+
+
+def read_mcp_resource(server_name: str, uri: str) -> str:
+    """
+    Read a specific resource from an MCP server.
+
+    Args:
+        server_name: Name of the loaded MCP server
+        uri: URI of the resource to read
+
+    Returns:
+        Resource content as string
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        result = client.read_resource(uri)
+        contents = result.contents if hasattr(result, "contents") else []
+
+        if not contents:
+            return f"No content returned for resource '{uri}'."
+
+        output = []
+        for content in contents:
+            if hasattr(content, "text"):
+                output.append(content.text)
+            elif hasattr(content, "blob"):
+                # For binary content, indicate it's binary
+                output.append(f"[Binary content: {len(content.blob)} bytes]")
+            else:
+                output.append(str(content))
+
+        return "\n".join(output)
+    except MCPInterruptedError:
+        return "MCP operation interrupted. The server is still running."
+    except Exception as e:
+        logger.error(f"Failed to read resource {uri} from {server_name}: {e}")
+        return f"Error reading resource: {e}"
+
+
+def list_mcp_resource_templates(server_name: str) -> str:
+    """
+    List available resource templates from an MCP server.
+
+    Resource templates are parameterized resources like `db://table/{name}`.
+
+    Args:
+        server_name: Name of the loaded MCP server
+
+    Returns:
+        Formatted list of available resource templates
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        result = client.list_resource_templates()
+        templates = (
+            result.resourceTemplates if hasattr(result, "resourceTemplates") else []
+        )
+
+        if not templates:
+            return f"No resource templates available from server '{server_name}'."
+
+        output = [f"# Resource Templates from {server_name}\n"]
+        for template in templates:
+            output.append(f"## {template.name}")
+            output.append(f"**URI Template:** `{template.uriTemplate}`")
+            if hasattr(template, "description") and template.description:
+                output.append(f"**Description:** {template.description}")
+            if hasattr(template, "mimeType") and template.mimeType:
+                output.append(f"**MIME Type:** {template.mimeType}")
+            output.append("")
+
+        return "\n".join(output)
+    except MCPInterruptedError:
+        return "MCP operation interrupted. The server is still running."
+    except Exception as e:
+        logger.error(f"Failed to list resource templates from {server_name}: {e}")
+        return f"Error listing resource templates: {e}"
