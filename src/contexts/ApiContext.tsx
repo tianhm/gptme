@@ -255,7 +255,12 @@ export function ApiProvider({
   // Handle auth code exchange on mount
   useEffect(() => {
     const handleAuthCodeExchange = async () => {
-      if (!needsAuthCodeExchange) {
+      // Re-check hash at mount time (not module load time) for SPA navigation
+      // The module-level initialHash may be empty if the module loaded before navigation
+      const currentHash = window.location.hash.substring(1);
+      const hasAuthCode = hasAuthCodeInHash(currentHash);
+
+      if (!hasAuthCode) {
         return;
       }
 
@@ -263,7 +268,7 @@ export function ApiProvider({
       setIsExchangingAuthCode(true);
 
       try {
-        const config = await processConnectionFromHash(initialHash);
+        const config = await processConnectionFromHash(currentHash);
         console.log('[ApiContext] Auth code exchange successful, updating config');
 
         // Update the config with exchanged values
@@ -290,8 +295,11 @@ export function ApiProvider({
 
   // Attempt initial connection (skip if auth code exchange is happening)
   useEffect(() => {
-    if (needsAuthCodeExchange) {
-      // Auth code exchange will handle connection
+    // Re-check hash at mount time (not module load time) for SPA navigation
+    // This mirrors the check in the auth code exchange effect above
+    const currentHash = window.location.hash.substring(1);
+    if (hasAuthCodeInHash(currentHash)) {
+      // Auth code exchange effect will handle connection
       return;
     }
 
