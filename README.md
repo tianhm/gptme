@@ -61,12 +61,31 @@ An unconstrained local <a href="https://gptme.org/docs/alternatives.html">altern
 
 ## 📚 Table of Contents
 
+- News
 - 🎥 [Demos](#-demos)
 - 🌟 [Features](#-features)
 - 🚀 [Getting Started](#-getting-started)
 - 🛠 [Usage](#-usage)
 - 📊 [Stats](#-stats)
 - 🔗 [Links](#-links)
+
+## News
+
+<!-- source of truth: docs/timeline.rst and docs/changelog.rst -->
+
+- **Coming soon** - [gptme.ai](https://gptme.ai) managed service for running agents in the cloud
+- **2025-12** - [v0.31.0](https://github.com/gptme/gptme/releases/tag/v0.31.0): Background jobs, form tool, cost tracking, content-addressable storage
+- **2025-11** - [v0.30.0](https://github.com/gptme/gptme/releases/tag/v0.30.0): Plugin system, context compression, subagent planner mode
+- **2025-10** - [v0.29.0](https://github.com/gptme/gptme/releases/tag/v0.29.0): MCP discovery & dynamic loading, token awareness, shellcheck validation
+- **2025-08** - [v0.28.0](https://github.com/gptme/gptme/releases/tag/v0.28.0): MCP support, morph tool for fast edits, auto-commit, redesigned server API
+- **2025-03** - [v0.27.0](https://github.com/gptme/gptme/releases/tag/v0.27.0): Pre-commit integration, macOS computer use, Claude 3.7 Sonnet, DeepSeek R1, local TTS with Kokoro
+- **2025-01** - [gptme-contrib](https://github.com/gptme/gptme-contrib) created: community plugins including Twitter/X, Discord bot, email tools, consortium (multi-agent)
+- **2024-12** - [gptme-agent-template](https://github.com/gptme/gptme-agent-template) v0.3: Template for persistent agents like [Bob](https://github.com/TimeToBuildBob) (contributor to gptme!)
+- **2024-11** - Ecosystem expansion: [gptme-webui](https://github.com/gptme/gptme-webui), [gptme-rag](https://github.com/gptme/gptme-rag), [gptme.vim](https://github.com/gptme/gptme.vim)
+- **2024-10** - [First viral tweet](https://x.com/rohanpaul_ai/status/1841999030999470326) bringing widespread attention
+- **2024-08** - [Show HN](https://news.ycombinator.com/item?id=41204256), Anthropic Claude support, tmux tool
+- **2023-09** - [Initial public release](https://news.ycombinator.com/item?id=37394845) on HN, [Reddit](https://www.reddit.com/r/LocalLLaMA/comments/16atlia/), [Twitter](https://x.com/ErikBjare/status/1699097896451289115)
+- **2023-03** - [Initial commit](https://github.com/gptme/gptme/commit/d00e9aae68cbd6b89bbc474ed7721d08796dc) - one of the first agent CLIs
 
 ## 🎥 Demos
 
