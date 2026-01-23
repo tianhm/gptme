@@ -52,11 +52,14 @@
 </p>
 
 <p align="center">
-📜 Personal AI agent in your terminal, with tools so it can:<br/>Use the terminal, run code, edit files, browse the web, use vision, and much more;<br/>a great coding agent, but is general-purpose to assists in all kinds of knowledge-work.
+📜 Personal AI agent in your terminal, with tools so it can:<br/>
+Use the terminal, run code, edit files, browse the web, use vision, and much more;<br/>
+a great coding agent, but is general-purpose to assists in all kinds of knowledge-work.
 </p>
 
 <p align="center">
-An unconstrained local free and open-source <a href="https://gptme.org/docs/alternatives.html">alternative</a> to Claude Code, Codex, Cursor Agents, etc. One of the first agent CLIs created (Spring 2023) that is still in active development.
+An unconstrained local free and open-source <a href="https://gptme.org/docs/alternatives.html">alternative</a> to Claude Code, Codex, Cursor Agents, etc.<br/>
+One of the first agent CLIs created (Spring 2023) that is still in active development.
 </p>
 
 ## 📚 Table of Contents
