@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.style import Style
 from rich.syntax import Syntax
 
+from ..constants import DECLINED_CONTENT
 from ..message import Message
 from ..tools import ConfirmFunc
 from .clipboard import copy, set_copytext
@@ -107,6 +108,7 @@ def ask_execute(question="Execute code?", default=True) -> bool:
 
     # Build choice string with available options
     choicestr = f"[{'Y' if default else 'y'}/{'n' if default else 'N'}"
+    choicestr += "/auto"
     if copiable:
         choicestr += "/c"
     if editable:
@@ -268,8 +270,6 @@ def execute_with_confirmation(
         try:
             # Get confirmation
             if not confirm_fn(confirm_msg or f"Execute on {path}?"):
-                from ..constants import DECLINED_CONTENT
-
                 yield Message("system", DECLINED_CONTENT)
                 return
 
