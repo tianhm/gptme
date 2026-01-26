@@ -625,14 +625,18 @@ export class ApiClient {
     // Set needsInitialStep flag so useConversation triggers step() after subscribing
     // This fixes the race condition where tokens were missed because step() was called
     // before the chat page mounted and subscribed to events
-    initConversation(conversationId, {
-      id: conversationId,
-      name: 'New conversation',
-      log: [message],
-      logfile: conversationId,
-      branches: {},
-      workspace: options?.workspace || '.',
-    }, { needsInitialStep: true });
+    initConversation(
+      conversationId,
+      {
+        id: conversationId,
+        name: 'New conversation',
+        log: [message],
+        logfile: conversationId,
+        branches: {},
+        workspace: options?.workspace || '.',
+      },
+      { needsInitialStep: true }
+    );
 
     // Await server-side creation to propagate errors properly
     await this.createConversation(conversationId, [message], {

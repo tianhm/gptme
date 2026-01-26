@@ -87,7 +87,11 @@ export function setExecutingTool(id: string, toolId: string | null, tooluse: Too
 }
 
 // Initialize a new conversation in the store
-export function initConversation(id: string, data?: ConversationResponse, options?: { needsInitialStep?: boolean }) {
+export function initConversation(
+  id: string,
+  data?: ConversationResponse,
+  options?: { needsInitialStep?: boolean }
+) {
   const initial: ConversationState = {
     data: data || {
       id,

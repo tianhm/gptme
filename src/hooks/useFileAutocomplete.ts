@@ -66,26 +66,29 @@ export function useFileAutocomplete({
   );
 
   // Find @ trigger and extract query
-  const findTrigger = useCallback((value: string, cursorPos: number): { index: number; query: string } | null => {
-    // Look backwards from cursor to find @
-    for (let i = cursorPos - 1; i >= 0; i--) {
-      const char = value[i];
-      if (char === TRIGGER_CHAR) {
-        // Check if @ is at start or preceded by whitespace
-        if (i === 0 || /\s/.test(value[i - 1])) {
-          const query = value.slice(i + 1, cursorPos);
-          // Don't trigger if query contains spaces (means user moved past the completion)
-          if (!/\s/.test(query)) {
-            return { index: i, query };
+  const findTrigger = useCallback(
+    (value: string, cursorPos: number): { index: number; query: string } | null => {
+      // Look backwards from cursor to find @
+      for (let i = cursorPos - 1; i >= 0; i--) {
+        const char = value[i];
+        if (char === TRIGGER_CHAR) {
+          // Check if @ is at start or preceded by whitespace
+          if (i === 0 || /\s/.test(value[i - 1])) {
+            const query = value.slice(i + 1, cursorPos);
+            // Don't trigger if query contains spaces (means user moved past the completion)
+            if (!/\s/.test(query)) {
+              return { index: i, query };
+            }
           }
+          break;
         }
-        break;
+        // Stop if we hit whitespace
+        if (/\s/.test(char)) break;
       }
-      // Stop if we hit whitespace
-      if (/\s/.test(char)) break;
-    }
-    return null;
-  }, []);
+      return null;
+    },
+    []
+  );
 
   // Handle input changes
   const handleInputChange = useCallback(
@@ -93,18 +96,18 @@ export function useFileAutocomplete({
       currentValue.current = value;
 
       if (!enabled || !conversationId) {
-        setState(prev => ({ ...prev, isOpen: false }));
+        setState((prev) => ({ ...prev, isOpen: false }));
         return;
       }
 
       const trigger = findTrigger(value, cursorPos);
 
       if (!trigger) {
-        setState(prev => ({ ...prev, isOpen: false, query: '', files: [] }));
+        setState((prev) => ({ ...prev, isOpen: false, query: '', files: [] }));
         return;
       }
 
-      setState(prev => ({
+      setState((prev) => ({
         ...prev,
         isOpen: true,
         query: trigger.query,
@@ -114,14 +117,15 @@ export function useFileAutocomplete({
 
       // Fetch files and filter by query
       const files = await flattenFiles();
-      const filtered = files.filter(f =>
-        f.name.toLowerCase().includes(trigger.query.toLowerCase()) ||
-        f.path.toLowerCase().includes(trigger.query.toLowerCase())
+      const filtered = files.filter(
+        (f) =>
+          f.name.toLowerCase().includes(trigger.query.toLowerCase()) ||
+          f.path.toLowerCase().includes(trigger.query.toLowerCase())
       );
 
       // Only update if value hasn't changed
       if (currentValue.current === value) {
-        setState(prev => ({
+        setState((prev) => ({
           ...prev,
           files: filtered.slice(0, 10), // Limit to 10 suggestions
         }));
@@ -138,7 +142,7 @@ export function useFileAutocomplete({
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
-          setState(prev => ({
+          setState((prev) => ({
             ...prev,
             selectedIndex: (prev.selectedIndex + 1) % prev.files.length,
           }));
@@ -146,11 +150,10 @@ export function useFileAutocomplete({
 
         case 'ArrowUp':
           e.preventDefault();
-          setState(prev => ({
+          setState((prev) => ({
             ...prev,
-            selectedIndex: prev.selectedIndex === 0
-              ? prev.files.length - 1
-              : prev.selectedIndex - 1,
+            selectedIndex:
+              prev.selectedIndex === 0 ? prev.files.length - 1 : prev.selectedIndex - 1,
           }));
           return true;
 
@@ -164,7 +167,7 @@ export function useFileAutocomplete({
 
         case 'Escape':
           e.preventDefault();
-          setState(prev => ({ ...prev, isOpen: false }));
+          setState((prev) => ({ ...prev, isOpen: false }));
           return true;
 
         default:
@@ -187,7 +190,7 @@ export function useFileAutocomplete({
       const after = value.slice(state.cursorPosition);
       const newValue = `${before}@${file.path}${after}`;
 
-      setState(prev => ({ ...prev, isOpen: false, query: '', files: [] }));
+      setState((prev) => ({ ...prev, isOpen: false, query: '', files: [] }));
 
       return newValue;
     },
@@ -195,11 +198,11 @@ export function useFileAutocomplete({
   );
 
   const setSelectedIndex = useCallback((index: number) => {
-    setState(prev => ({ ...prev, selectedIndex: index }));
+    setState((prev) => ({ ...prev, selectedIndex: index }));
   }, []);
 
   const close = useCallback(() => {
-    setState(prev => ({ ...prev, isOpen: false }));
+    setState((prev) => ({ ...prev, isOpen: false }));
   }, []);
 
   return {

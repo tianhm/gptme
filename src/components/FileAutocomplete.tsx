@@ -1,4 +1,4 @@
-import { FC, useEffect, useRef } from 'react';
+import { type FC, useEffect, useRef } from 'react';
 import { File, Folder } from 'lucide-react';
 import type { FileType } from '@/types/workspace';
 import { cn } from '@/lib/utils';
@@ -38,11 +38,11 @@ export const FileAutocomplete: FC<FileAutocompleteProps> = ({
   return (
     <div
       ref={listRef}
-      className="absolute bottom-full left-0 mb-1 w-full max-h-60 overflow-y-auto rounded-lg border bg-popover shadow-lg z-50"
+      className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-full overflow-y-auto rounded-lg border bg-popover shadow-lg"
     >
       <div className="p-1">
         {query && (
-          <div className="px-2 py-1 text-xs text-muted-foreground border-b mb-1">
+          <div className="mb-1 border-b px-2 py-1 text-xs text-muted-foreground">
             Files matching &quot;{query}&quot;
           </div>
         )}
@@ -51,27 +51,25 @@ export const FileAutocomplete: FC<FileAutocompleteProps> = ({
             key={file.path}
             ref={index === selectedIndex ? selectedRef : null}
             className={cn(
-              'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm',
-              index === selectedIndex
-                ? 'bg-accent text-accent-foreground'
-                : 'hover:bg-muted'
+              'flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm',
+              index === selectedIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'
             )}
             onClick={() => onSelect(file)}
             onMouseEnter={() => onHover(index)}
           >
             {file.type === 'directory' ? (
-              <Folder className="h-4 w-4 text-blue-500 flex-shrink-0" />
+              <Folder className="h-4 w-4 flex-shrink-0 text-blue-500" />
             ) : (
-              <File className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+              <File className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
             )}
-            <span className="truncate flex-1">{file.path}</span>
+            <span className="flex-1 truncate">{file.path}</span>
             {file.type === 'directory' && (
               <span className="text-xs text-muted-foreground">dir</span>
             )}
           </div>
         ))}
         {files.length === 10 && (
-          <div className="px-2 py-1 text-xs text-muted-foreground border-t mt-1">
+          <div className="mt-1 border-t px-2 py-1 text-xs text-muted-foreground">
             Type more to narrow results...
           </div>
         )}

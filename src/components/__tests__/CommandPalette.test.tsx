@@ -4,9 +4,17 @@ import { CommandPalette } from '../CommandPalette';
 
 // Mock UI command components
 jest.mock('../ui/command', () => ({
-  CommandDialog: ({ children, open }: any) =>
+  CommandDialog: ({ children, open }: { children: React.ReactNode; open: boolean }) =>
     open ? <div data-testid="command-dialog">{children}</div> : null,
-  CommandInput: ({ placeholder, value, onValueChange }: any) => (
+  CommandInput: ({
+    placeholder,
+    value,
+    onValueChange,
+  }: {
+    placeholder?: string;
+    value?: string;
+    onValueChange?: (value: string) => void;
+  }) => (
     <input
       data-testid="command-input"
       placeholder={placeholder}
@@ -14,15 +22,27 @@ jest.mock('../ui/command', () => ({
       onChange={(e) => onValueChange?.(e.target.value)}
     />
   ),
-  CommandList: ({ children }: any) => <div data-testid="command-list">{children}</div>,
-  CommandEmpty: ({ children }: any) => <div data-testid="command-empty">{children}</div>,
-  CommandGroup: ({ children, heading }: any) => (
+  CommandList: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="command-list">{children}</div>
+  ),
+  CommandEmpty: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="command-empty">{children}</div>
+  ),
+  CommandGroup: ({ children, heading }: { children: React.ReactNode; heading?: string }) => (
     <div data-testid="command-group">
       {heading && <div data-testid="command-group-heading">{heading}</div>}
       {children}
     </div>
   ),
-  CommandItem: ({ children, onSelect, value }: any) => (
+  CommandItem: ({
+    children,
+    onSelect,
+    value,
+  }: {
+    children: React.ReactNode;
+    onSelect?: () => void;
+    value?: string;
+  }) => (
     <div data-testid="command-item" data-value={value} onClick={() => onSelect?.()}>
       {children}
     </div>
