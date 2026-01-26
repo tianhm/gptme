@@ -4,7 +4,8 @@ Tools to let the assistant control a browser, including:
  - reading their contents
  - searching the web
  - taking screenshots (Playwright only)
- - reading PDFs
+ - reading PDFs (with page limits and vision fallback hints)
+ - converting PDFs to images (using pdftoppm, ImageMagick, or vips)
 
 Two backends are available:
 
@@ -76,6 +77,202 @@ browser: Literal["playwright", "lynx"] | None = (
     "playwright" if has_playwright() else ("lynx" if has_lynx() else None)
 )
 
+
+# PDF-to-image CLI tool detection
+def _has_imagemagick() -> bool:
+    """Check if ImageMagick's convert command is available."""
+    return shutil.which("convert") is not None
+
+
+def _has_pdftoppm() -> bool:
+    """Check if pdftoppm (from poppler-utils) is available."""
+    return shutil.which("pdftoppm") is not None
+
+
+def _has_vips() -> bool:
+    """Check if vips CLI is available."""
+    return shutil.which("vips") is not None
+
+
+def _get_pdf_to_image_hints() -> str:
+    """Get hints for converting PDF to images using available CLI tools.
+
+    Auto-detects which tools are installed and provides appropriate guidance.
+    """
+    available_tools: list[str] = []
+    if _has_pdftoppm():
+        available_tools.append("pdftoppm")
+    if _has_imagemagick():
+        available_tools.append("convert")
+    if _has_vips():
+        available_tools.append("vips")
+
+    if available_tools:
+        tool_list = ", ".join(available_tools)
+        return (
+            f"**PDF-to-image tools available**: {tool_list}\n\n"
+            "Use the `pdf_to_images()` function to convert PDF pages to images:\n"
+            "```python\n"
+            "images = pdf_to_images('https://example.com/doc.pdf')\n"
+            "for img in images:\n"
+            "    view_image(img)  # Analyze with vision\n"
+            "```\n\n"
+            "Options: `pages=(1, 3)` for specific pages, `dpi=200` for higher resolution."
+        )
+    else:
+        return (
+            "**No PDF-to-image tools detected.** Install one of:\n"
+            "- `pdftoppm` (recommended): `sudo apt install poppler-utils` or `brew install poppler`\n"
+            "- `convert` (ImageMagick): `sudo apt install imagemagick` or `brew install imagemagick`\n"
+            "- `vips`: `sudo apt install libvips-tools` or `brew install vips`\n\n"
+            "After installing, use `pdf_to_images()` to convert, then vision to analyze."
+        )
+
+
+def pdf_to_images(
+    url_or_path: str,
+    output_dir: str | Path | None = None,
+    pages: tuple[int, int] | None = None,
+    dpi: int = 150,
+) -> list[Path]:
+    """Convert PDF pages to images using auto-detected CLI tools.
+
+    Auto-detects and uses the first available tool: pdftoppm, ImageMagick convert, or vips.
+
+    Args:
+        url_or_path: URL or local path to PDF file
+        output_dir: Directory to save images (default: creates temp directory)
+        pages: Optional tuple of (first_page, last_page) to convert (1-indexed).
+               If None, converts all pages.
+        dpi: Resolution for output images (default: 150)
+
+    Returns:
+        List of paths to generated PNG images
+
+    Raises:
+        RuntimeError: If no PDF-to-image tools are available
+        subprocess.CalledProcessError: If conversion fails
+
+    Example:
+        >>> images = pdf_to_images("https://example.com/doc.pdf")
+        >>> for img in images:
+        ...     view_image(img)  # Analyze with vision tool
+    """
+    import tempfile
+
+    # Determine output directory
+    if output_dir is None:
+        output_dir = Path(tempfile.mkdtemp(prefix="pdf_images_"))
+    else:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download PDF if URL
+    if url_or_path.startswith(("http://", "https://")):
+        logger.info(f"Downloading PDF from: {url_or_path}")
+        response = requests.get(url_or_path, timeout=60)
+        response.raise_for_status()
+        pdf_path = output_dir / "input.pdf"
+        pdf_path.write_bytes(response.content)
+    else:
+        pdf_path = Path(url_or_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+    output_prefix = output_dir / "page"
+
+    # Try tools in order of preference
+    if _has_pdftoppm():
+        return _convert_with_pdftoppm(pdf_path, output_prefix, pages, dpi)
+    elif _has_imagemagick():
+        return _convert_with_imagemagick(pdf_path, output_prefix, pages, dpi)
+    elif _has_vips():
+        return _convert_with_vips(pdf_path, output_prefix, pages, dpi)
+    else:
+        raise RuntimeError(
+            "No PDF-to-image tools available. Install one of:\n"
+            "- pdftoppm: sudo apt install poppler-utils (or brew install poppler)\n"
+            "- convert: sudo apt install imagemagick (or brew install imagemagick)\n"
+            "- vips: sudo apt install libvips-tools (or brew install vips)"
+        )
+
+
+def _convert_with_pdftoppm(
+    pdf_path: Path, output_prefix: Path, pages: tuple[int, int] | None, dpi: int
+) -> list[Path]:
+    """Convert PDF to images using pdftoppm."""
+    import subprocess
+
+    cmd = ["pdftoppm", "-png", "-r", str(dpi)]
+    if pages:
+        cmd.extend(["-f", str(pages[0]), "-l", str(pages[1])])
+    cmd.extend([str(pdf_path), str(output_prefix)])
+
+    logger.info(f"Converting PDF with pdftoppm: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+    # pdftoppm creates files like: page-1.png, page-2.png, etc.
+    return sorted(output_prefix.parent.glob(f"{output_prefix.name}-*.png"))
+
+
+def _convert_with_imagemagick(
+    pdf_path: Path, output_prefix: Path, pages: tuple[int, int] | None, dpi: int
+) -> list[Path]:
+    """Convert PDF to images using ImageMagick convert."""
+    import subprocess
+
+    # ImageMagick uses 0-indexed pages
+    if pages:
+        page_spec = f"[{pages[0]-1}-{pages[1]-1}]"
+        input_spec = f"{pdf_path}{page_spec}"
+    else:
+        input_spec = str(pdf_path)
+
+    output_pattern = f"{output_prefix}-%d.png"
+    cmd = ["convert", "-density", str(dpi), input_spec, output_pattern]
+
+    logger.info(f"Converting PDF with ImageMagick: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+    # ImageMagick creates files like: page-0.png, page-1.png, etc.
+    return sorted(output_prefix.parent.glob(f"{output_prefix.name}-*.png"))
+
+
+def _convert_with_vips(
+    pdf_path: Path, output_prefix: Path, pages: tuple[int, int] | None, dpi: int
+) -> list[Path]:
+    """Convert PDF to images using vips."""
+    import subprocess
+
+    output_files = []
+    if pages:
+        page_range = range(pages[0] - 1, pages[1])  # vips is 0-indexed
+    else:
+        # Try to get page count, default to 100 max
+        page_range = range(100)
+
+    for i, page_num in enumerate(page_range):
+        output_file = output_prefix.parent / f"{output_prefix.name}-{i+1}.png"
+        cmd = [
+            "vips",
+            "pdfload",
+            str(pdf_path),
+            str(output_file),
+            f"--page={page_num}",
+            f"--dpi={dpi}",
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            output_files.append(output_file)
+        except subprocess.CalledProcessError:
+            # Reached end of pages
+            if not pages:
+                break
+            raise
+
+    return output_files
+
+
 # Check for Perplexity availability
 try:
     from ._browser_perplexity import has_perplexity_key, search_perplexity  # fmt: skip
@@ -104,7 +301,12 @@ EngineType = Literal["google", "duckduckgo", "perplexity"]
 def examples(tool_format):
     # Define example output with newlines outside f-string (backslashes not allowed in f-string expressions)
     pdf_example_result = (
-        "--- Page 1 ---\n[PDF text content...]\n\n--- Page 2 ---\n[More content...]"
+        "--- Page 1 ---\n[PDF text content...]\n\n--- Page 2 ---\n[More content...]\n\n---\n"
+        "**Note**: This PDF has 42 pages. Showing first 10 pages.\n"
+        "To read more pages, use: `read_url('...', max_pages=N)` where N is the desired count, or 0 for all pages.\n\n"
+        "**Tip**: If this text extraction seems incomplete or garbled (common with scanned documents, "
+        "complex layouts, or image-heavy PDFs), try vision-based reading: convert pages to images "
+        "using a PDF-to-image tool, then use the vision tool to analyze them."
     )
     return f"""
 ### Reading docs
@@ -201,10 +403,24 @@ def _is_pdf_url(url: str) -> bool:
         return False
 
 
-def _read_pdf_url(url: str) -> str:
-    """Read PDF content from URL using pypdf."""
+# Default max pages for PDF reading
+DEFAULT_PDF_MAX_PAGES = 10
+
+
+def _read_pdf_url(url: str, max_pages: int | None = None) -> str:
+    """Read PDF content from URL using pypdf.
+
+    Args:
+        url: URL of the PDF to read
+        max_pages: Maximum number of pages to read (default: 10).
+                   Set to 0 to read all pages.
+    """
     if not has_pypdf:
         return "Error: PDF support requires pypdf. Install with: pip install pypdf"
+
+    # Use default if not specified
+    if max_pages is None:
+        max_pages = DEFAULT_PDF_MAX_PAGES
 
     try:
         # Download PDF content
@@ -215,19 +431,51 @@ def _read_pdf_url(url: str) -> str:
         # Read PDF
         pdf_file = BytesIO(response.content)
         reader = pypdf.PdfReader(pdf_file)
+        total_pages = len(reader.pages)
 
-        # Extract text from all pages
+        # Determine how many pages to read
+        pages_to_read = total_pages if max_pages == 0 else min(max_pages, total_pages)
+        truncated = pages_to_read < total_pages
+
+        # Extract text from pages
         text_parts = []
-        for i, page in enumerate(reader.pages):
+        for i, page in enumerate(reader.pages[:pages_to_read]):
             page_text = page.extract_text()
             if page_text.strip():  # Only add non-empty pages
                 text_parts.append(f"--- Page {i+1} ---\n{page_text}")
 
         if not text_parts:
-            return "Error: PDF appears to be empty or contains only images"
+            return (
+                "Error: PDF appears to be empty or contains only images.\n\n"
+                "**Tip**: For image-based or complex PDFs, convert to images first:\n\n"
+                + _get_pdf_to_image_hints()
+            )
 
         result = "\n\n".join(text_parts)
-        logger.info(f"Successfully extracted text from {len(reader.pages)} pages")
+
+        # Add footer with hints
+        footer_parts = []
+
+        # Truncation notice
+        if truncated:
+            footer_parts.append(
+                f"**Note**: This PDF has {total_pages} pages. Showing first {pages_to_read} pages.\n"
+                f"To read more pages, use: `read_url('{url}', max_pages=N)` where N is the desired count, or 0 for all pages."
+            )
+
+        # Vision alternative hint with CLI tool detection
+        footer_parts.append(
+            "**Tip**: If this text extraction seems incomplete or garbled (common with scanned documents, "
+            "complex layouts, or image-heavy PDFs), try vision-based reading:\n\n"
+            + _get_pdf_to_image_hints()
+        )
+
+        if footer_parts:
+            result += "\n\n---\n" + "\n\n".join(footer_parts)
+
+        logger.info(
+            f"Successfully extracted text from {pages_to_read}/{total_pages} pages"
+        )
         return result
 
     except Exception as e:
@@ -235,13 +483,19 @@ def _read_pdf_url(url: str) -> str:
         return f"Error reading PDF: {str(e)}"
 
 
-def read_url(url: str) -> str:
-    """Read a webpage or PDF in a text format."""
+def read_url(url: str, max_pages: int | None = None) -> str:
+    """Read a webpage or PDF in a text format.
+
+    Args:
+        url: URL to read
+        max_pages: For PDFs only - maximum pages to read (default: 10).
+                   Set to 0 to read all pages. Ignored for web pages.
+    """
     # Check if it's a PDF first
     if _is_pdf_url(url):
-        return _read_pdf_url(url)
+        return _read_pdf_url(url, max_pages)
 
-    # Otherwise use normal browser reading
+    # Otherwise use normal browser reading (max_pages ignored)
     assert browser
     if browser == "playwright":
         return read_url_playwright(url)  # type: ignore
@@ -293,7 +547,7 @@ tool = ToolSpec(
     name="browser",
     desc="Browse, search or screenshot the web",
     examples=examples,
-    functions=[read_url, search, screenshot_url, read_logs],
+    functions=[read_url, search, screenshot_url, read_logs, pdf_to_images],
     available=has_browser_tool,
     init=init,
 )
