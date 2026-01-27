@@ -10,7 +10,7 @@ root = Path(__file__).parent.parent
 
 # Some large files
 readme = root / "README.md"
-cli = root / "gptme" / "cli.py"
+cli = root / "gptme" / "cli" / "main.py"
 htmlindex = root / "gptme" / "server" / "static" / "index.html"
 
 long_msg = Message(
@@ -28,7 +28,7 @@ def test_truncate_msg():
     len_post = len_tokens(truncated, "gpt-4")
     assert len_pre > len_post
     assert "[...]" in truncated.content
-    assert "```cli.py" in truncated.content
+    assert "```main.py" in truncated.content
     assert "```index.html" in truncated.content
 
 

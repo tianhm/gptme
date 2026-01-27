@@ -13,10 +13,10 @@ from rich.text import Text
 
 import gptme
 
-from .config import config_path, get_config, set_config_value
-from .llm import get_model_from_api_key, list_available_providers
-from .llm.models import PROVIDERS, get_default_model
-from .util import console, path_with_tilde
+from ..config import config_path, get_config, set_config_value
+from ..llm import get_model_from_api_key, list_available_providers
+from ..llm.models import PROVIDERS, get_default_model
+from ..util import console, path_with_tilde
 
 
 def setup():
@@ -579,7 +579,7 @@ def _check_dependency(name: str, check_type: str) -> bool:
 
 def _prompt_api_key() -> tuple[str, str, str]:  # pragma: no cover
     """Prompt user for API key and validate it."""
-    from .llm.validate import PROVIDER_DOCS, validate_api_key
+    from ..llm.validate import PROVIDER_DOCS, validate_api_key
 
     console.print("Paste your API key [dim](We will auto-detect the provider)[/dim]")
     api_key = Prompt.ask("API key", password=True).strip()
