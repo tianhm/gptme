@@ -290,7 +290,6 @@ if browser == "playwright":
     from ._browser_playwright import search_duckduckgo, search_google  # fmt: skip
 elif browser == "lynx":
     from ._browser_lynx import read_url as read_url_lynx  # fmt: skip
-    from ._browser_lynx import search as search_lynx  # fmt: skip
 
 logger = logging.getLogger(__name__)
 
@@ -331,17 +330,13 @@ User: who is the founder of ActivityWatch?
 Assistant: Let's search for that.
 {ToolUse("ipython", [], "search('ActivityWatch founder')").to_output(tool_format)}
 System:
-{ToolUse("results", [], "1. [ActivityWatch](https://activitywatch.net/) ...").to_output()}
-Assistant: Following link to the ActivityWatch website.
-{ToolUse("ipython", [], "read_url('https://activitywatch.net/')").to_output(tool_format)}
-System:
-{ToolUse("https://activitywatch.net/", [], "... The ActivityWatch project was founded by Erik Bjäreholt in 2016. ...".strip()).to_output()}
+{ToolUse("result", [], "ActivityWatch was founded by Erik Bjäreholt in 2016...").to_output()}
 Assistant: The founder of ActivityWatch is Erik Bjäreholt.
 
-### Searching with Perplexity
+### Searching for latest information
 User: what are the latest developments in AI?
-Assistant: Let me search for that using Perplexity AI.
-{ToolUse("ipython", [], "search('latest developments in AI', 'perplexity')").to_output(tool_format)}
+Assistant: Let me search for that.
+{ToolUse("ipython", [], "search('latest developments in AI')").to_output(tool_format)}
 System:
 {ToolUse("result", [], "Based on recent developments, AI has seen significant advances...").to_output()}
 Assistant: Based on the search results, here are the latest AI developments...
@@ -503,18 +498,20 @@ def read_url(url: str, max_pages: int | None = None) -> str:
         return read_url_lynx(url)  # type: ignore
 
 
-def search(query: str, engine: EngineType = "google") -> str:
+def search(query: str, engine: EngineType = "perplexity") -> str:
     """Search for a query on a search engine."""
     logger.info(f"Searching for '{query}' on {engine}")
+    if engine in ("google", "duckduckgo"):
+        return (
+            f"Error: {engine} search is disabled due to bot detection blocking.\n"
+            "Use Perplexity instead: search(query, 'perplexity')\n"
+            "Requires PERPLEXITY_API_KEY or OPENROUTER_API_KEY to be set."
+        )
     if engine == "perplexity":
         if has_perplexity:
             return search_perplexity(query)  # type: ignore
         else:
             return "Error: Perplexity search not available. Set PERPLEXITY_API_KEY or OPENROUTER_API_KEY environment variable or add it to ~/.config/gptme/config.toml"
-    elif browser == "playwright":
-        return search_playwright(query, engine)
-    elif browser == "lynx":
-        return search_lynx(query, engine)  # type: ignore
     raise ValueError(f"Unknown search engine: {engine}")
 
 
