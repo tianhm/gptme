@@ -15,8 +15,8 @@ class MessageDict(TypedDict):
     role: str
     content: str
     timestamp: str
-    files: list[str] | None
-
+    files: NotRequired[list[str] | None]
+    hide: NotRequired[bool]
 
 class ToolUseDict(TypedDict):
     """Tool use dictionary type."""
@@ -133,9 +133,12 @@ EventType = (
 
 def msg2dict(msg: Message, workspace: Path) -> MessageDict:
     """Convert a Message object to a dictionary."""
-    return {
+    result: MessageDict = {
         "role": msg.role,
         "content": msg.content,
         "timestamp": msg.timestamp.isoformat(),
         "files": [_abs_to_rel_workspace(f, workspace) for f in msg.files],
     }
+    if msg.hide:
+        result["hide"] = True
+    return result
