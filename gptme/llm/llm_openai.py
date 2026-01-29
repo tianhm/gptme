@@ -5,10 +5,11 @@ import re
 import time
 from collections.abc import Generator, Iterable
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import requests
 from openai import NOT_GIVEN
+from typing_extensions import NotRequired
 
 from ..config import Config, get_config
 from ..constants import TEMPERATURE, TOP_P
@@ -38,6 +39,64 @@ if TYPE_CHECKING:
 # Dictionary to store clients for each provider (includes custom providers)
 clients: dict[Provider, "OpenAI"] = {}
 logger = logging.getLogger(__name__)
+
+
+# Type definitions for message dictionaries used in API transformations
+class ContentPart(TypedDict):
+    """A content part in a multimodal message."""
+
+    type: str  # "text", "image_url", etc. - always required
+    text: NotRequired[str]  # For text parts
+    image_url: NotRequired[dict[str, str]]  # For image parts: {"url": "data:..."}
+
+
+# Type alias for message content (can be string, list of parts, or None)
+MessageContent = str | list[ContentPart | str] | None
+
+
+class ToolCallFunction(TypedDict):
+    """Function details in a tool call."""
+
+    name: str
+    arguments: str
+
+
+class ToolCall(TypedDict):
+    """A tool call in an assistant message."""
+
+    id: str
+    type: str  # "function"
+    function: ToolCallFunction
+
+
+class MessageDict(TypedDict):
+    """
+    Dictionary representation of a chat message for API calls.
+
+    This type covers the internal message format used when preparing
+    messages for various LLM providers. Not all fields are present
+    in all messages - the required fields vary by role.
+    """
+
+    # Core fields (always required)
+    role: str  # "system", "user", "assistant", "tool"
+    content: MessageContent
+
+    # Tool-related fields (optional)
+    tool_calls: NotRequired[list[ToolCall]]  # For assistant messages that call tools
+    tool_call_id: NotRequired[str]  # For tool response messages
+    call_id: NotRequired[
+        str
+    ]  # Legacy field for tool responses (converted to tool_call_id)
+
+    # Reasoning/thinking fields (for models with thinking/reasoning support)
+    reasoning_content: NotRequired[str]
+
+    # Multimodal fields
+    files: NotRequired[
+        list[str]
+    ]  # Image/file attachments as file paths (processed before API call)
+
 
 # Shows in rankings on openrouter.ai
 OPENROUTER_APP_HEADERS = {
@@ -619,6 +678,7 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
     for message in message_dicts:
         # Format tool result as expected by the model
         if message["role"] == "system" and "call_id" in message:
+            # Convert system+call_id to tool message (conforms to MessageDict)
             modified_message = dict(message)
             modified_message["role"] = "tool"
             modified_message["tool_call_id"] = modified_message.pop("call_id")
@@ -631,18 +691,24 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
                 message["content"], tool_format_override="tool"
             )
 
-            # Format tool uses for OpenAI API
-            tool_calls = []
+            # Format tool uses for OpenAI API with explicit typing
+            tool_calls: list[ToolCall] = []
             for tooluse in tool_uses:
                 tool_calls.append(
-                    {
-                        "id": tooluse.call_id or "",
-                        "type": "function",
-                        "function": {
-                            "name": tooluse.tool,
-                            "arguments": json.dumps(tooluse.kwargs or {}),
+                    cast(
+                        ToolCall,
+                        {
+                            "id": tooluse.call_id or "",
+                            "type": "function",
+                            "function": cast(
+                                ToolCallFunction,
+                                {
+                                    "name": tooluse.tool,
+                                    "arguments": json.dumps(tooluse.kwargs or {}),
+                                },
+                            ),
                         },
-                    }
+                    )
                 )
 
             if content:
@@ -660,36 +726,39 @@ def _handle_tools(message_dicts: Iterable[dict]) -> Generator[dict, None, None]:
 
 
 def _merge_tool_results_with_same_call_id(
-    messages_dicts: Iterable[dict],
-) -> list[dict]:
+    messages_dicts: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """
     When we call a tool, this tool can potentially yield multiple messages. However
     the API expect to have only one tool result per tool call. This function tries
     to merge subsequent tool results with the same call ID as expected by
     the API.
+
+    Note: Internally uses MessageDict casts for type clarity during processing.
     """
-    messages_new: list[dict] = []
+    messages_new: list[dict[str, Any]] = []
 
     for message in messages_dicts:
         if messages_new and (
             message["role"] == "tool"
             and messages_new[-1]["role"] == "tool"
-            and message["tool_call_id"] == messages_new[-1]["tool_call_id"]
+            and message.get("tool_call_id") == messages_new[-1].get("tool_call_id")
         ):
             prev_msg = messages_new[-1]
-            prev_content = prev_msg["content"]
-            current_content = message["content"]
+            prev_content = prev_msg.get("content")
+            current_content = message.get("content")
 
             # Ensure both contents are lists of content parts
             if not isinstance(prev_content, list):
-                prev_content = [{"type": "text", "text": prev_content}]
+                prev_content = [{"type": "text", "text": prev_content or ""}]
             if not isinstance(current_content, list):
-                current_content = [{"type": "text", "text": current_content}]
+                current_content = [{"type": "text", "text": current_content or ""}]
 
+            # Create merged message (conforms to MessageDict structure)
             messages_new[-1] = {
                 "role": "tool",
                 "content": prev_content + current_content,
-                "tool_call_id": prev_msg["tool_call_id"],
+                "tool_call_id": prev_msg.get("tool_call_id"),
             }
         else:
             messages_new.append(message)
@@ -697,8 +766,18 @@ def _merge_tool_results_with_same_call_id(
     return messages_new
 
 
-def _process_file(msg: dict, model: ModelMeta) -> dict:
-    message_content = msg["content"]
+def _process_file(msg: dict[str, Any], model: ModelMeta) -> dict[str, Any]:
+    """Process file attachments in a message dict, converting to API format.
+
+    Args:
+        msg: A message dict (expected to conform to MessageDict structure)
+        model: Model metadata for checking vision support
+
+    Returns:
+        The processed message dict with files converted to content parts.
+        The returned dict conforms to MessageDict structure.
+    """
+    message_content = msg.get("content")
 
     # combines a content message with a list of files
     content: list[dict[str, Any]] = (
@@ -746,15 +825,24 @@ def _process_file(msg: dict, model: ModelMeta) -> dict:
     if msg["role"] == "system" and has_images:
         msg["role"] = "user"
 
-    return msg
+    return msg  # Conforms to MessageDict structure
 
 
 def _transform_msgs_for_special_provider(
-    messages_dicts: Iterable[dict], model: ModelMeta
-):
+    messages_dicts: Iterable[dict[str, Any]], model: ModelMeta
+) -> Iterable[MessageDict]:
+    """Transform message dicts for provider-specific requirements.
+
+    Args:
+        messages_dicts: Iterable of message dicts (expected MessageDict structure)
+        model: Model metadata for determining transformation rules
+
+    Returns:
+        Transformed message dicts conforming to MessageDict type
+    """
     # groq and deepseek needs message.content to be a string
     if model.provider == "groq" or model.provider == "deepseek":
-        result = []
+        result: list[MessageDict] = []
         for msg in messages_dicts:
             content = msg.get("content")
             # Handle messages without content (e.g., tool call messages)
@@ -766,9 +854,9 @@ def _transform_msgs_for_special_provider(
                     and msg.get("role") == "assistant"
                     and msg.get("tool_calls")
                 ):
-                    result.append({**msg, "reasoning_content": ""})
+                    result.append(cast(MessageDict, {**msg, "reasoning_content": ""}))
                 else:
-                    result.append(msg)
+                    result.append(cast(MessageDict, msg))
                 continue
             # Handle list content (multi-modal messages)
             if isinstance(content, list):
@@ -781,9 +869,9 @@ def _transform_msgs_for_special_provider(
                 transformed = (
                     "\n\n".join(text_parts) if text_parts else "[non-text content]"
                 )
-                result.append({**msg, "content": transformed})
+                result.append(cast(MessageDict, {**msg, "content": transformed}))
             else:
-                result.append(msg)
+                result.append(cast(MessageDict, msg))
         return result
 
     # OpenRouter reasoning models (e.g., Moonshot AI Kimi) need reasoning_content
@@ -827,7 +915,7 @@ def _transform_msgs_for_special_provider(
 
             return reasoning, cleaned_content
 
-        result = []
+        openrouter_result: list[MessageDict] = []
         for msg in messages_dicts:
             if (
                 msg.get("role") == "assistant"
@@ -849,14 +937,22 @@ def _transform_msgs_for_special_provider(
                     content = "\n".join(text_parts)
 
                 reasoning, cleaned_content = _extract_and_strip_reasoning(content)
-                result.append(
-                    {**msg, "reasoning_content": reasoning, "content": cleaned_content}
+                openrouter_result.append(
+                    cast(
+                        MessageDict,
+                        {
+                            **msg,
+                            "reasoning_content": reasoning,
+                            "content": cleaned_content,
+                        },
+                    )
                 )
             else:
-                result.append(msg)
-        return result
+                openrouter_result.append(cast(MessageDict, msg))
+        return openrouter_result
 
-    return messages_dicts
+    # Return as-is with cast for type safety
+    return cast(Iterable[MessageDict], messages_dicts)
 
 
 def _spec2tool(spec: ToolSpec, model: ModelMeta) -> "ChatCompletionToolParam":
@@ -1039,7 +1135,12 @@ def _prepare_messages_for_api(
     messages: list[Message],
     model: str,
     tools: list[ToolSpec] | None,
-) -> tuple[Iterable[dict], Iterable["ChatCompletionToolParam"] | None]:
+) -> tuple[list[MessageDict], list["ChatCompletionToolParam"] | None]:
+    """Prepare messages for API call, handling model-specific transformations.
+
+    Returns:
+        Tuple of (messages as MessageDict list, tools if provided)
+    """
     from .models import get_model  # fmt: skip
 
     model_meta = get_model(model)
@@ -1064,7 +1165,8 @@ def _prepare_messages_for_api(
     ):
         messages = list(_prep_deepseek_reasoner(messages))
 
-    messages_dicts: Iterable[dict] = (
+    # Process message dicts - internal functions use dict[str, Any] for flexibility
+    messages_dicts: Iterable[dict[str, Any]] = (
         _process_file(msg, model_meta) for msg in msgs2dicts(messages)
     )
 
@@ -1075,12 +1177,15 @@ def _prepare_messages_for_api(
             _handle_tools(messages_dicts)
         )
 
-    messages_dicts = _transform_msgs_for_special_provider(messages_dicts, model_meta)
+    # Transform returns MessageDict-typed messages
+    typed_messages = _transform_msgs_for_special_provider(messages_dicts, model_meta)
 
-    messages_list = list(messages_dicts)
+    messages_list: list[MessageDict] = list(typed_messages)
 
     # Apply cache control for Anthropic models on OpenRouter
     if model.startswith("openrouter/anthropic/"):
-        messages_list, _ = apply_cache_control(messages_list)
+        # apply_cache_control uses dict[Any, Any] internally, cast at boundary
+        cache_result, _ = apply_cache_control(cast(list[dict[str, Any]], messages_list))
+        messages_list = cast(list[MessageDict], cache_result)
 
     return messages_list, tools_dict
