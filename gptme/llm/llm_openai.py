@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Generator, Iterable
 from functools import lru_cache, wraps
@@ -781,6 +782,64 @@ def _transform_msgs_for_special_provider(
                     "\n\n".join(text_parts) if text_parts else "[non-text content]"
                 )
                 result.append({**msg, "content": transformed})
+            else:
+                result.append(msg)
+        return result
+
+    # OpenRouter reasoning models (e.g., Moonshot AI Kimi) need reasoning_content
+    # for assistant messages with tool_calls when thinking mode is enabled
+    # This prevents: "thinking is enabled but reasoning_content is missing in assistant tool call message"
+    if model.provider == "openrouter" and model.supports_reasoning:
+
+        def _extract_and_strip_reasoning(
+            content: str | None,
+        ) -> tuple[str, str]:
+            """Extract reasoning from <think>/<thinking> tags and return cleaned content.
+
+            Returns:
+                Tuple of (reasoning_content, cleaned_content_without_think_tags)
+            """
+            if not content:
+                return "", ""
+
+            # Extract content from <think>...</think> and <thinking>...</thinking> blocks
+            think_matches = re.findall(
+                r"<think>(.*?)</think>", content, flags=re.DOTALL
+            )
+            thinking_matches = re.findall(
+                r"<thinking>(.*?)</thinking>", content, flags=re.DOTALL
+            )
+            all_reasoning = think_matches + thinking_matches
+            reasoning = (
+                "\n".join(r.strip() for r in all_reasoning if r.strip())
+                if all_reasoning
+                else ""
+            )
+
+            # Remove <think> and <thinking> tags from content to prevent duplication
+            cleaned_content = re.sub(
+                r"<think>.*?</think>\s*", "", content, flags=re.DOTALL
+            )
+            cleaned_content = re.sub(
+                r"<thinking>.*?</thinking>\s*", "", cleaned_content, flags=re.DOTALL
+            )
+            cleaned_content = cleaned_content.strip()
+
+            return reasoning, cleaned_content
+
+        result = []
+        for msg in messages_dicts:
+            if (
+                msg.get("role") == "assistant"
+                and msg.get("tool_calls")
+                and "reasoning_content" not in msg
+            ):
+                # Extract reasoning and clean content to prevent context duplication
+                content = msg.get("content", "")
+                reasoning, cleaned_content = _extract_and_strip_reasoning(content)
+                result.append(
+                    {**msg, "reasoning_content": reasoning, "content": cleaned_content}
+                )
             else:
                 result.append(msg)
         return result
