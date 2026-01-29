@@ -5,6 +5,8 @@ Common types and utilities for V2 API.
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from typing_extensions import NotRequired
+
 from ..message import Message
 from .api import _abs_to_rel_workspace
 
@@ -17,6 +19,7 @@ class MessageDict(TypedDict):
     timestamp: str
     files: NotRequired[list[str] | None]
     hide: NotRequired[bool]
+
 
 class ToolUseDict(TypedDict):
     """Tool use dictionary type."""
