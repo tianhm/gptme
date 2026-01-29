@@ -163,7 +163,7 @@ class TestCLI:
         """Test create command help."""
         result = runner.invoke(main, ["create", "--help"])
         assert result.exit_code == 0
-        assert "Set up a new agent workspace" in result.output
+        assert "Create a new agent workspace" in result.output
 
     def test_install_help(self, runner):
         """Test install command help."""
