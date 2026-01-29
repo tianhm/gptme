@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from collections.abc import Generator, Iterable
+from collections.abc import Generator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,6 +18,13 @@ from typing import (
 
 from ..message import Message
 from ..plugins import register_plugin_hooks
+from .confirm import ConfirmAction as ConfirmAction
+from .confirm import ConfirmationResult as ConfirmationResult
+from .confirm import ToolConfirmHook as ToolConfirmHook
+from .confirm import confirm as confirm
+from .confirm import get_confirmation as get_confirmation
+from .server_confirm import current_conversation_id as current_conversation_id
+from .server_confirm import current_session_id as current_session_id
 
 if TYPE_CHECKING:
     from ..logmanager import Log, LogManager  # fmt: skip
@@ -100,22 +107,8 @@ class HookType(str, Enum):
     # Cache events
     CACHE_INVALIDATED = "cache.invalidated"  # Prompt cache was invalidated
 
-    # === Backward compatibility aliases (DEPRECATED) ===
-    # These will be removed in a future version. Use the new names above.
-    MESSAGE_PRE_PROCESS = STEP_PRE  # Deprecated: use STEP_PRE
-    MESSAGE_POST_PROCESS = TURN_POST  # Deprecated: use TURN_POST
-    TOOL_PRE_EXECUTE = TOOL_EXECUTE_PRE  # Deprecated: use TOOL_EXECUTE_PRE
-    TOOL_POST_EXECUTE = TOOL_EXECUTE_POST  # Deprecated: use TOOL_EXECUTE_POST
-    TOOL_EXECUTE_BEFORE = TOOL_EXECUTE_PRE  # Deprecated: use TOOL_EXECUTE_PRE
-    TOOL_EXECUTE_AFTER = TOOL_EXECUTE_POST  # Deprecated: use TOOL_EXECUTE_POST
-    FILE_PRE_SAVE = FILE_SAVE_PRE  # Deprecated: use FILE_SAVE_PRE
-    FILE_POST_SAVE = FILE_SAVE_POST  # Deprecated: use FILE_SAVE_POST
-    FILE_PRE_PATCH = FILE_PATCH_PRE  # Deprecated: use FILE_PATCH_PRE
-    FILE_POST_PATCH = FILE_PATCH_POST  # Deprecated: use FILE_PATCH_POST
-    FILE_SAVE_BEFORE = FILE_SAVE_PRE  # Deprecated: use FILE_SAVE_PRE
-    FILE_SAVE_AFTER = FILE_SAVE_POST  # Deprecated: use FILE_SAVE_POST
-    FILE_PATCH_BEFORE = FILE_PATCH_PRE  # Deprecated: use FILE_PATCH_PRE
-    FILE_PATCH_AFTER = FILE_PATCH_POST  # Deprecated: use FILE_PATCH_POST
+    # Tool confirmation (different from other hooks - returns data, not yields Messages)
+    TOOL_CONFIRM = "tool.confirm"  # Confirm tool execution before running
 
 
 # Protocol classes for different hook signatures
@@ -292,6 +285,7 @@ HookFunc = (
     | FilePreSaveHook
     | FilePostSaveHook
     | CacheInvalidatedHook
+    | ToolConfirmHook
 )
 
 
@@ -436,14 +430,23 @@ class HookRegistry:
                         f"Hook '{hook.name}' is taking a long time ({t_delta:.4f}s)"
                     )
 
-                # If hook returns an iterable (but not string/bytes), yield from it
-                if isinstance(result, Iterable) and not isinstance(result, str | bytes):
-                    for msg in result:
-                        if isinstance(msg, StopPropagation):
-                            logger.debug(f"Hook '{hook.name}' stopped propagation")
-                            return  # Stop processing remaining hooks
-                        elif isinstance(msg, Message):
-                            yield msg
+                # If hook returns a generator, yield from it
+                # Note: ToolConfirmHooks may return None (fall-through) or ConfirmationResult
+                if (
+                    result is not None
+                    and hasattr(result, "__iter__")
+                    and not isinstance(result, str | bytes)
+                ):
+                    try:
+                        for msg in result:
+                            if isinstance(msg, StopPropagation):
+                                logger.debug(f"Hook '{hook.name}' stopped propagation")
+                                return  # Stop processing remaining hooks
+                            elif isinstance(msg, Message):
+                                yield msg
+                    except TypeError:
+                        # Not actually iterable, continue
+                        pass
                 # If hook returns a Message, yield it
                 elif isinstance(result, Message):
                     yield result
@@ -479,7 +482,11 @@ class HookRegistry:
             t_delta = t_end - t_start
 
             # Process the result (log messages instead of yielding)
-            if hasattr(result, "__iter__") and not isinstance(result, str | bytes):
+            if (
+                result is not None
+                and hasattr(result, "__iter__")
+                and not isinstance(result, str | bytes)
+            ):
                 try:
                     for msg in result:
                         if isinstance(msg, Message):
@@ -694,6 +701,16 @@ def register_hook(
 ) -> None: ...
 
 
+@overload
+def register_hook(
+    name: str,
+    hook_type: Literal[HookType.TOOL_CONFIRM],
+    func: ToolConfirmHook,
+    priority: int = 0,
+    enabled: bool = True,
+) -> None: ...
+
+
 # Implementation (catches all other cases)
 # Fallback overload for dynamic registration (when hook_type is not a Literal)
 @overload
@@ -774,11 +791,25 @@ def clear_hooks(hook_type: HookType | None = None) -> None:
 
 
 @_thread_safe_init
-def init_hooks(allowlist: list[str] | None = None) -> None:
+def init_hooks(
+    allowlist: list[str] | None = None,
+    interactive: bool = False,
+    no_confirm: bool = False,
+    server: bool = False,
+) -> None:
     """Initialize and register hooks in a thread-safe manner.
 
-    If allowlist is not provided, it will be loaded from the environment variable
-    HOOK_ALLOWLIST or the chat config (if set).
+    Mode detection for confirmation hooks:
+    - Interactive CLI mode with confirmation: Registers cli_confirm hook
+    - Server mode with confirmation: Registers server_confirm hook
+    - Non-interactive mode: No confirmation hook (autonomous/auto-confirm)
+
+    Args:
+        allowlist: Explicit list of hooks to register (replaces defaults).
+                   If not provided, defaults will be loaded from env/config.
+        interactive: Whether running in interactive mode (CLI).
+        no_confirm: Whether to skip tool confirmations.
+        server: Whether running in server mode (API/WebUI).
     """
     from ..config import get_config  # fmt: skip
 
@@ -819,6 +850,16 @@ def init_hooks(allowlist: list[str] | None = None) -> None:
         "cache_awareness": lambda: __import__(
             "gptme.hooks.cache_awareness", fromlist=["register"]
         ).register(),
+        # Tool confirmation hooks (mode-specific, not registered by default)
+        "cli_confirm": lambda: __import__(
+            "gptme.hooks.cli_confirm", fromlist=["register"]
+        ).register(),
+        "auto_confirm": lambda: __import__(
+            "gptme.hooks.auto_confirm", fromlist=["register"]
+        ).register(),
+        "server_confirm": lambda: __import__(
+            "gptme.hooks.server_confirm", fromlist=["register"]
+        ).register(),
         # NOTE: subagent_completion is now registered via ToolSpec in tools/subagent.py
         "test": lambda: __import__(
             "gptme.hooks.test", fromlist=["register_test_hooks"]
@@ -829,8 +870,20 @@ def init_hooks(allowlist: list[str] | None = None) -> None:
     if allowlist is not None:
         hooks_to_register = allowlist
     else:
-        # Register all default hooks except test
-        hooks_to_register = [h for h in available_hooks if h != "test"]
+        # Register all default hooks except test and mode-specific confirmation hooks
+        # Confirmation hooks (cli_confirm, auto_confirm, server_confirm) should be
+        # registered explicitly based on the mode (CLI, server, autonomous)
+        mode_specific_hooks = {"test", "cli_confirm", "auto_confirm", "server_confirm"}
+        hooks_to_register = [h for h in available_hooks if h not in mode_specific_hooks]
+
+        # Mode-based confirmation hook selection:
+        # - Server mode with confirmation: server_confirm
+        # - CLI interactive with confirmation enabled: cli_confirm
+        # - Non-interactive (autonomous): no confirmation hook (auto-confirm behavior)
+        if server and not no_confirm:
+            hooks_to_register.append("server_confirm")
+        elif interactive and not no_confirm:
+            hooks_to_register.append("cli_confirm")
 
     # Register the hooks
     for hook_name in hooks_to_register:
