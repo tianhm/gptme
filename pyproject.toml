@@ -183,6 +183,7 @@ all = [
     "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
     "opentelemetry-instrumentation-flask", "opentelemetry-instrumentation-requests",
     "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-openai",
+    "opentelemetry-instrumentation-threading",
 ]
 
 [tool.ruff]
