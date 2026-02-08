@@ -143,6 +143,7 @@ nitpick_ignore = [
     ("py:class", "ToolFormat"),
     ("py:class", "ConfirmFunc"),
     ("py:class", "Path"),
+    ("py:class", "PIL.Image.Image"),
     ("py:class", "gptme.tools.subagent.SubtaskDef"),
     ("py:class", "gptme.tools.shell.BackgroundJob"),
     ("py:class", "gptme.tools.shell.ShellSession"),
