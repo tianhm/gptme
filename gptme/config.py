@@ -361,9 +361,10 @@ def load_user_config(path: str | None = None) -> UserConfig:
     # Log config paths (only once per config file)
     if config_file not in _user_config_logged:
         _user_config_logged.add(config_file)
-        console.log(f"Using user configuration from {path_with_tilde(config_file)}")
+        msg = f"Using user configuration from {path_with_tilde(config_file)}"
         if has_local:
-            console.log(f"  with local overrides from {path_with_tilde(local_path)}")
+            msg += " with local overrides"
+        console.log(msg)
 
     # Note: prompt and env are optional - defaults are used if missing
 
