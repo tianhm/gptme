@@ -117,10 +117,20 @@ class UserPromptConfig:
 
 
 @dataclass
+class UserIdentityConfig:
+    """Configuration for user identity."""
+
+    name: str = "User"
+    about: str | None = None
+    response_preference: str | None = None
+
+
+@dataclass
 class UserConfig:
     """User-level configuration, such as user-specific prompts and environment variables."""
 
     prompt: UserPromptConfig = field(default_factory=UserPromptConfig)
+    user: UserIdentityConfig = field(default_factory=UserIdentityConfig)
 
     env: dict[str, str] = field(default_factory=dict)
     mcp: MCPConfig | None = None
@@ -311,9 +321,12 @@ ABOUT_GPTME = "gptme is a CLI to interact with large language models in a Chat-s
 
 # TODO: include this in docs
 default_config = UserConfig(
-    prompt=UserPromptConfig(
-        about_user="I am a curious human programmer.",
+    user=UserIdentityConfig(
+        name="User",
+        about="I am a curious human programmer.",
         response_preference="Basic concepts don't need to be explained.",
+    ),
+    prompt=UserPromptConfig(
         project={
             "activitywatch": ABOUT_ACTIVITYWATCH,
             "gptme": ABOUT_GPTME,
@@ -332,6 +345,29 @@ def load_user_config(path: str | None = None) -> UserConfig:
     # Note: prompt and env are optional - defaults are used if missing
 
     prompt = UserPromptConfig(**config.pop("prompt", {}))
+
+    # Parse [user] section (validate it's a dict in case of e.g. user = "Erik")
+    user_data = config.pop("user", {})
+    if not isinstance(user_data, dict):
+        logger.warning(f"[user] should be a table, got {type(user_data).__name__}")
+        user_data = {}
+    user_identity = UserIdentityConfig(**user_data)
+
+    # Backward compat: if about/response_preference not set in [user],
+    # fall back to [prompt].about_user / [prompt].response_preference
+    about = user_identity.about
+    if about is None and prompt.about_user is not None:
+        about = prompt.about_user
+    resp_pref = user_identity.response_preference
+    if resp_pref is None and prompt.response_preference is not None:
+        resp_pref = prompt.response_preference
+    if about != user_identity.about or resp_pref != user_identity.response_preference:
+        user_identity = UserIdentityConfig(
+            name=user_identity.name,
+            about=about,
+            response_preference=resp_pref,
+        )
+
     env = config.pop("env", {})
     mcp = MCPConfig.from_dict(config.pop("mcp", {}))
 
@@ -359,12 +395,22 @@ def load_user_config(path: str | None = None) -> UserConfig:
 
     return UserConfig(
         prompt=prompt,
+        user=user_identity,
         env=env,
         mcp=mcp,
         providers=providers,
         lessons=lessons,
         plugin=plugin_config,
     )
+
+
+def _strip_none(d: dict) -> dict:
+    """Recursively remove None values from a dict (tomlkit can't serialize None)."""
+    return {
+        k: _strip_none(v) if isinstance(v, dict) else v
+        for k, v in d.items()
+        if v is not None
+    }
 
 
 def _load_config_doc(path: str | None = None) -> tomlkit.TOMLDocument:
@@ -374,9 +420,7 @@ def _load_config_doc(path: str | None = None) -> tomlkit.TOMLDocument:
     if not os.path.exists(path):
         # If not, create it and write some default settings
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        toml = tomlkit.dumps(
-            {k: v for k, v in asdict(default_config).items() if v is not None}
-        )
+        toml = tomlkit.dumps(_strip_none(asdict(default_config)))
         with open(path, "w") as config_file:
             config_file.write(toml)
         console.log(f"Created config file at {path}")
