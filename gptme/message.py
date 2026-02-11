@@ -312,9 +312,16 @@ def format_msgs(
     indent: int = 0,
 ) -> list[str]:
     """Formats messages for printing to the console."""
+    # Import here to avoid circular import
+    from .config import get_config
+
     outputs = []
     for msg in msgs:
-        userprefix = msg.role.capitalize()
+        # Use configured username for user messages, otherwise capitalize the role
+        if msg.role == "user":
+            userprefix = get_config().user.user.name
+        else:
+            userprefix = msg.role.capitalize()
         if highlight:
             color = ROLE_COLOR[msg.role]
             userprefix = f"[bold {color}]{userprefix}[/bold {color}]"
