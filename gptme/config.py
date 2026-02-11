@@ -347,17 +347,23 @@ def load_user_config(path: str | None = None) -> UserConfig:
     This allows committing preferences to dotfiles while keeping secrets separate.
     """
     config_file_path = path or config_path
+    config_file = Path(config_file_path)
     config = _load_config_doc(path).unwrap()
 
     # Look for local config file in the same directory
-    local_path = Path(config_file_path).parent / "config.local.toml"
-    if local_path.exists():
+    local_path = config_file.parent / "config.local.toml"
+    has_local = local_path.exists()
+    if has_local:
         with open(local_path) as f:
             local_config = tomlkit.load(f).unwrap()
         config = _merge_config_data(config, local_config)
-        console.log(
-            f"Using local user configuration from {path_with_tilde(local_path)}"
-        )
+
+    # Log config paths (only once per config file)
+    if config_file not in _user_config_logged:
+        _user_config_logged.add(config_file)
+        console.log(f"Using user configuration from {path_with_tilde(config_file)}")
+        if has_local:
+            console.log(f"  with local overrides from {path_with_tilde(local_path)}")
 
     # Note: prompt and env are optional - defaults are used if missing
 
@@ -529,6 +535,9 @@ def _merge_config_data(main_config: dict, local_config: dict) -> dict:
 
 # Track which workspaces we've logged config loading for (to avoid duplicate logs)
 _config_logged_workspaces: set[Path] = set()
+
+# Track whether we've already logged the user config message
+_user_config_logged: set[Path] = set()
 
 
 def get_project_config(
