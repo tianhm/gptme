@@ -186,19 +186,13 @@ class LessonIndex:
         cursor_dir = Path.cwd() / ".cursor"
         if cursor_dir.exists():
             dirs.append(cursor_dir)
-            logger.info(
-                "Found .cursor directory with Cursor rules.\n"
-                "gptme can now read and use .mdc rules files directly!\n"
-                "Cursor 'globs' will be translated to gptme 'keywords'."
-            )
+            logger.debug("Using Cursor rules from .cursor/ directory")
 
         # Check for legacy .cursorrules file and provide guidance
         cursorrules_file = Path.cwd() / ".cursorrules"
         if cursorrules_file.exists():
-            logger.info(
-                "Found .cursorrules file in project root.\n"
-                "Consider migrating to .cursor/ directory with .mdc files for better organization.\n"
-                "gptme now supports reading Cursor .mdc rules directly!"
+            logger.debug(
+                "Found .cursorrules file, consider migrating to .cursor/ directory with .mdc files"
             )
 
         # Configured directories from config
@@ -289,7 +283,7 @@ class LessonIndex:
         log_parts.append(f"(cache: {cache_hits} hits, {cache_misses} misses)")
         if skipped_duplicates > 0:
             log_parts.append(f"(skipped {skipped_duplicates} duplicates)")
-        logger.info(" ".join(log_parts))
+        logger.debug(" ".join(log_parts))
 
     def _index_directory(
         self, directory: Path, seen_paths: set[str]
