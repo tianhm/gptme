@@ -67,7 +67,6 @@ def cmd_model(ctx: CommandContext) -> None:
         set_default_model,
     )
 
-    ctx.manager.undo(1, quiet=True)
     if ctx.args:
         new_model = ctx.args[0]
         set_default_model(new_model)
@@ -102,7 +101,6 @@ def cmd_tools(ctx: CommandContext) -> None:
     from ..message import len_tokens  # fmt: skip
     from ..tools import get_tool_format, get_tools  # fmt: skip
 
-    ctx.manager.undo(1, quiet=True)
     print("Available tools:")
     for tool in get_tools():
         print(
@@ -120,8 +118,6 @@ def cmd_context(ctx: CommandContext) -> None:
     from ..tools import ToolUse  # fmt: skip
     from ..util import console  # fmt: skip
     from ..util.tokens import len_tokens  # fmt: skip
-
-    ctx.manager.undo(1, quiet=True)
 
     # Try to use the current model's tokenizer, fallback to gpt-4
     current_model = get_default_model()
@@ -192,8 +188,6 @@ def cmd_tokens(ctx: CommandContext) -> None:
         gather_conversation_costs,
         gather_session_costs,
     )
-
-    ctx.manager.undo(1, quiet=True)
 
     session = gather_session_costs()
     conversation = gather_conversation_costs(ctx.manager.log.messages)
