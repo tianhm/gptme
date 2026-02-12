@@ -85,6 +85,20 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   // Import settings from global context
   const { settings } = useSettings();
 
+  // Create observables for settings that need to be reactive in the For loop
+  // (Legend State's <For> only re-renders on observable changes, not React state)
+  const showInitialSystem$ = useObservable(settings.showInitialSystem);
+  const showHiddenMessages$ = useObservable(settings.showHiddenMessages);
+
+  // Sync observables when settings change
+  useEffect(() => {
+    showInitialSystem$.set(settings.showInitialSystem);
+  }, [settings.showInitialSystem, showInitialSystem$]);
+
+  useEffect(() => {
+    showHiddenMessages$.set(settings.showHiddenMessages);
+  }, [settings.showHiddenMessages, showHiddenMessages$]);
+
   // Create a ref for the scroll container
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -179,12 +193,12 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
             const isInitialSystem =
               msg$.role.get() === 'system' &&
               (firstNonSystemIndex === -1 || index < firstNonSystemIndex);
-            if (isInitialSystem && !settings.showInitialSystem) {
+            if (isInitialSystem && !showInitialSystem$.get()) {
               return <div key={`${index}-${msg$.timestamp.get()}`} />;
             }
 
             // Hide messages with hide=true (e.g., auto-included lessons)
-            if (msg$.hide?.get() && !settings.showHiddenMessages) {
+            if (msg$.hide?.get() && !showHiddenMessages$.get()) {
               return <div key={`${index}-${msg$.timestamp.get()}`} />;
             }
 
