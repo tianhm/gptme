@@ -69,7 +69,7 @@ interface Props {
   // Conversation props
   conversations: ConversationSummary[];
   selectedConversationId$: Observable<string | null>;
-  onSelectConversation: (id: string) => void;
+  onSelectConversation: (id: string, serverId?: string) => void;
   conversationsLoading?: boolean;
   conversationsFetching?: boolean;
   conversationsError?: boolean;
@@ -77,6 +77,9 @@ interface Props {
   onConversationsRetry?: () => void;
   fetchNextPage: () => void;
   hasNextPage?: boolean;
+
+  // Multi-backend
+  showServerLabels?: boolean;
 
   // Task props
   tasks: Task[];
@@ -99,6 +102,7 @@ export const UnifiedSidebar: FC<Props> = ({
   onConversationsRetry,
   fetchNextPage,
   hasNextPage = false,
+  showServerLabels = false,
   tasks,
   selectedTaskId,
   onSelectTask,
@@ -107,7 +111,7 @@ export const UnifiedSidebar: FC<Props> = ({
   tasksError = false,
   onTasksRetry,
 }) => {
-  const { createAgent } = useApi();
+  const { api } = useApi();
   const selectedWorkspace = use$(selectedWorkspace$);
   const selectedAgent = use$(selectedAgent$);
   const location = useLocation();
@@ -157,7 +161,7 @@ export const UnifiedSidebar: FC<Props> = ({
 
   const handleAgentCreated = async (agentData: CreateAgentRequest) => {
     try {
-      return await createAgent(agentData);
+      return await api.createAgent(agentData);
     } catch (error) {
       console.error('Failed to create agent:', error);
       throw error;
@@ -262,6 +266,7 @@ export const UnifiedSidebar: FC<Props> = ({
               onRetry={onConversationsRetry}
               fetchNextPage={fetchNextPage}
               hasNextPage={hasNextPage}
+              showServerLabels={showServerLabels}
             />
           )}
 
