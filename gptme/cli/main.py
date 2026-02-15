@@ -1,15 +1,23 @@
 import atexit
+import cProfile
+import importlib
 import logging
 import os
+import pstats
 import signal
 import sys
 import traceback
+import warnings
+from datetime import datetime
 from itertools import islice
 from pathlib import Path
 from typing import Literal
 
 import click
+from click.core import ParameterSource
 from pick import pick
+
+import gptme
 
 from .. import __version__
 from ..chat import chat
@@ -33,16 +41,66 @@ logger = logging.getLogger(__name__)
 
 
 script_path = Path(os.path.realpath(__file__))
+
+
+class CommaSeparatedChoice(click.ParamType):
+    """Click type that validates comma-separated values against a set of choices."""
+
+    name = "TEXT"
+
+    def __init__(
+        self,
+        choices: list[str],
+        allow_prefix: str | None = None,
+        metavar: str | None = None,
+    ):
+        self.choices = choices
+        self.allow_prefix = allow_prefix
+        self._metavar = metavar
+
+    def convert(self, value, param, ctx):
+        parts = [v.strip() for v in value.split(",") if v.strip()]
+        for part in parts:
+            check = part
+            if self.allow_prefix and check.startswith(self.allow_prefix):
+                check = check[len(self.allow_prefix) :]
+            if check not in self.choices:
+                self.fail(
+                    f"invalid choice: {part}. (choose from {', '.join(self.choices)})",
+                    param,
+                    ctx,
+                )
+        return value
+
+    def get_metavar(
+        self, param: click.Parameter, ctx: click.Context | None = None
+    ) -> str | None:  # type: ignore[override]
+        if self._metavar:
+            return self._metavar
+        return "[" + "|".join(self.choices) + "]"
+
+
+class WorkspacePath(click.ParamType):
+    """Click type for workspace paths: a directory path or '@log'."""
+
+    name = "DIRECTORY"
+
+    def convert(self, value, param, ctx):
+        if value == "@log":
+            return value
+        path = Path(value)
+        if not path.exists():
+            self.fail(f"directory '{value}' does not exist.", param, ctx)
+        if not path.is_dir():
+            self.fail(f"'{value}' is not a directory.", param, ctx)
+        return str(path.resolve())
+
+
 commands_help = "\n".join(_gen_help(incl_langtags=False))
-available_tool_names = ", ".join(
-    sorted(
-        [
-            tool.name
-            for tool in get_available_tools(include_mcp=False)
-            if tool.is_available
-        ]
-    )
+_available_tools = sorted(
+    tool.name for tool in get_available_tools(include_mcp=False) if tool.is_available
 )
+available_tool_names = ", ".join(_available_tools)
 
 
 docstring = f"""
@@ -51,9 +109,18 @@ gptme is a chat-CLI for LLMs, empowering them with tools to run shell commands, 
 If PROMPTS are provided, a new conversation will be started with it.
 PROMPTS can be chained with the '{MULTIPROMPT_SEPARATOR}' separator.
 
-The interface provides user commands that can be used to interact with the system.
+\b
+Examples:
+  gptme "hello"                              Start a conversation
+  gptme "fix TODOs" main.py                  Include file or URL in context
+  gptme "review" github.com/org/repo/pull/1  Include a GitHub PR in context
+  gptme --tools none "what is 2+2"           No tools, just chat
+  gptme -t patch,save "fix typo" main.py     Only specific tools (comma-separated)
+  gptme -t +subagent "plan a refactor"       Default tools + subagent
+  gptme --context files "do task"             Skip context_cmd, keep project files
 
 \b
+The interface provides /commands during a conversation:
 {commands_help}"""
 
 
@@ -68,7 +135,7 @@ The interface provides user commands that can be used to interact with the syste
 @click.option(
     "--name",
     default="random",
-    help="Name of conversation. Defaults to generating a random name.",
+    help="Conversation ID (used to resume). Defaults to a random name.",
 )
 @click.option(
     "-m",
@@ -81,12 +148,14 @@ The interface provides user commands that can be used to interact with the syste
     "--workspace",
     "workspace",
     default=None,
-    help="Path to workspace directory. Pass '@log' to create a workspace in the log directory.",
+    type=WorkspacePath(),
+    help="Path to workspace directory, or '@log' to use the log directory.",
 )
 @click.option(
     "--agent-path",
     "agent_path",
     default=None,
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
     help="Path to agent workspace directory.",
 )
 @click.option(
@@ -112,7 +181,7 @@ The interface provides user commands that can be used to interact with the syste
     "--system",
     "prompt_system",
     default="full",
-    help="System prompt. Options: 'full', 'short', or something custom.",
+    help="System prompt [full|short|<custom>]. Defaults to 'full'.",
 )
 @click.option(
     "-t",
@@ -120,13 +189,17 @@ The interface provides user commands that can be used to interact with the syste
     "tool_allowlist",
     default=None,
     multiple=True,
-    help=f"Tools to allow. Can be specified multiple times or comma-separated. Use '+tool' to add to defaults (e.g., '-t +subagent'). Available: {available_tool_names}.",
+    type=CommaSeparatedChoice(
+        _available_tools + ["none"], allow_prefix="+", metavar="TOOL"
+    ),
+    help=f"Tools to allow. Comma-separated or repeated. Use '+tool' to add to defaults (e.g., '-t +subagent'). Use 'none' to disable all tools. Available: {available_tool_names}.",
 )
 @click.option(
     "--tool-format",
     "tool_format",
     default=None,
-    help="Tool format to use. Options: markdown, xml, tool",
+    type=click.Choice(["markdown", "xml", "tool"]),
+    help="Tool format to use.",
 )
 @click.option(
     "--stream/--no-stream",
@@ -149,6 +222,7 @@ The interface provides user commands that can be used to interact with the syste
     "--multi-tool/--no-multi-tool",
     "multi_tool",
     default=None,
+    hidden=True,
     help="Allow multiple tool calls per LLM response (disables break-on-tooluse). Enables efficient API usage with sequential execution.",
 )
 @click.option(
@@ -173,19 +247,29 @@ The interface provides user commands that can be used to interact with the syste
     "context_mode",
     type=click.Choice(["full", "instructions-only", "selective"]),
     default=None,
-    help="Context mode for subagent-style execution. 'full' includes all context, 'instructions-only' minimal context, 'selective' uses --context-include.",
+    hidden=True,
+    help="Deprecated: use --context-include instead. Kept for backward compatibility.",
+)
+@click.option(
+    "--context",
+    "context_include",
+    multiple=True,
+    type=CommaSeparatedChoice(["all", "files", "cmd"], metavar="[all|files|cmd]"),
+    callback=lambda ctx, param, value: value or None,
+    help="Context to include (default: all). Comma-separated or repeated. Tools and agent config (--agent-path) are always included.",
 )
 @click.option(
     "--context-include",
     "context_include",
     multiple=True,
-    default=None,
-    help="Context components to include when using --context-mode=selective. Can be specified multiple times. Options: agent, tools, workspace.",
+    type=CommaSeparatedChoice(["all", "files", "cmd"], metavar="[all|files|cmd]"),
+    hidden=True,
 )
 @click.option(
     "--output-schema",
     "output_schema",
     default=None,
+    hidden=True,
     help="Schema for structured output in format 'module:ClassName'. The class should be a Pydantic BaseModel.",
 )
 def main(
@@ -213,8 +297,6 @@ def main(
     output_schema: str | None,
 ):
     """Main entrypoint for the CLI."""
-    import os
-    import warnings
 
     # Handle deprecated --parallel flag
     if parallel is not None:
@@ -248,12 +330,24 @@ def main(
 
     # Convert tool_allowlist from tuple to string or None
     # Use get_parameter_source to distinguish between default (None) and explicit empty list
-    from click.core import ParameterSource
 
     tool_allowlist_str: str | None
     if ctx.get_parameter_source("tool_allowlist") == ParameterSource.DEFAULT:
         # Not provided by user, use None to indicate "use defaults"
         tool_allowlist_str = None
+    elif tool_allowlist and any(
+        t.strip().lower() == "none" for spec in tool_allowlist for t in spec.split(",")
+    ):
+        # --tools none: disable all tools
+        all_specs = [
+            t.strip() for spec in tool_allowlist for t in spec.split(",") if t.strip()
+        ]
+        non_none = [t for t in all_specs if t.lower() != "none"]
+        if non_none:
+            raise click.UsageError(
+                f"Cannot combine 'none' with other tools: {', '.join(non_none)}"
+            )
+        tool_allowlist_str = ""
     elif tool_allowlist:
         # User provided tools - flatten any comma-separated values and join
         tools_list: list[str] = []
@@ -284,10 +378,6 @@ def main(
         tool_allowlist_str = None
 
     if profile:
-        import cProfile
-        import pstats
-        from datetime import datetime
-
         print("Profiling enabled...")
         pr = cProfile.Profile()
         pr.enable()
@@ -454,6 +544,22 @@ def main(
         )
         initial_msgs = []
     else:
+        # Infer context mode: --context-include implies selective mode
+        effective_context_mode = context_mode
+        if context_mode == "instructions-only":
+            warnings.warn(
+                "--context-mode=instructions-only is deprecated. "
+                "Use --context-include with no values instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            effective_context_mode = "selective"
+        elif context_mode == "selective":
+            pass  # explicit selective, keep as-is
+        elif context_include and not context_mode:
+            # --context-include without --context-mode implies selective
+            effective_context_mode = "selective"
+
         # get initial system prompt
         initial_msgs = get_prompt(
             tools=tools,
@@ -463,8 +569,10 @@ def main(
             model=config.chat.model,
             workspace=workspace_path,
             agent_path=config.chat.agent,
-            context_mode=context_mode,  # type: ignore[arg-type]  # click returns str
-            context_include=list(context_include) if context_include else None,
+            context_mode=effective_context_mode,  # type: ignore[arg-type]
+            context_include=[item for val in context_include for item in val.split(",")]
+            if context_include
+            else None,
         )
 
     # register a handler for Ctrl-C
@@ -477,7 +585,6 @@ def main(
         try:
             if ":" in output_schema:
                 module_name, class_name = output_schema.rsplit(":", 1)
-                import importlib
 
                 module = importlib.import_module(module_name)
                 output_schema_type = getattr(module, class_name)
@@ -526,7 +633,6 @@ def main(
             tb = traceback.extract_tb(sys.exc_info()[2])
 
             # Get actual gptme package directory
-            import gptme
 
             gptme_dir = Path(gptme.__file__).parent.resolve()
 

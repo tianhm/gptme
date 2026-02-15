@@ -62,18 +62,48 @@ def get_prompt(
     """
     Get the initial system prompt.
 
+    The prompt is assembled from several layers:
+
+    1. **Core prompt** (always included):
+
+       - Base gptme identity and instructions
+       - User identity/preferences (interactive only, from user config ``[user]``;
+         skipped in ``--non-interactive`` since no human is present)
+       - Tool descriptions (when tools are loaded, controlled by ``--tools``)
+
+    2. **Context** (controlled by ``--context``, independent of ``--non-interactive``):
+
+       - ``files``: static files from project config (gptme.toml ``[prompt] files``)
+         and user config (``~/.config/gptme/config.toml`` ``[prompt] files``).
+         Both sources are merged and deduplicated.
+       - ``cmd``: dynamic output of ``context_cmd`` in gptme.toml (project-level only,
+         no user-level equivalent). Changes most often, least cacheable.
+
+    3. **Agent config** (implicit when ``--agent-path`` is provided):
+
+       - Separate agent identity workspace. If ``agent_path == workspace``,
+         workspace is skipped to avoid duplication.
+
+    ``--context`` selects which context components to include.
+    Without it, all context is included (full mode).
+
+    Implicit behavior (not controlled by ``--context``):
+
+    - **Tool descriptions** are always included when tools are loaded
+    - **Agent config** is always loaded when ``--agent-path`` is specified
+
     Args:
         tools: List of available tools
         tool_format: Format for tool descriptions
         prompt: Prompt type or custom prompt string
         interactive: Whether in interactive mode
         model: Model to use
-        workspace: Workspace directory
-        agent_path: Path to agent configuration
-        context_mode: Context mode (full, instructions-only, selective)
-        context_include: Components to include in selective mode (agent, tools, workspace)
+        workspace: Project workspace directory
+        agent_path: Agent identity workspace (if different from project workspace)
+        context_mode: Context mode (full, selective; instructions-only deprecated)
+        context_include: Components to include in selective mode
 
-    Returns a list of messages: [core_system_prompt, workspace_prompt] (if workspace provided).
+    Returns a list of messages: [core_system_prompt, workspace_prompt, ...].
     """
     agent_config = get_project_config(agent_path)
     agent_name = (
@@ -84,21 +114,33 @@ def get_prompt(
     effective_mode = context_mode or "full"
     include_set = set(context_include or [])
 
+    # "instructions-only" is a deprecated alias for "selective" with no includes
+    if effective_mode == "instructions-only":
+        effective_mode = "selective"
+
     # Determine what to include based on context_mode
-    include_tools = effective_mode == "full" or (
-        effective_mode == "selective" and "tools" in include_set
-    )
+    # Expand aliases
+    if "all" in include_set:
+        include_set.update(("files", "cmd"))
+    # Legacy: "agent" in context_include is ignored (agent-path is now always loaded)
+    include_set.discard("agent")
+    include_set.discard("agent-config")
+    is_selective = effective_mode == "selective"
+    # Tools are always included when they're loaded — no need to opt-in via --context-include
+    include_tools = bool(tools)
     include_workspace = effective_mode == "full" or (
-        effective_mode == "selective" and "workspace" in include_set
+        is_selective and "files" in include_set
     )
-    include_agent = effective_mode == "full" or (
-        effective_mode == "selective" and "agent" in include_set
+    # Agent workspace is always loaded when --agent-path is provided
+    include_agent_config = bool(agent_path)
+    include_context_cmd = effective_mode == "full" or (
+        is_selective and "cmd" in include_set
     )
 
     # Generate core system messages (without workspace context)
     core_msgs: list[Message]
-    if effective_mode == "instructions-only":
-        # Minimal mode: only basic gptme prompt
+    if is_selective and not include_tools:
+        # Selective mode with no tools loaded: base prompt only
         core_msgs = list(prompt_gptme(interactive, model, agent_name))
     elif prompt == "full":
         if include_tools:
@@ -136,15 +178,22 @@ def get_prompt(
 
     # Generate workspace messages separately (if included)
     workspace_msgs = (
-        list(prompt_workspace(workspace))
+        list(prompt_workspace(workspace, include_context_cmd=include_context_cmd))
         if include_workspace and workspace and workspace != agent_path
         else []
     )
 
-    # Generate workspace context from agent if provided (if included)
-    agent_msgs = (
-        list(prompt_workspace(agent_path, title="Agent Workspace", include_path=True))
-        if include_agent and agent_path
+    # Agent config workspace (separate from project, only with --agent-path)
+    agent_config_msgs = (
+        list(
+            prompt_workspace(
+                agent_path,
+                title="Agent Config",
+                include_path=True,
+                include_context_cmd=include_context_cmd,
+            )
+        )
+        if include_agent_config
         else []
     )
 
@@ -154,9 +203,9 @@ def get_prompt(
         core_prompt = _join_messages(core_msgs)
         result.append(core_prompt)
 
-    # Add agent messages separately (if included)
-    if include_agent:
-        result.extend(agent_msgs)
+    # Add agent config messages separately (if included)
+    if include_agent_config:
+        result.extend(agent_config_msgs)
 
     # Add workspace messages separately (if included)
     if include_workspace:
@@ -435,6 +484,7 @@ def prompt_workspace(
     workspace: Path | None = None,
     title="Project Workspace",
     include_path: bool = False,
+    include_context_cmd: bool = True,
 ) -> Generator[Message, None, None]:
     # TODO: update this prompt if the files change
     # TODO: include `git status -vv`, and keep it up-to-date
@@ -543,7 +593,8 @@ def prompt_workspace(
 
     # Computed context last (changes most often, least cacheable)
     if (
-        project
+        include_context_cmd
+        and project
         and project.context_cmd
         and (
             cmd_output := get_project_context_cmd_output(project.context_cmd, workspace)
