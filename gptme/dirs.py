@@ -86,6 +86,49 @@ def _get_project_git_dir_call() -> Path | None:
         return None
 
 
+def get_workspace() -> Path:
+    """Get the agent workspace directory.
+
+    Detection order:
+    1. GPTME_WORKSPACE environment variable
+    2. Git root, traversing to parent repo if in a submodule
+    3. Current working directory
+
+    Handles git submodules: if `.git` is a file (not a directory),
+    we're in a submodule and the parent repo root is returned instead.
+    """
+    if workspace := os.environ.get("GPTME_WORKSPACE"):
+        return Path(workspace)
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            git_root = Path(result.stdout.strip())
+            # If .git is a file, we're in a submodule — find the parent repo
+            if (git_root / ".git").is_file():
+                try:
+                    super_result = subprocess.run(
+                        ["git", "rev-parse", "--show-superproject-working-tree"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if super_result.returncode == 0 and super_result.stdout.strip():
+                        return Path(super_result.stdout.strip())
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            return git_root
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    return Path.cwd()
+
+
 def _init_paths():
     # create all paths
     for path in [get_config_dir(), get_data_dir(), get_logs_dir()]:
