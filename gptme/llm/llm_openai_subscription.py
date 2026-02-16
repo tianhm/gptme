@@ -51,7 +51,7 @@ import requests
 
 from ..message import Message
 from ..tools.base import ToolSpec
-from .utils import parameters2dict
+from .utils import extract_tool_uses_from_assistant_message, parameters2dict
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +433,59 @@ def get_auth() -> SubscriptionAuth:
     )
 
 
+def _messages_to_responses_input(messages: list[Message]) -> list[dict[str, Any]]:
+    """Convert gptme Messages to Responses API input items.
+
+    Handles three cases:
+    - System messages with call_id → ``function_call_output`` items
+    - Assistant messages containing tool calls → ``function_call`` items + text message
+    - Regular messages → ``message`` items with role/content
+    """
+    items: list[dict[str, Any]] = []
+    for msg in messages:
+        # Tool result: system message with call_id
+        if msg.role == "system" and msg.call_id:
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": msg.call_id,
+                    "output": msg.content,
+                }
+            )
+            continue
+
+        # Assistant message: may contain tool calls (e.g. @ipython(call_123): {...})
+        if msg.role == "assistant":
+            content_parts, tool_uses = extract_tool_uses_from_assistant_message(
+                msg.content, tool_format_override="tool"
+            )
+            # Emit function_call items for each tool use found
+            for tooluse in tool_uses:
+                items.append(
+                    {
+                        "type": "function_call",
+                        "name": tooluse.tool,
+                        "call_id": tooluse.call_id or "",
+                        "arguments": json.dumps(tooluse.kwargs or {}),
+                    }
+                )
+            # Emit remaining text content as a message (if any)
+            text = "".join(
+                p["text"] if isinstance(p, dict) else str(p) for p in content_parts
+            ).strip()
+            if text:
+                items.append({"role": "assistant", "content": text})
+            elif not tool_uses:
+                # No tool uses and no text — still include the message
+                items.append({"role": "assistant", "content": msg.content})
+            continue
+
+        # Regular message (user, system without call_id)
+        items.append({"role": msg.role, "content": msg.content})
+
+    return items
+
+
 def _spec2tool(spec: ToolSpec) -> dict[str, Any]:
     """Convert a ToolSpec to Responses API function tool format.
 
@@ -452,16 +505,15 @@ def _spec2tool(spec: ToolSpec) -> dict[str, Any]:
 
 
 def _transform_to_codex_request(
-    messages: list[dict[str, Any]],
+    input_items: list[dict[str, Any]],
     model: str,
     stream: bool = True,
     reasoning_level: str | None = None,
 ) -> dict[str, Any]:
-    """Transform chat messages to the Responses API format used by the Codex endpoint.
+    """Build a Responses API request body from pre-converted input items.
 
-    The Codex endpoint uses the Responses API, which takes:
-    - ``instructions`` for system-level guidance (extracted from system messages)
-    - ``input`` (not ``messages``) as a list of input items with role/content
+    Extracts system messages as ``instructions``, passes everything else
+    (messages, function_call, function_call_output) as ``input``.
     """
     base_model = model.split(":")[0] if ":" in model else model
     if ":" in model:
@@ -470,19 +522,14 @@ def _transform_to_codex_request(
     if reasoning_level is None:
         reasoning_level = "medium"
 
-    # Extract system messages as instructions, rest becomes input items
+    # System messages (role-based, no "type") become instructions
     system_parts = []
-    input_items = []
-    for msg in messages:
-        if msg["role"] == "system":
-            system_parts.append(msg["content"])
+    api_input = []
+    for item in input_items:
+        if item.get("role") == "system":
+            system_parts.append(item["content"])
         else:
-            input_items.append(
-                {
-                    "role": msg["role"],
-                    "content": msg["content"],
-                }
-            )
+            api_input.append(item)
 
     instructions = (
         "\n\n".join(system_parts) if system_parts else "You are a helpful assistant."
@@ -491,7 +538,7 @@ def _transform_to_codex_request(
     return {
         "model": base_model,
         "instructions": instructions,
-        "input": input_items,
+        "input": api_input,
         "stream": stream,
         "store": False,
         "reasoning": {
@@ -527,17 +574,10 @@ def stream(
     """Stream completion from ChatGPT subscription API."""
     auth = get_auth()
 
-    api_messages = []
-    for msg in messages:
-        api_messages.append(
-            {
-                "role": msg.role,
-                "content": msg.content,
-            }
-        )
+    api_messages = _messages_to_responses_input(messages)
 
     request_body = _transform_to_codex_request(
-        messages=api_messages,
+        input_items=api_messages,
         model=model,
         stream=True,
     )
