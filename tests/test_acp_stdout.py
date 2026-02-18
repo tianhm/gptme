@@ -1,9 +1,11 @@
-"""Tests for ACP stdout isolation.
+"""Tests for ACP stdout isolation and write pipe protocol.
 
 Verifies that running gptme in ACP mode doesn't leak non-JSON-RPC
 output to stdout, which would corrupt the protocol communication.
+Also tests the _WritePipeProtocol used for backpressure handling.
 """
 
+import asyncio
 import io
 import os
 import sys
@@ -133,3 +135,134 @@ def test_no_stdout_pollution_from_imports():
         assert output == "", f"Unexpected stdout output during imports: {output!r}"
     finally:
         sys.stdout = original_stdout
+
+
+def test_write_pipe_protocol_has_drain_helper():
+    """_WritePipeProtocol exposes _drain_helper for StreamWriter.drain()."""
+
+    async def _check():
+        from gptme.acp.__main__ import _WritePipeProtocol
+
+        proto = _WritePipeProtocol()
+        assert hasattr(proto, "_drain_helper")
+        # When not paused, drain should return immediately
+        await proto._drain_helper()
+
+    asyncio.run(_check())
+
+
+def test_write_pipe_protocol_pause_resume():
+    """_WritePipeProtocol handles pause/resume writing correctly."""
+
+    async def _check():
+        from gptme.acp.__main__ import _WritePipeProtocol
+
+        proto = _WritePipeProtocol()
+
+        # Initially not paused
+        assert not proto._paused
+        assert proto._drain_waiter is None
+
+        # Pause creates a future
+        proto.pause_writing()
+        assert proto._paused
+        assert proto._drain_waiter is not None
+        assert not proto._drain_waiter.done()
+
+        # Resume resolves the future
+        proto.resume_writing()
+        assert not proto._paused
+        assert proto._drain_waiter is None
+
+    asyncio.run(_check())
+
+
+def test_write_pipe_protocol_drain_blocks_when_paused():
+    """_drain_helper blocks until resume_writing is called."""
+
+    async def _check():
+        from gptme.acp.__main__ import _WritePipeProtocol
+
+        proto = _WritePipeProtocol()
+        proto.pause_writing()
+
+        resumed = False
+
+        async def drain_task():
+            await proto._drain_helper()
+            return True
+
+        async def resume_task():
+            nonlocal resumed
+            await asyncio.sleep(0.01)
+            proto.resume_writing()
+            resumed = True
+
+        # drain should block until resume is called
+        results = await asyncio.gather(drain_task(), resume_task())
+        assert results[0] is True
+        assert resumed
+
+    asyncio.run(_check())
+
+
+def test_write_pipe_protocol_connection_lost_resolves_drain():
+    """connection_lost(None) resolves a blocked _drain_helper()."""
+
+    async def _check():
+        from gptme.acp.__main__ import _WritePipeProtocol
+
+        proto = _WritePipeProtocol()
+        proto.pause_writing()
+
+        async def drain_task():
+            await proto._drain_helper()
+            return True
+
+        async def close_task():
+            await asyncio.sleep(0.01)
+            proto.connection_lost(None)
+
+        results = await asyncio.gather(drain_task(), close_task())
+        assert results[0] is True
+        assert proto._connection_lost
+
+    asyncio.run(_check())
+
+
+def test_write_pipe_protocol_connection_lost_with_exception():
+    """connection_lost(exc) sets exception on drain waiter."""
+    import pytest
+
+    async def _check():
+        from gptme.acp.__main__ import _WritePipeProtocol
+
+        proto = _WritePipeProtocol()
+        proto.pause_writing()
+
+        async def drain_task():
+            await proto._drain_helper()
+
+        async def close_task():
+            await asyncio.sleep(0.01)
+            proto.connection_lost(OSError("pipe broke"))
+
+        with pytest.raises(OSError, match="pipe broke"):
+            await asyncio.gather(drain_task(), close_task())
+
+    asyncio.run(_check())
+
+
+def test_write_pipe_protocol_drain_after_connection_lost():
+    """_drain_helper() raises ConnectionResetError after connection_lost()."""
+    import pytest
+
+    async def _check():
+        from gptme.acp.__main__ import _WritePipeProtocol
+
+        proto = _WritePipeProtocol()
+        proto.connection_lost(None)
+        with pytest.raises(ConnectionResetError):
+            await proto._drain_helper()
+
+    asyncio.run(_check())
