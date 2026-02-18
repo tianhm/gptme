@@ -298,6 +298,7 @@ new Vue({
                     content: data.content,
                     timestamp: new Date().toISOString(),
                     html: this.mdToHtml(data.content),
+                    files: data.files || [],
                   };
                   this.chatLog.push(newMsg);
                 }
@@ -383,6 +384,13 @@ new Vue({
     async loadMoreConversations() {
       this.conversationsLimit += 100;
       await this.getConversations();
+    },
+    isImage(filename) {
+      return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
+    },
+    fileUrl(filename) {
+      const sanitized = filename.split('/').filter(part => part !== '..').join('/');
+      return `${apiRoot}/${this.selectedConversation}/files/${sanitized}`;
     },
     handleKeyDown(e) {
       // If Enter is pressed without Shift
