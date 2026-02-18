@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import asyncio
 import json
 from collections.abc import Callable, Generator
 from logging import getLogger
+from typing import TYPE_CHECKING
 
 import mcp.types as mcp_types
+
+if TYPE_CHECKING:
+    from ..hooks.elicitation import ElicitationRequest, ElicitationResponse
 
 from gptme.config import Config, MCPServerConfig, get_config, set_config
 
@@ -827,3 +833,197 @@ def remove_mcp_root(server_name: str, uri: str) -> str:
     except Exception as e:
         logger.error(f"Failed to remove root from {server_name}: {e}")
         return f"Error removing root: {e}"
+
+
+# Elicitation support functions
+
+
+def _mcp_params_to_elicitation_request(
+    params: mcp_types.ElicitRequestParams,
+    server_name: str,
+) -> ElicitationRequest:
+    """Convert MCP ElicitRequestParams to gptme's ElicitationRequest.
+
+    Maps MCP's JSON Schema-based requestedSchema to gptme's FormField-based
+    form elicitation, allowing MCP servers to use the shared elicitation UI.
+
+    Handles both MCP elicitation param types:
+    - ElicitRequestFormParams (has requestedSchema)
+    - ElicitRequestURLParams (has url, no schema)
+    """
+    from ..hooks.elicitation import ElicitationRequest, FormField
+
+    prompt = f"MCP Server '{server_name}': {params.message}"
+
+    # URL-mode params don't have a schema — treat as text
+    schema = getattr(params, "requestedSchema", None)
+
+    # If no schema, treat as simple text input
+    if not schema or "properties" not in schema:
+        return ElicitationRequest(type="text", prompt=prompt)
+
+    # Convert JSON Schema properties to FormFields
+    properties = schema.get("properties", {})
+    required_fields = schema.get("required", [])
+    fields: list[FormField] = []
+
+    for field_name, field_info in properties.items():
+        json_type = field_info.get("type", "string")
+        field_desc = field_info.get("description", field_name)
+        field_default = field_info.get("default")
+
+        # Map JSON Schema types to FormField types
+        if json_type == "boolean":
+            form_type: str = "boolean"
+        elif json_type in ("integer", "number"):
+            form_type = "number"
+        else:
+            form_type = "text"
+
+        fields.append(
+            FormField(
+                name=field_name,
+                prompt=field_desc,
+                type=form_type,  # type: ignore[arg-type]
+                required=field_name in required_fields,
+                default=str(field_default) if field_default is not None else None,
+            )
+        )
+
+    return ElicitationRequest(type="form", prompt=prompt, fields=fields)
+
+
+def _elicitation_response_to_mcp_result(
+    response: ElicitationResponse,
+) -> mcp_types.ElicitResult:
+    """Convert gptme's ElicitationResponse to MCP's ElicitResult."""
+    if response.cancelled:
+        return mcp_types.ElicitResult(action="cancel", content=None)
+
+    if response.value is None:
+        return mcp_types.ElicitResult(action="decline", content=None)
+
+    # For form responses, the value is a JSON string of field values
+    try:
+        content = json.loads(response.value)
+        if isinstance(content, dict):
+            return mcp_types.ElicitResult(action="accept", content=content)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # For simple text responses, wrap in a content dict
+    return mcp_types.ElicitResult(action="accept", content={"value": response.value})
+
+
+def _create_elicitation_handler(server_name: str):
+    """Create an elicitation callback for a server using the shared hook system.
+
+    Uses gptme's unified elicitation system (hooks/elicitation.py) so MCP
+    servers get the same rich input UI as native gptme elicitation. When
+    WebUI support is added, MCP servers get it automatically.
+
+    Returns an async callable compatible with MCPClient's elicitation_callback.
+    """
+
+    async def elicitation_callback(
+        params: mcp_types.ElicitRequestParams,
+    ) -> mcp_types.ElicitResult | mcp_types.ErrorData:
+        """Handle elicitation request from MCP server via shared hook system."""
+        from ..hooks.elicitation import elicit
+
+        logger.info(f"Elicitation request from {server_name}: {params.message}")
+
+        try:
+            request = _mcp_params_to_elicitation_request(params, server_name)
+            response = elicit(request)
+            return _elicitation_response_to_mcp_result(response)
+        except Exception as e:
+            logger.error(f"Elicitation error for {server_name}: {e}")
+            return mcp_types.ErrorData(code=-32000, message=str(e))
+
+    return elicitation_callback
+
+
+def enable_mcp_elicitation(server_name: str) -> str:
+    """
+    Enable elicitation support for an MCP server.
+
+    When enabled, the server can request user input during operations.
+    A CLI-based handler prompts the user for input when requests come in.
+
+    Args:
+        server_name: Name of the loaded MCP server
+
+    Returns:
+        Success message or error
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        callback = _create_elicitation_handler(server_name)
+        client.set_elicitation_callback(callback)
+        return f"Elicitation enabled for server '{server_name}'. Server can now request user input."
+    except Exception as e:
+        logger.error(f"Failed to enable elicitation for {server_name}: {e}")
+        return f"Error enabling elicitation: {e}"
+
+
+def disable_mcp_elicitation(server_name: str) -> str:
+    """
+    Disable elicitation support for an MCP server.
+
+    Args:
+        server_name: Name of the loaded MCP server
+
+    Returns:
+        Success message or error
+    """
+    client = _get_mcp_client(server_name)
+    if not client:
+        return (
+            f"Server '{server_name}' is not loaded. Use `mcp load {server_name}` first."
+        )
+
+    try:
+        client.set_elicitation_callback(None)
+        return f"Elicitation disabled for server '{server_name}'."
+    except Exception as e:
+        logger.error(f"Failed to disable elicitation for {server_name}: {e}")
+        return f"Error disabling elicitation: {e}"
+
+
+def get_mcp_elicitation_status(server_name: str | None = None) -> str:
+    """
+    Get elicitation status for MCP servers.
+
+    Args:
+        server_name: Optional server name. If provided, shows status for that server.
+                     If None, shows status for all loaded servers.
+
+    Returns:
+        Formatted elicitation status
+    """
+    if server_name:
+        client = _get_mcp_client(server_name)
+        if not client:
+            return f"Server '{server_name}' is not loaded."
+
+        enabled = client.has_elicitation_callback()
+        status = "✅ Enabled" if enabled else "❌ Disabled"
+        return f"Elicitation for '{server_name}': {status}"
+    else:
+        # Show status for all loaded servers
+        all_clients = {**_mcp_clients, **_dynamic_servers}
+        if not all_clients:
+            return "No MCP servers loaded."
+
+        output = ["# Elicitation Status\n"]
+        for name, client in all_clients.items():
+            enabled = client.has_elicitation_callback()
+            status = "✅ Enabled" if enabled else "❌ Disabled"
+            output.append(f"- **{name}**: {status}")
+        return "\n".join(output)
