@@ -3,6 +3,8 @@
 Tests bidirectional conversion between gptme and ACP types.
 """
 
+import pytest
+
 from gptme.acp.adapter import (
     acp_content_to_gptme_message,
     format_tool_result,
@@ -65,6 +67,21 @@ class TestGptmeMessageToAcpContent:
 
 class TestAcpContentToGptmeMessage:
     """Tests for ACP Content -> gptme Message conversion."""
+
+    def test_pydantic_text_block(self):
+        """ACP SDK returns Pydantic TextContentBlock objects, not dicts."""
+        acp = pytest.importorskip("acp")
+        block = acp.text_block("hello from zed")
+        msg = acp_content_to_gptme_message([block], "user")
+        assert msg.role == "user"
+        assert msg.content == "hello from zed"
+
+    def test_pydantic_multiple_blocks(self):
+        """Multiple Pydantic blocks should be joined correctly."""
+        acp = pytest.importorskip("acp")
+        blocks = [acp.text_block("Part 1"), acp.text_block("Part 2")]
+        msg = acp_content_to_gptme_message(blocks, "user")
+        assert msg.content == "Part 1\nPart 2"
 
     def test_single_text_block(self):
         content = [{"type": "text", "text": "Hello!"}]
