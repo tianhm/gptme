@@ -1,4 +1,5 @@
 import logging
+import os
 import shutil
 import sys
 import time
@@ -396,10 +397,12 @@ def _summarize_helper(s: str, tok_max_start=400, tok_max_end=400) -> str:
 
 def list_available_providers() -> list[tuple[Provider, str]]:
     """
-    List all available providers based on configured API keys.
+    List all available providers based on configured API keys or OAuth tokens.
 
     Returns:
-        List of tuples (provider, api_key_env_var) for configured providers
+        List of tuples (provider, auth_source) for configured providers.
+        auth_source is an env var name for API key providers, or "oauth" for
+        OAuth-based providers like openai-subscription.
     """
     config = get_config()
     available = []
@@ -418,6 +421,13 @@ def list_available_providers() -> list[tuple[Provider, str]]:
     for provider, env_var in provider_checks:
         if config.get_env(env_var):
             available.append((cast(Provider, provider), env_var))
+
+    # Check OAuth-based providers (no API key, use token file)
+    # Note: compute path directly to avoid side-effecting mkdir in _get_token_storage_path()
+    _config_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    _token_path = _config_dir / "gptme" / "oauth" / "openai_subscription.json"
+    if _token_path.exists():
+        available.append((cast(Provider, "openai-subscription"), "oauth"))
 
     return available
 
