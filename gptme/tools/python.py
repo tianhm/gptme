@@ -8,11 +8,14 @@ import dataclasses
 import functools
 import importlib.util
 import io
+import os
 import re
+import site
 import sys
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from logging import getLogger
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from ..constants import DECLINED_CONTENT
@@ -32,10 +35,6 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-# TODO: launch the IPython session in the current venv, if any, instead of the pipx-managed gptme venv (for example) in which gptme itself runs
-#       would let us use libraries installed with `pip install` in the current venv
-#       https://github.com/gptme/gptme/issues/29
-
 # IPython instance
 _ipython: "InteractiveShell | None" = None
 
@@ -54,11 +53,90 @@ def register_function(func: T) -> T:
     return func
 
 
+def _detect_venv(env_only: bool = False) -> Path | None:
+    """Detect the user's virtual environment, if any.
+
+    Checks in order:
+    1. VIRTUAL_ENV environment variable (set when a venv is activated)
+    2. .venv directory in the current working directory (skipped if env_only=True)
+
+    Args:
+        env_only: If True, only check VIRTUAL_ENV (skip cwd-based detection).
+                  Used during early init before os.chdir(workspace) has run.
+    """
+    # Check VIRTUAL_ENV env var (set by `source .venv/bin/activate`)
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        venv_path = Path(virtual_env)
+        if venv_path.is_dir():
+            return venv_path
+
+    if not env_only:
+        # Check for .venv in cwd (only valid after os.chdir(workspace))
+        cwd_venv = Path.cwd() / ".venv"
+        if cwd_venv.is_dir():
+            return cwd_venv
+
+    return None
+
+
+def _get_venv_site_packages(venv_path: Path) -> Path | None:
+    """Get the site-packages directory for a venv."""
+    # Windows: Lib/site-packages (no pythonX.Y subdirectory)
+    win_sp = venv_path / "Lib" / "site-packages"
+    if win_sp.is_dir():
+        return win_sp
+    # Unix: lib/pythonX.Y/site-packages
+    lib_dir = venv_path / "lib"
+    if not lib_dir.is_dir():
+        return None
+    for entry in lib_dir.iterdir():
+        if entry.name.startswith("python") and entry.is_dir():
+            sp = entry / "site-packages"
+            if sp.is_dir():
+                return sp
+    return None
+
+
+def _setup_venv_paths(env_only: bool = False) -> None:
+    """Add the user's venv site-packages to sys.path if available.
+
+    This allows the IPython instance (which runs in-process within gptme's
+    own environment) to import packages from the user's project venv.
+    See: https://github.com/gptme/gptme/issues/29
+
+    Args:
+        env_only: If True, only use VIRTUAL_ENV for detection (skip cwd check).
+    """
+    venv_path = _detect_venv(env_only=env_only)
+    if venv_path is None:
+        return
+
+    # Don't add if this IS gptme's own venv
+    if Path(sys.prefix).resolve() == venv_path.resolve():
+        return
+
+    sp = _get_venv_site_packages(venv_path)
+    if sp is None:
+        logger.warning("Found venv at %s but couldn't locate site-packages", venv_path)
+        return
+
+    sp_resolved = str(sp.resolve())
+    if sp_resolved not in [str(Path(p).resolve()) for p in sys.path]:
+        # Append after gptme's own site-packages so gptme's deps always take
+        # precedence (including lazy-imported modules loaded on-demand)
+        sys.path.append(sp_resolved)
+        # Also process .pth files in the venv (handles editable installs etc.)
+        site.addsitedir(sp_resolved)
+        logger.info("Added user venv site-packages to sys.path: %s", sp_resolved)
+
+
 def _get_ipython():
     global _ipython
     from IPython.core.interactiveshell import InteractiveShell  # fmt: skip
 
     if _ipython is None:
+        _setup_venv_paths()
         _ipython = InteractiveShell()
         _ipython.push(registered_functions)
 
@@ -227,6 +305,12 @@ fib(10)
 
 
 def init() -> ToolSpec:
+    # Set up user's venv paths early so library detection includes user packages.
+    # Only use VIRTUAL_ENV here (not cwd-based detection) because init() runs
+    # before os.chdir(workspace). The cwd-based .venv detection is deferred to
+    # _get_ipython() which runs lazily after workspace chdir has happened.
+    _setup_venv_paths(env_only=True)
+
     # Register python functions from other tools
     for loaded_tool in get_tools():
         if loaded_tool.functions:
