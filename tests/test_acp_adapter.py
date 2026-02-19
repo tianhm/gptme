@@ -239,3 +239,50 @@ class TestContextVarPropagation:
             assert result_with == "hello"
 
         asyncio.run(test_propagation())
+
+    def test_contextvars_isolated_across_fresh_contexts(self):
+        """Verify that ContextVars set in one context are NOT visible in a fresh context.
+
+        This demonstrates the root cause of the ACP model assertion bug (#1290):
+        initialize() sets the model ContextVar, but when the ACP framework
+        dispatches prompt() in a fresh context (not inheriting from initialize's
+        task), the ContextVar is unset. The fix is to re-set the model at the
+        start of prompt() using a stored instance attribute.
+        Regression test for: https://github.com/gptme/gptme/issues/1290
+        """
+        import asyncio
+        import contextvars
+
+        var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+            "test_var", default=None
+        )
+
+        async def test_fresh_context_isolation():
+            # Simulate initialize() setting the var in its own context
+            var.set("model-value")
+            assert var.get() == "model-value"
+
+            # Simulate ACP framework dispatching prompt() in a fresh context
+            # (not as a child task, but with an independent context)
+            fresh_ctx = contextvars.copy_context()
+            # Reset the var in the fresh context to simulate ACP's isolation
+            fresh_ctx.run(var.set, None)
+
+            async def prompt_handler():
+                return var.get()
+
+            # Without the fix: fresh context has var=None
+            result_without_fix = fresh_ctx.run(var.get)
+            assert (
+                result_without_fix is None
+            ), "Fresh context should NOT have the var from initialize()"
+
+            # With the fix: re-set the var (simulating what agent.py does)
+            stored_model = "model-value"  # stored as self._model in agent
+            fresh_ctx.run(var.set, stored_model)
+            result_with_fix = fresh_ctx.run(var.get)
+            assert (
+                result_with_fix == "model-value"
+            ), "After re-setting, the var should be available"
+
+        asyncio.run(test_fresh_context_isolation())

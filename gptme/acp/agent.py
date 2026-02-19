@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ..init import init
+from ..llm.models import set_default_model
 from ..logmanager import LogManager
 from ..message import Message
 from ..prompts import get_prompt
 from ..session import SessionRegistry
-from ..tools import get_tools
+from ..tools import get_tools, set_tools
 from .adapter import acp_content_to_gptme_message, gptme_message_to_acp_content
 from .types import (
     PermissionKind,
@@ -83,6 +84,7 @@ class GptmeAgent:
         self._registry = SessionRegistry()
         self._initialized = False
         self._model: str = "anthropic/claude-sonnet-4-20250514"
+        self._tools: list[Any] | None = None
         # Phase 2: Track active tool calls per session
         self._tool_calls: dict[str, dict[str, ToolCall]] = {}
         # Phase 2: Permission policies per session (allow_always, reject_always)
@@ -414,6 +416,8 @@ class GptmeAgent:
                     "Ensure API keys are set in environment or config.toml."
                 ) from e
             self._initialized = True
+            # Store tools for re-setting in other handler contexts
+            self._tools = get_tools()
 
         logger.info(f"ACP Initialize: protocol_version={protocol_version}")
         assert InitializeResponse is not None
@@ -439,6 +443,14 @@ class GptmeAgent:
                 "agent-client-protocol package not installed. "
                 "Install with: pip install 'gptme[acp]'"
             )
+
+        # Re-set ContextVars that may be missing in this task's context.
+        # ACP framework may dispatch each RPC method in a separate asyncio task,
+        # so ContextVars set during initialize() aren't visible here.
+        if self._model:
+            set_default_model(self._model)
+        if self._tools is not None:
+            set_tools(self._tools)
 
         session_id = uuid4().hex
 
@@ -500,6 +512,14 @@ class GptmeAgent:
             text_block,
             update_agent_message,
         )
+
+        # Re-set ContextVars that may be missing in this task's context.
+        # ACP framework may dispatch each RPC method in a separate asyncio task,
+        # so ContextVars set during initialize() aren't visible here.
+        if self._model:
+            set_default_model(self._model)
+        if self._tools is not None:
+            set_tools(self._tools)
 
         session = self._registry.get(session_id)
         if not session:
