@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 # Default template repository
 DEFAULT_TEMPLATE_REPO = "https://github.com/gptme/gptme-agent-template"
 DEFAULT_TEMPLATE_BRANCH = "master"
-DEFAULT_FORK_COMMAND = "./fork.sh {path} {name}"
 
 
 class WorkspaceError(Exception):
@@ -134,8 +133,10 @@ def create_workspace_from_template(
                 error_msg = result.stderr.decode() or result.stdout.decode()
                 raise WorkspaceError(f"Fork command failed: {error_msg}")
         else:
-            # No fork command - just move the temp dir to the destination
+            # No fork command - move temp dir and create clean git history
+            # (without this, the full template repo history would be included)
             shutil.move(str(temp_dir), str(path))
+            _reset_git_history(path, agent_name)
 
         # Merge project config with template config
         _merge_project_config(path, agent_name, project_config)
@@ -337,6 +338,48 @@ def init_conversation(
     log.write()
 
     return conversation_id
+
+
+def _reset_git_history(path: Path, agent_name: str) -> None:
+    """Reset git history to a single clean initial commit.
+
+    When creating a workspace without a fork command, the cloned template
+    repository includes its full git history. This function replaces that
+    with a single clean initial commit for the new agent.
+    """
+    git_dir = path / ".git"
+    if git_dir.exists():
+        shutil.rmtree(git_dir)
+
+    # Use -c flags to bypass global git hooks and set identity for CI environments
+    # where user.email/user.name may not be configured globally
+    git_no_hooks = [
+        "git",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "user.email=agent@gptme.org",
+        "-c",
+        "user.name=gptme-agent",
+    ]
+    subprocess.run(
+        [*git_no_hooks, "init"], cwd=str(path), capture_output=True, check=True
+    )
+    subprocess.run(
+        [*git_no_hooks, "add", "."], cwd=str(path), capture_output=True, check=True
+    )
+    subprocess.run(
+        [
+            *git_no_hooks,
+            "commit",
+            "-m",
+            f"feat: initialize {agent_name} agent workspace",
+        ],
+        cwd=str(path),
+        capture_output=True,
+        check=True,
+    )
+    logger.info(f"Created clean git history for {agent_name}")
 
 
 def _merge_project_config(
