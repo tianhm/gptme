@@ -518,14 +518,21 @@ def _run_planner(
         name = f"subagent-{executor_id}"
         logdir = get_logdir(name + "-" + random_string(4))
 
-        def run_executor(prompt=executor_prompt, log_dir=logdir):
+        # Capture workspace before spawning thread to avoid FileNotFoundError
+        # if cwd is deleted (e.g., tmpdir cleanup in tests)
+        try:
+            workspace = Path.cwd()
+        except FileNotFoundError:
+            workspace = logdir.parent
+
+        def run_executor(prompt=executor_prompt, log_dir=logdir, ws=workspace):
             _create_subagent_thread(
                 prompt=prompt,
                 logdir=log_dir,
                 model=model,
                 context_mode=context_mode,
                 context_include=context_include,
-                workspace=Path.cwd(),
+                workspace=ws,
                 target="planner",
             )
 
