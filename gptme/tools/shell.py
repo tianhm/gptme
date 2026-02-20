@@ -512,7 +512,107 @@ class ShellSession:
                 return res_code, res_stdout, res_stderr
         return res_code, res_stdout, res_stderr
 
+    def _needs_tty(self, command: str) -> bool:
+        """Check if a command needs a TTY (e.g. sudo password prompt) and we're interactive."""
+        if not sys.stdin.isatty():
+            return False
+        # Check for sudo without -S (stdin password) or -n (non-interactive)
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False
+        # Find sudo in the command (may be preceded by env vars)
+        for i, part in enumerate(parts):
+            if "=" in part:
+                continue  # Skip env var assignments
+            if part == "sudo":
+                # Check if -S or -n flags are present (they disable TTY need)
+                # Also handle combined short flags like -Sn, -nS, -uS
+                remaining = parts[i + 1 :]
+                flags = [p for p in remaining if p.startswith("-")]
+                for flag in flags:
+                    if flag in ("--stdin", "--non-interactive"):
+                        return False
+                    # Check combined short flags (e.g. -Sn, -nS, -uS)
+                    if flag.startswith("-") and not flag.startswith("--"):
+                        chars = flag[1:]
+                        if "S" in chars or "n" in chars:
+                            return False
+                return True
+            break  # First non-env-var token is not sudo
+        return False
+
+    def _run_with_tty(
+        self, command: str, output: bool = True, timeout: float | None = None
+    ) -> tuple[int | None, str, str]:
+        """Run a command with /dev/tty as stdin for interactive password prompts (e.g. sudo).
+
+        Used for commands like sudo that need a real terminal to prompt for passwords.
+        Runs as a separate subprocess in the current working directory.
+        """
+        logger.debug(f"Shell: Running with TTY stdin: {command[:200]}")
+        try:
+            tty_stdin = open("/dev/tty", "rb")
+        except OSError:
+            logger.warning("Could not open /dev/tty, falling back to normal run")
+            return self._run_pipe(command, output=output, timeout=timeout)
+
+        # Inherit session env overrides so sudo commands behave consistently
+        # (e.g. no pager, consistent EDITOR) with commands run via _run_pipe
+        session_env = os.environ.copy()
+        session_env.update(
+            {
+                "PAGER": "",
+                "GH_PAGER": "",
+                "GIT_PAGER": "cat",
+                "EDITOR": "true",
+                "GIT_EDITOR": "true",
+                "VISUAL": "true",
+                "PYTHONUNBUFFERED": "1",
+            }
+        )
+        proc = subprocess.Popen(
+            ["bash", "-c", command],
+            stdin=tty_stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            cwd=os.getcwd(),
+            env=session_env,
+        )
+        try:
+            stdout_data, stderr_data = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout_data, stderr_data = proc.communicate()
+            stdout_str = stdout_data.decode("utf-8", errors="replace").strip()
+            stderr_str = stderr_data.decode("utf-8", errors="replace").strip()
+            return -124, stdout_str, stderr_str
+        except KeyboardInterrupt:
+            proc.kill()
+            proc.communicate()
+            raise
+        finally:
+            tty_stdin.close()
+
+        stdout_str = stdout_data.decode("utf-8", errors="replace").strip()
+        stderr_str = stderr_data.decode("utf-8", errors="replace").strip()
+        if output:
+            if stdout_str:
+                print(stdout_str, file=sys.stdout)
+            if stderr_str:
+                print(stderr_str, file=sys.stderr)
+        return proc.returncode, stdout_str, stderr_str
+
     def _run(
+        self, command: str, output=True, tries=0, timeout: float | None = None
+    ) -> tuple[int | None, str, str]:
+        # Use TTY-based execution for interactive sudo commands
+        if self._needs_tty(command):
+            return self._run_with_tty(command, output=output, timeout=timeout)
+        return self._run_pipe(command, output=output, tries=tries, timeout=timeout)
+
+    def _run_pipe(
         self, command: str, output=True, tries=0, timeout: float | None = None
     ) -> tuple[int | None, str, str]:
         assert self.process.stdin
@@ -582,7 +682,7 @@ class ShellSession:
                 # log warning and restart, once
                 logger.warning("Warning: shell process died, restarting")
                 self.restart()
-                return self._run(
+                return self._run_pipe(
                     command, output=output, tries=tries + 1, timeout=timeout
                 )
             else:
