@@ -41,10 +41,8 @@ def load_conversations() -> tuple[list[str], list[list[dict]]]:
     names = []
     logs_new = []
     for log in logs:
-        msgs = []
         with log.open() as f:
-            for line in f:
-                msgs.append(json.loads(line))
+            msgs = [json.loads(line) for line in f]
         names.append(log.parent.name)
         logs_new.append(msgs)
     return names, logs_new

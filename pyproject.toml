@@ -203,6 +203,10 @@ select = [
     "I",      # isort
     "C4",     # flake8-comprehensions
     "FURB",   # refurb
+    "FLY",    # flynt (f-string over join)
+    "ISC",    # implicit-str-concat
+    "PLE",    # pylint errors
+    "PERF",   # perflint
     "RSE102", # unnecessary-paren-on-raise-exception
     "SIM103", "SIM110", "SIM117", "SIM118", "SIM300", "SIM910",  # flake8-simplify
     "PIE790", "PIE810",  # flake8-pie
@@ -212,7 +216,7 @@ select = [
     "TCH001", "TCH002", "TCH003", "TCH004",  # flake8-type-checking
     "PT003", "PT006", "PT022",  # pytest style (auto-fixable subset)
 ]
-ignore = ["E402", "E501", "B905"]
+ignore = ["E402", "E501", "B905", "PERF203"]  # PERF203: try-except-in-loop often intentional
 #fixable = ["ALL"]
 #unfixable = ["B"]
 
