@@ -43,6 +43,19 @@ PromptResponse: type | None = None
 Client: type | None = None
 
 
+def _check_acp_import(cls: type | None, name: str) -> type:
+    """Verify a lazy-imported ACP class is available.
+
+    Uses explicit check instead of assert, which can be disabled with python -O.
+    See also: server/api.py and server/api_v2.py for the same pattern.
+    """
+    if cls is None:
+        raise RuntimeError(
+            f"ACP class {name} not imported; is the 'acp' package installed?"
+        )
+    return cls
+
+
 def _import_acp() -> bool:
     """Import ACP modules lazily."""
     global Agent, InitializeResponse, NewSessionResponse, PromptResponse, Client
@@ -418,7 +431,9 @@ class GptmeAgent:
                     "Ensure API keys are set in environment or config.toml."
                 )
                 logger.error(self._init_error)
-                return InitializeResponse(protocol_version=protocol_version)  # type: ignore[misc]
+                return _check_acp_import(InitializeResponse, "InitializeResponse")(
+                    protocol_version=protocol_version
+                )  # type: ignore[misc]
 
             self._initialized = True
             # Capture the resolved model (from config/env/auto-detect)
@@ -430,8 +445,10 @@ class GptmeAgent:
             self._tools = get_tools()
 
         logger.info(f"ACP Initialize: protocol_version={protocol_version}")
-        assert InitializeResponse is not None
-        return InitializeResponse(protocol_version=protocol_version)
+        _InitializeResponse = _check_acp_import(
+            InitializeResponse, "InitializeResponse"
+        )
+        return _InitializeResponse(protocol_version=protocol_version)
 
     async def new_session(
         self,
@@ -550,8 +567,10 @@ class GptmeAgent:
             # Keep _init_error set so prompt() can still surface it for retries
             # (the user may send a message before the notification is seen)
 
-        assert NewSessionResponse is not None
-        return NewSessionResponse(session_id=session_id)
+        _NewSessionResponse = _check_acp_import(
+            NewSessionResponse, "NewSessionResponse"
+        )
+        return _NewSessionResponse(session_id=session_id)
 
     async def _handle_slash_command(
         self,
@@ -595,8 +614,8 @@ class GptmeAgent:
                     update=error_chunk,
                     source="gptme",
                 )
-            assert PromptResponse is not None
-            return PromptResponse(stop_reason="end_turn")
+            _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+            return _PromptResponse(stop_reason="end_turn")
 
         # Capture stdout from commands that use print() (e.g. /help, /tools)
         captured = io.StringIO()
@@ -616,8 +635,8 @@ class GptmeAgent:
                     update=error_chunk,
                     source="gptme",
                 )
-            assert PromptResponse is not None
-            return PromptResponse(stop_reason="cancelled")
+            _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+            return _PromptResponse(stop_reason="cancelled")
 
         # Combine captured stdout with any yielded system messages
         output_parts: list[str] = []
@@ -638,8 +657,8 @@ class GptmeAgent:
                 source="gptme",
             )
 
-        assert PromptResponse is not None
-        return PromptResponse(stop_reason="end_turn")
+        _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+        return _PromptResponse(stop_reason="end_turn")
 
     async def prompt(
         self,
@@ -683,8 +702,8 @@ class GptmeAgent:
                 )
             # Clear the error so the user can retry after fixing their config
             self._init_error = None
-            assert PromptResponse is not None
-            return PromptResponse(stop_reason="cancelled")
+            _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+            return _PromptResponse(stop_reason="cancelled")
 
         # Re-set ContextVars that may be missing in this task's context.
         # ACP framework may dispatch each RPC method in a separate asyncio task,
@@ -701,12 +720,13 @@ class GptmeAgent:
         session = self._registry.get(session_id)
         if not session:
             logger.error(f"Unknown session: {session_id}")
-            assert PromptResponse is not None
-            return PromptResponse(stop_reason="cancelled")
+            _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+            return _PromptResponse(stop_reason="cancelled")
         # Update last_activity timestamp for cleanup tracking
         session.touch()
         log = session.log
-        assert log is not None, "ACP sessions must have a log"
+        if log is None:
+            raise RuntimeError("ACP sessions must have a log")
 
         # Convert ACP prompt to gptme message
         msg = acp_content_to_gptme_message(prompt, "user")
@@ -770,8 +790,8 @@ class GptmeAgent:
                     # Also add to log
                     log.append(response_msg)
 
-            assert PromptResponse is not None
-            return PromptResponse(stop_reason="end_turn")
+            _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+            return _PromptResponse(stop_reason="end_turn")
 
         except Exception as e:
             logger.exception(f"Error processing prompt: {e}")
@@ -785,8 +805,8 @@ class GptmeAgent:
                     update=error_chunk,
                     source="gptme",
                 )
-            assert PromptResponse is not None
-            return PromptResponse(stop_reason="cancelled")
+            _PromptResponse = _check_acp_import(PromptResponse, "PromptResponse")
+            return _PromptResponse(stop_reason="cancelled")
 
     async def load_session(
         self,
