@@ -1596,7 +1596,7 @@ def check_with_shellcheck(cmd: str) -> tuple[bool, bool, str]:
             return True, False, message
 
         return False, False, ""
-    except (subprocess.TimeoutExpired, Exception):
+    except Exception:
         return False, False, ""
     finally:
         try:
