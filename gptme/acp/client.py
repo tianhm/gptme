@@ -255,6 +255,7 @@ class GptmeAcpClient:
         self._conn: Any = None
         self._process: Any = None
         self._ctx: Any = None
+        self._client_handler: Any = None
 
     # -- context manager ----------------------------------------------------
 
@@ -277,6 +278,7 @@ class GptmeAcpClient:
                 auto_confirm=self._auto_confirm,
             )
         )
+        self._client_handler = client
 
         self._ctx = spawn_agent_process(
             client,  # type: ignore[arg-type]
@@ -303,6 +305,18 @@ class GptmeAcpClient:
         self._conn = None
         self._process = None
         self._ctx = None
+        self._client_handler = None
+
+    def set_on_update(
+        self,
+        on_update: Callable[[str, Any], None | Awaitable[None]] | None,
+    ) -> None:
+        """Update session_update callback at runtime."""
+        self._on_update = on_update
+        if self._client_handler is not None and hasattr(
+            self._client_handler, "_on_update"
+        ):
+            self._client_handler._on_update = on_update
 
     # -- public API ---------------------------------------------------------
 
@@ -363,6 +377,31 @@ class GptmeAcpClient:
         )
         logger.debug("ACP prompt → stop_reason=%s", getattr(resp, "stop_reason", "?"))
         return resp
+
+    async def set_session_model(self, session_id: str, model_id: str) -> None:
+        """Set the model for an existing ACP session.
+
+        This wraps the ACP ``set_session_model`` RPC. Some older ACP adapters
+        may not implement it, in which case this method raises
+        ``NotImplementedError``.
+        """
+        if self._conn is None:
+            raise RuntimeError(
+                "GptmeAcpClient is not connected; use as async context manager"
+            )
+
+        setter = getattr(self._conn, "set_session_model", None)
+        if setter is None:
+            raise NotImplementedError(
+                "ACP connection does not support set_session_model"
+            )
+
+        await setter(session_id=session_id, model_id=model_id)
+        logger.debug(
+            "ACP set_session_model → session_id=%s model_id=%s",
+            session_id,
+            model_id,
+        )
 
     async def run(
         self,
