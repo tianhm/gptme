@@ -315,11 +315,16 @@ pub fn run() {
                     cors_origin
                 );
 
-                let sidecar_command = app_handle
+                let sidecar_command = match app_handle
                     .shell()
                     .sidecar("gptme-server")
-                    .unwrap()
-                    .args(["--cors-origin", cors_origin]);
+                {
+                    Ok(s) => s.args(["--cors-origin", cors_origin]),
+                    Err(e) => {
+                        log::error!("Failed to find gptme-server sidecar: {}", e);
+                        return;
+                    }
+                };
 
                 match sidecar_command.spawn() {
                     Ok((mut rx, child)) => {
