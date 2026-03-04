@@ -135,10 +135,57 @@ jobs:
           projectPath: tauri
           args: ${{ matrix.args }}
 
+  build-sidecar:
+    name: Build sidecar (${{ matrix.os }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev build-essential libffi-dev
+
+      - name: Install poetry
+        run: pipx install poetry
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'poetry'
+
+      - name: Install dependencies
+        run: |
+          make build
+          poetry install --extras server --extras pyinstaller --with dev
+
+      - name: Build PyInstaller executable
+        run: make build-server-exe
+
+      - name: Place sidecar with Rust target triple
+        run: |
+          mkdir -p tauri/bins
+          TRIPLE=$(rustc -Vv | grep host | cut -f2 -d' ')
+          cp dist/gptme-server "tauri/bins/gptme-server-${TRIPLE}"
+
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-${{ matrix.os }}
+          path: tauri/bins/gptme-server-*
+
   release:
     name: Release (${{ matrix.platform }})
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, build]
+    needs: [lint, build, build-sidecar]
     strategy:
       fail-fast: false
       matrix:
@@ -187,12 +234,12 @@ jobs:
       - name: Install webui deps and build
         run: cd webui && npm install && npm run build
 
-      - name: Create placeholder sidecar for tauri-build
-        run: |
-          # tauri-build checks that externalBin paths exist at compile time.
-          mkdir -p tauri/bins
-          TRIPLE=$(rustc -Vv | grep host | cut -f2 -d' ')
-          touch "tauri/bins/gptme-server-${TRIPLE}"
+      - name: Download sidecar binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sidecar-*
+          merge-multiple: true
+          path: tauri/bins
 
       - name: Create placeholder icons for tauri::generate_context!
         run: |
