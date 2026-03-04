@@ -308,6 +308,7 @@ help:  ## Show this help message
 
 tauri-dev: ## Run gptme-tauri in development mode (hot-reload webui + Tauri window)
 	@mkdir -p tauri/bins && TRIPLE=$$(rustc -Vv | grep host | cut -f2 -d' ') && touch "tauri/bins/gptme-server-$${TRIPLE}"
+	cd webui && npm install
 	cd tauri && npm install && npm run tauri dev
 
 tauri-build: ## Build the gptme-tauri desktop app
