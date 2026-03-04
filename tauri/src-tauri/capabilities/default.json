@@ -11,7 +11,7 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "bins/gptme-server",
+          "name": "../bins/gptme-server",
           "sidecar": true,
           "args": [
             "--cors-origin",

@@ -71,8 +71,11 @@ async fn start_server(
 
     let cors_origin = if cfg!(debug_assertions) {
         "http://localhost:5701"
-    } else {
+    } else if cfg!(target_os = "macos") {
         "tauri://localhost"
+    } else {
+        // Linux and Windows use http://tauri.localhost in Tauri v2
+        "http://tauri.localhost"
     };
 
     log::info!(
@@ -302,11 +305,16 @@ pub fn run() {
                     return;
                 }
 
-                // Determine CORS origin based on build mode
+                // Determine CORS origin based on build mode and platform.
+                // Tauri v2 uses different URL schemes per platform:
+                // - macOS: tauri://localhost (custom Tauri protocol)
+                // - Linux/Windows: http://tauri.localhost
                 let cors_origin = if cfg!(debug_assertions) {
                     "http://localhost:5701" // Dev mode
+                } else if cfg!(target_os = "macos") {
+                    "tauri://localhost" // macOS production
                 } else {
-                    "tauri://localhost" // Production mode
+                    "http://tauri.localhost" // Linux/Windows production
                 };
 
                 log::info!(
