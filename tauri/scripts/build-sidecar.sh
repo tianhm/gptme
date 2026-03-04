@@ -15,8 +15,8 @@ BINS_DIR="$TAURI_DIR/bins"
 TRIPLE=$(rustc -Vv | grep host | cut -f2 -d' ')
 OUT="$BINS_DIR/gptme-server-${TRIPLE}"
 
-if [[ -d "$BINS_DIR" ]]; then
-    echo "bins/ already exists, skipping sidecar build (delete bins/ to rebuild)"
+if [[ -f "$OUT" ]]; then
+    echo "Sidecar already exists at $OUT, skipping (delete to rebuild)"
     exit 0
 fi
 

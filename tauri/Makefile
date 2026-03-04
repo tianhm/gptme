@@ -11,25 +11,22 @@ build: prebuild
 dev: prebuild
 	npm run tauri dev
 
-%/.git:
-	git submodule update --init --recursive
-
 src-tauri/icons/icon.png:
 	npm run tauri icon "./public/logo.png"
 
-gptme/webui/dist: gptme/.git
-	npm i && cd gptme/webui && npm i && npm run build
+# In the monorepo, webui is at ../webui/ (not gptme/webui/ as in the standalone repo)
+../webui/dist:
+	cd ../webui && npm i && npm run build
 
 gptme-server-build:
-	@if [ ! -d "bins" ]; then \
-		echo "Building gptme-server..."; \
-		mkdir -p bins; \
-		cd gptme && make build-server-exe && mv dist/gptme-server ../bins/gptme-server-$$(rustc -Vv | grep host | cut -f2 -d' '); \
+	@if [ ! -f bins/gptme-server-$$(rustc -Vv | grep host | cut -f2 -d' ') ]; then \
+		echo "Building gptme-server sidecar..."; \
+		./scripts/build-sidecar.sh; \
 	else \
-		echo "bins folder already exists, skipping gptme-server build"; \
+		echo "gptme-server sidecar already exists, skipping"; \
 	fi
 
-prebuild: gptme/webui/dist src-tauri/icons/icon.png
+prebuild: ../webui/dist src-tauri/icons/icon.png
 	@$(MAKE) gptme-server-build
 
 precommit: format check

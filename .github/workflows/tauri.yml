@@ -184,6 +184,13 @@ jobs:
       - name: Install webui deps and build
         run: cd webui && npm install && npm run build
 
+      - name: Create placeholder sidecar for tauri-build
+        run: |
+          # tauri-build checks that externalBin paths exist at compile time.
+          mkdir -p tauri/bins
+          TRIPLE=$(rustc -Vv | grep host | cut -f2 -d' ')
+          touch "tauri/bins/gptme-server-${TRIPLE}"
+
       - name: Create placeholder icons for tauri::generate_context!
         run: |
           mkdir -p tauri/src-tauri/icons
