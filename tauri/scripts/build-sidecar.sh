@@ -25,6 +25,8 @@ mkdir -p "$BINS_DIR"
 
 # Install gptme from local source into an isolated venv, then freeze with PyInstaller
 cd "$REPO_ROOT"
+# uv pip install requires a virtual environment — create one if absent
+[[ -d ".venv" ]] || uv venv .venv
 uv pip install --quiet ".[server]" pyinstaller
 uv run pyinstaller \
     --onefile \
