@@ -1,6 +1,3 @@
-[agent]
-name = "Bob"
-
 [prompt]
 files = [
   "README.md",
