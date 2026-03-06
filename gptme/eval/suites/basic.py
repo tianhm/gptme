@@ -62,6 +62,107 @@ def check_read_modify_file(ctx):
     return "stats.py" in ctx.files
 
 
+# --- json-transform checks ---
+
+
+def check_json_transform_output(ctx):
+    """Output should contain the transformed JSON data with total revenue and products list."""
+    import json
+
+    try:
+        data = json.loads(ctx.stdout.strip())
+    except (json.JSONDecodeError, ValueError):
+        return False
+    # products: A(10*100=1000), B(20*50=1000), C(5*200=1000) => total 3000
+    if data.get("total_revenue") != 3000:
+        return False
+    # Prompt requires a 'products' list with per-product revenue entries
+    products = data.get("products")
+    if not isinstance(products, list) or len(products) != 3:
+        return False
+    revenues = {p.get("name"): p.get("revenue") for p in products}
+    return revenues == {"A": 1000, "B": 1000, "C": 1000}
+
+
+def check_json_transform_file(ctx):
+    return "transform.py" in ctx.files
+
+
+def check_json_transform_exit(ctx):
+    return ctx.exit_code == 0
+
+
+# --- multi-file-refactor checks ---
+
+
+def check_refactor_main(ctx):
+    """main.py should import and call calculate_total instead of calcTotal."""
+    content = ctx.files.get("main.py", "")
+    if isinstance(content, bytes):
+        content = content.decode()
+    return (
+        "from utils import calculate_total" in content and "calcTotal(" not in content
+    )
+
+
+def check_refactor_utils(ctx):
+    """utils.py should define calculate_total instead of calcTotal."""
+    content = ctx.files.get("utils.py", "")
+    if isinstance(content, bytes):
+        content = content.decode()
+    return "def calculate_total" in content and "def calcTotal" not in content
+
+
+def check_refactor_output(ctx):
+    """Program should still produce correct output after refactoring."""
+    return "150" in ctx.stdout
+
+
+def check_refactor_exit(ctx):
+    return ctx.exit_code == 0
+
+
+# --- write-tests checks ---
+
+
+def check_tests_file(ctx):
+    return "test_mathlib.py" in ctx.files
+
+
+def check_tests_pass(ctx):
+    return ctx.exit_code == 0
+
+
+def check_tests_output(ctx):
+    """All three library functions should be covered — check file content, not pytest stdout.
+
+    Inspecting the test file is more robust than checking pytest -v output:
+    a valid grouped/parametrized test suite may not mention each function name in stdout,
+    but the identifiers will always appear in the source file.
+    """
+    content = ctx.files.get("test_mathlib.py", "")
+    if isinstance(content, bytes):
+        content = content.decode()
+    return all(fn in content for fn in ("factorial", "is_palindrome", "clamp"))
+
+
+# --- fix-import-error checks ---
+
+
+def check_fix_import_created(ctx):
+    """math_ops.py must be created — the task requires creating the missing module, not inlining."""
+    return "math_ops.py" in ctx.files
+
+
+def check_fix_import_output(ctx):
+    """multiply(6, 7) should output 42; exact match prevents false-positives from '420' etc."""
+    return ctx.stdout.strip() in ("42", "42.0")
+
+
+def check_fix_import_exit(ctx):
+    return ctx.exit_code == 0
+
+
 tests: list["EvalSpec"] = [
     {
         "name": "hello",
@@ -159,6 +260,126 @@ tests: list["EvalSpec"] = [
         "expect": {
             "correct output": check_read_modify_output,
             "correct file": check_read_modify_file,
+        },
+    },
+    {
+        "name": "json-transform",
+        "files": {
+            "products.json": (
+                "[\n"
+                '  {"name": "A", "price": 10, "quantity": 100},\n'
+                '  {"name": "B", "price": 20, "quantity": 50},\n'
+                '  {"name": "C", "price": 5, "quantity": 200}\n'
+                "]\n"
+            ),
+        },
+        "run": "python transform.py",
+        "prompt": (
+            "Read products.json and write transform.py that loads the JSON file, "
+            "computes the revenue (price * quantity) for each product, "
+            "and prints a JSON object to stdout with keys: "
+            "'products' (list of {name, revenue}) and 'total_revenue' (sum of all revenues)."
+        ),
+        "tools": ["read", "save", "shell"],
+        "expect": {
+            "correct output": check_json_transform_output,
+            "correct file": check_json_transform_file,
+            "clean exit": check_json_transform_exit,
+        },
+    },
+    {
+        "name": "multi-file-refactor",
+        "files": {
+            "utils.py": (
+                "def calcTotal(prices, tax_rate):\n"
+                '    """Calculate total price with tax."""\n'
+                "    subtotal = sum(prices)\n"
+                "    return round(subtotal * (1 + tax_rate), 2)\n"
+            ),
+            "main.py": (
+                "from utils import calcTotal\n"
+                "\n"
+                "prices = [50, 30, 20]\n"
+                "total = calcTotal(prices, 0.5)\n"
+                "print(total)\n"
+            ),
+        },
+        "run": "python main.py",
+        "prompt": (
+            "Rename the function 'calcTotal' to 'calculate_total' in both utils.py and main.py. "
+            "Make sure the program still works correctly after the rename."
+        ),
+        "tools": ["read", "patch", "save"],
+        "expect": {
+            "main.py updated": check_refactor_main,
+            "utils.py updated": check_refactor_utils,
+            "correct output": check_refactor_output,
+            "clean exit": check_refactor_exit,
+        },
+    },
+    {
+        "name": "write-tests",
+        "files": {
+            "mathlib.py": (
+                "def factorial(n):\n"
+                "    if n < 0:\n"
+                "        raise ValueError('n must be non-negative')\n"
+                "    if n <= 1:\n"
+                "        return 1\n"
+                "    return n * factorial(n - 1)\n"
+                "\n"
+                "\n"
+                "def is_palindrome(s):\n"
+                "    s = s.lower().replace(' ', '')\n"
+                "    return s == s[::-1]\n"
+                "\n"
+                "\n"
+                "def clamp(value, low, high):\n"
+                "    return max(low, min(high, value))\n"
+            ),
+        },
+        "run": "python -m pytest test_mathlib.py -v",
+        "prompt": (
+            "Read mathlib.py and write comprehensive tests in test_mathlib.py using pytest. "
+            "Test all three functions (factorial, is_palindrome, clamp) including edge cases "
+            "and error handling. Make sure all tests pass."
+        ),
+        "tools": ["read", "save", "shell"],
+        "expect": {
+            "test file exists": check_tests_file,
+            "tests pass": check_tests_pass,
+            "test output": check_tests_output,
+        },
+    },
+    {
+        "name": "fix-import-error",
+        "files": {
+            "app.py": (
+                "from helpers import compute_answer\n"
+                "\n"
+                "result = compute_answer(6, 7)\n"
+                "print(result)\n"
+            ),
+            "helpers.py": (
+                "from math_ops import multiply\n"
+                "\n"
+                "\n"
+                "def compute_answer(a, b):\n"
+                "    return multiply(a, b)\n"
+            ),
+        },
+        "run": "python app.py",
+        "prompt": (
+            "Running 'python app.py' fails with an import error because math_ops.py doesn't exist. "
+            "Read the existing files to understand what's needed, "
+            "then create the missing math_ops.py module with the required function "
+            "so that app.py runs successfully and prints the correct result."
+        ),
+        "tools": ["read", "save", "shell"],
+        "expect": {
+            "math_ops.py created": check_fix_import_created,
+            "correct output": check_fix_import_output,
+            "clean exit": check_fix_import_exit,
         },
     },
 ]
