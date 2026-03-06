@@ -6,6 +6,7 @@ for real-time conversation interactions.
 """
 
 import asyncio
+import atexit
 import dataclasses
 import logging
 import os
@@ -230,6 +231,151 @@ class SessionManager:
             cls.remove_session(session.id)
 
 
+# ACP Health Monitor
+# ------------------
+
+_health_monitor_thread: threading.Thread | None = None
+_health_monitor_stop = threading.Event()
+_health_monitor_atexit_registered = False
+_health_monitor_lock = threading.Lock()
+
+# How often the health monitor runs (seconds)
+_HEALTH_CHECK_INTERVAL = 30
+# Max idle time before a session is cleaned up (minutes)
+_SESSION_MAX_AGE_MINUTES = 60
+
+
+def start_acp_health_monitor(interval: int = _HEALTH_CHECK_INTERVAL) -> None:
+    """Start a background thread that periodically checks ACP subprocess health.
+
+    The monitor:
+    - Cleans up sessions idle longer than ``_SESSION_MAX_AGE_MINUTES``
+    - Detects dead ACP subprocesses and removes their sessions
+    - Logs subprocess lifecycle events for observability
+    """
+    global _health_monitor_thread, _health_monitor_atexit_registered
+
+    def _monitor() -> None:
+        while not _health_monitor_stop.wait(interval):
+            try:
+                _run_health_check()
+            except Exception:
+                logger.exception("Error in ACP health monitor")
+
+    with _health_monitor_lock:
+        if _health_monitor_thread is not None:
+            logger.debug(
+                "ACP health monitor already running (interval arg %ds ignored)",
+                interval,
+            )
+            return  # Already running
+
+        _health_monitor_stop.clear()
+        _health_monitor_thread = threading.Thread(
+            target=_monitor, daemon=True, name="acp-health-monitor"
+        )
+        _health_monitor_thread.start()
+        # Register atexit handler only once — stop/start cycles re-enter this function
+        # but must not accumulate duplicate registrations.
+        if not _health_monitor_atexit_registered:
+            atexit.register(stop_acp_health_monitor)
+            _health_monitor_atexit_registered = True
+    logger.info("ACP health monitor started (interval=%ds)", interval)
+
+
+def stop_acp_health_monitor() -> None:
+    """Stop the health monitor and clean up all remaining ACP sessions."""
+    global _health_monitor_thread
+    with _health_monitor_lock:
+        _health_monitor_stop.set()
+        if _health_monitor_thread is not None:
+            _health_monitor_thread.join(timeout=5)
+            if _health_monitor_thread.is_alive():
+                logger.warning(
+                    "ACP health monitor thread did not exit within 5s — "
+                    "thread may still be running"
+                )
+            _health_monitor_thread = None
+
+    # Best-effort cleanup of all ACP sessions on shutdown
+    _cleanup_all_acp_sessions()
+
+
+def _run_health_check() -> None:
+    """Single health check iteration."""
+    # 1. Clean inactive sessions (was never called before this change).
+    # Note: this intentionally applies to all sessions (not just ACP ones) —
+    # the health monitor acts as server-wide session hygiene in ACP deployments.
+    # Non-ACP sessions idle for more than _SESSION_MAX_AGE_MINUTES are also evicted.
+    SessionManager.clean_inactive_sessions(max_age_minutes=_SESSION_MAX_AGE_MINUTES)
+
+    # 2. Check ACP subprocess health
+    for session_id, session in list(SessionManager._sessions.items()):
+        # Snapshot to a local variable: a concurrent _cleanup_all_acp_sessions()
+        # can set session.acp_runtime = None between reads, causing AttributeError.
+        acp_runtime = session.acp_runtime
+        if acp_runtime is None:
+            continue
+        if session.generating:
+            continue  # Don't disturb active generation
+        if not acp_runtime.is_subprocess_alive():
+            # Re-check generating flag before removing to narrow the TOCTOU window:
+            # a /step request arriving between the check above and remove_session()
+            # could start a generation on a session we are about to delete.
+            if session.generating:
+                continue
+            logger.warning(
+                "ACP subprocess dead for session %s (conversation=%s, pid=%s), "
+                "cleaning up",
+                session_id,
+                session.conversation_id,
+                acp_runtime.process_pid,
+            )
+            # Null out acp_runtime before remove_session so it doesn't
+            # spawn a _close_acp_runtime_bg thread for an already-dead process.
+            session.acp_runtime = None
+            SessionManager.remove_session(session_id)
+
+
+def _cleanup_all_acp_sessions() -> None:
+    """Close all ACP runtimes (called during server shutdown).
+
+    Uses synchronous process termination rather than ``asyncio.run()`` because
+    this function is invoked from an atexit handler where the asyncio machinery
+    may already be partially torn down.
+    """
+    acp_sessions = [
+        (sid, s)
+        for sid, s in list(SessionManager._sessions.items())
+        if s.acp_runtime is not None
+    ]
+    if not acp_sessions:
+        return
+
+    logger.info("Shutting down %d ACP session(s)", len(acp_sessions))
+    for session_id, session in acp_sessions:
+        acp_runtime = session.acp_runtime
+        try:
+            if acp_runtime is None:
+                continue
+            acp_runtime.terminate_subprocess_sync()
+            logger.debug("Closed ACP runtime for session %s", session_id)
+        except Exception:
+            logger.warning(
+                "Failed to close ACP runtime for session %s",
+                session_id,
+                exc_info=True,
+            )
+        finally:
+            # Null out acp_runtime before remove_session so it won't re-trigger
+            # _close_acp_runtime_bg for an already-terminated process.
+            session.acp_runtime = None
+            # Remove from SessionManager to avoid stale entries surviving shutdown.
+            # This is safe in the atexit path and prevents zombie sessions on
+            # non-atexit calls (e.g. tests, hypothetical reload scenarios).
+            SessionManager.remove_session(session_id)
+
+
 # Helper Functions for Generation
 # ------------------------------
 
@@ -288,11 +434,16 @@ def _try_auto_name_and_notify(
 
 def _close_acp_runtime_bg(acp_runtime: "AcpSessionRuntime") -> None:
     """Close an ACP runtime in a background thread (handles both sync and async callers)."""
+    pid = acp_runtime.process_pid
 
     def _run() -> None:
-        asyncio.run(acp_runtime.close())
+        try:
+            asyncio.run(acp_runtime.close())
+            logger.debug("ACP runtime closed (pid=%s)", pid)
+        except Exception:
+            logger.warning("Failed to close ACP runtime (pid=%s)", pid, exc_info=True)
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target=_run, daemon=True, name="acp-close")
     t.start()
 
 
@@ -999,6 +1150,9 @@ def api_conversation_step(conversation_id: str):
 
         session.use_acp = True
         session.acp_runtime = AcpSessionRuntime(workspace=chat_config.workspace)
+        # Lazy-start the health monitor on first ACP session — avoids unconditional
+        # background thread and global session-eviction side-effects at app startup.
+        start_acp_health_monitor()
 
     # Validate auto_confirm type explicitly (bool OR int).
     # Reject strings/floats/etc. to avoid accidental truthy coercion.

@@ -10,6 +10,7 @@ introduced incrementally.
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -149,6 +150,61 @@ class AcpSessionRuntime:
         resp = await self._client.prompt(self._session_id, message)
         text = extract_text_from_prompt_response(resp)
         return text, resp
+
+    @property
+    def process_pid(self) -> int | None:
+        """Return the PID of the ACP subprocess, if available."""
+        if self._client is None:
+            return None
+        proc = getattr(self._client, "_process", None)
+        if proc is None:
+            return None
+        return getattr(proc, "pid", None)
+
+    def is_subprocess_alive(self) -> bool:
+        """Check if the ACP subprocess is still running.
+
+        Returns False if the subprocess has exited or was never started.
+        """
+        if self._client is None:
+            return False
+        proc = getattr(self._client, "_process", None)
+        if proc is None:
+            return False
+        # subprocess.Popen.poll() returns None if still running
+        poll = getattr(proc, "poll", None)
+        if callable(poll):
+            return poll() is None
+        # Fallback: check returncode directly
+        returncode = getattr(proc, "returncode", None)
+        return returncode is None
+
+    def terminate_subprocess_sync(self, timeout: float = 3.0) -> None:
+        """Terminate the ACP subprocess synchronously.
+
+        Safer than ``close()`` in atexit handlers where the asyncio event loop
+        may already be partially torn down.  Falls back to SIGKILL if SIGTERM
+        does not succeed within *timeout* seconds.
+        """
+        if self._client is None:
+            return
+        proc = getattr(self._client, "_process", None)
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=1.0)  # reap zombie after SIGKILL
+            except Exception:
+                pass
+        finally:
+            # Clear references so the runtime is left in a consistent state.
+            # Mirrors what close() does asynchronously; prevents accidental reuse.
+            self._client = None
+            self._session_id = None
 
     async def close(self) -> None:
         """Close ACP subprocess/session. Safe to call multiple times."""
