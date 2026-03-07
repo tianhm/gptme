@@ -905,6 +905,165 @@ def skills_check(workspace: Path):
         sys.exit(1)
 
 
+@skills.command("install")
+@click.argument("source")
+@click.option("--name", "-n", help="Override skill name")
+@click.option("--force", "-f", is_flag=True, help="Overwrite existing installation")
+def skills_install(source: str, name: str | None, force: bool):
+    """Install a skill from a source.
+
+    SOURCE can be:
+
+    \b
+      - A skill name from the registry (e.g. 'code-review-helper')
+      - A git URL (e.g. 'https://github.com/user/skills.git#path/to/skill')
+      - A local path to a skill directory (e.g. './my-skill/')
+    """
+    from ..lessons.installer import install_skill
+
+    click.echo(f"Installing skill from '{source}'...")
+    success, message = install_skill(source, name=name, force=force)
+    if success:
+        click.echo(f"  {message}")
+    else:
+        click.echo(f"Error: {message}", err=True)
+        sys.exit(1)
+
+
+@skills.command("uninstall")
+@click.argument("name")
+def skills_uninstall(name: str):
+    """Uninstall a skill by name."""
+    from ..lessons.installer import uninstall_skill
+
+    success, message = uninstall_skill(name)
+    if success:
+        click.echo(message)
+    else:
+        click.echo(f"Error: {message}", err=True)
+        sys.exit(1)
+
+
+@skills.command("validate")
+@click.argument("path", type=click.Path(exists=True))
+def skills_validate(path: str):
+    """Validate a skill directory or SKILL.md file.
+
+    Checks for required frontmatter fields and marketplace metadata.
+    """
+    from ..lessons.installer import validate_skill
+
+    all_issues = validate_skill(Path(path))
+    # Separate "recommended" warnings from real errors, matching publish_skill behavior
+    real_errors = [e for e in all_issues if "recommended" not in e.lower()]
+    warnings = [e for e in all_issues if "recommended" in e.lower()]
+
+    if warnings:
+        click.echo(f"Warnings ({len(warnings)}):")
+        for w in warnings:
+            click.echo(f"  - {w}")
+    if real_errors:
+        click.echo(f"Validation errors ({len(real_errors)}):")
+        for error in real_errors:
+            click.echo(f"  - {error}")
+        sys.exit(1)
+    elif warnings:
+        click.echo("Skill is valid (with warnings).")
+    else:
+        click.echo("Skill is valid.")
+
+
+@skills.command("installed")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def skills_installed(json_output: bool):
+    """List installed skills from the user's skill directory."""
+    from ..lessons.installer import list_installed
+
+    installed = list_installed()
+
+    if not installed:
+        click.echo(
+            "No skills installed. Use 'gptme-util skills install <name>' to install."
+        )
+        return
+
+    if json_output:
+        import json
+
+        result = [
+            {
+                "name": s.name,
+                "version": s.version,
+                "source": s.source,
+                "path": s.install_path,
+                "installed_at": s.installed_at,
+            }
+            for s in installed
+        ]
+        click.echo(json.dumps(result, indent=2))
+        return
+
+    click.echo(f"Installed skills ({len(installed)}):\n")
+    for skill in sorted(installed, key=lambda s: s.name):
+        click.echo(f"  {skill.name:30s} v{skill.version:10s} ({skill.source})")
+
+
+@skills.command("init")
+@click.argument("path", type=click.Path())
+@click.option("--name", "-n", help="Skill name (defaults to directory name)")
+@click.option(
+    "--description", "-d", default="A new gptme skill", help="Short description"
+)
+@click.option("--author", "-a", default="", help="Author name")
+@click.option("--tags", "-t", default="", help="Comma-separated tags")
+def skills_init(path: str, name: str | None, description: str, author: str, tags: str):
+    """Create a new skill from a template.
+
+    PATH is the directory to create the skill in.
+
+    \b
+    Example:
+      gptme-util skills init ./my-skill --name my-skill -d "Does cool things"
+    """
+    from ..lessons.installer import init_skill
+
+    target = Path(path).resolve()
+    success, message = init_skill(
+        target, name=name, description=description, author=author, tags=tags
+    )
+    if success:
+        click.echo(f"  {message}")
+        click.echo("\n  Next steps:")
+        click.echo(f"    1. Edit {target}/SKILL.md with your instructions")
+        click.echo(f"    2. Add supporting scripts/files to {target}/")
+        click.echo(f"    3. Validate: gptme-util skills validate {target}")
+        click.echo(f"    4. Publish: gptme-util skills publish {target}")
+    else:
+        click.echo(f"Error: {message}", err=True)
+        sys.exit(1)
+
+
+@skills.command("publish")
+@click.argument("path", type=click.Path(exists=True))
+def skills_publish(path: str):
+    """Validate and package a skill for sharing.
+
+    PATH is the skill directory (containing SKILL.md).
+
+    Creates a .tar.gz archive and shows instructions for submitting
+    to the gptme-contrib registry.
+    """
+    from ..lessons.installer import publish_skill
+
+    target = Path(path).resolve()
+    success, message, _archive_path = publish_skill(target)
+    if success:
+        click.echo(message)
+    else:
+        click.echo(f"Error: {message}", err=True)
+        sys.exit(1)
+
+
 @main.group()
 def tools():
     """Tool-related utilities."""
