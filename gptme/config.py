@@ -1119,6 +1119,22 @@ def setup_config_from_cli(
             for tool in additional_tools:
                 if tool not in resolved_tool_allowlist:
                     resolved_tool_allowlist.append(tool)
+        elif tool_allowlist.startswith("-"):
+            # Exclusion syntax: start with defaults, remove specified tools
+            tool_list_str = tool_allowlist[1:]
+            excluded_tools = [
+                tool.strip() for tool in tool_list_str.split(",") if tool.strip()
+            ]
+            default_tools = [tool.name for tool in get_toolchain(None)]
+            non_default = [t for t in excluded_tools if t not in default_tools]
+            if non_default:
+                logger.warning(
+                    "Tool(s) %s are not in the default toolset and cannot be excluded",
+                    ", ".join(non_default),
+                )
+            resolved_tool_allowlist = [
+                tool for tool in default_tools if tool not in excluded_tools
+            ]
         elif tool_allowlist == "":
             # Explicitly empty: disable all tools (--tools none)
             resolved_tool_allowlist = []

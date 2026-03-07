@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -459,3 +460,47 @@ def test_nested_gptme_calls(args: list[str], runner: CliRunner):
     assert "we are testing nested gptme" in result.output
     # Check that both gptme instances exited successfully
     assert result.exit_code == 0
+
+
+def test_comma_separated_choice_minus_prefix():
+    """Test that CommaSeparatedChoice accepts '-' prefixed tools."""
+    from gptme.cli.main import CommaSeparatedChoice
+
+    csc = CommaSeparatedChoice(
+        ["shell", "browser", "save", "read"], allow_prefixes=["+", "-"]
+    )
+    # Should accept '-browser'
+    result = csc.convert("-browser", None, None)
+    assert result == "-browser"
+
+    # Should accept '-browser,-save'
+    result = csc.convert("-browser,-save", None, None)
+    assert result == "-browser,-save"
+
+    # Should still accept '+shell'
+    result = csc.convert("+shell", None, None)
+    assert result == "+shell"
+
+    # Should accept bare tool names
+    result = csc.convert("shell,save", None, None)
+    assert result == "shell,save"
+
+    # Should reject invalid tool name even with '-' prefix
+    with pytest.raises(click.exceptions.BadParameter):
+        csc.convert("-nonexistent", None, None)
+
+
+def test_tool_exclusion_mixed_bare_and_minus_raises():
+    """Test that mixing bare tool names with '-' exclusion syntax raises UsageError."""
+    from click.testing import CliRunner
+
+    runner = CliRunner()
+    # Passing 'shell,-tmux' should raise a UsageError because 'shell' is bare
+    # Note: use a valid tool name so CommaSeparatedChoice passes before the mixing guard
+    result = runner.invoke(cli.main, ["--tools", "shell,-tmux", "test prompt"])
+    assert result.exit_code != 0
+    # Check output directly; if it's empty, the error may be in result.exception
+    error_text = result.output or (str(result.exception) if result.exception else "")
+    assert "Cannot mix bare tool names" in error_text, (
+        f"Expected 'Cannot mix bare tool names' in output, got: {error_text!r}"
+    )
