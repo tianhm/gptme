@@ -1,7 +1,7 @@
 Features
 ========
 
-gptme is a personal AI agent in your terminal with tools to run shell commands, write code, edit files, browse the web, use vision, and much more. A great coding agent, but general-purpose enough to assist in all kinds of knowledge-work.
+gptme is a personal AI agent in your terminal with tools to run shell commands, write code, edit files, browse the web, use vision, and much more. A great coding agent, but general-purpose enough to assist in all kinds of knowledge-work — including running as a **persistent autonomous agent** that operates continuously, learns from experience, and manages its own tasks.
 
 An unconstrained local free and open-source alternative to Claude Code, Codex, Cursor Agents, etc. One of the first agent CLIs created (Spring 2023) — and still in very active development.
 
@@ -187,17 +187,63 @@ See :doc:`mcp`.
 Autonomous Agents
 -----------------
 
-gptme is designed to run not just interactively, but as a **persistent autonomous agent**. The `gptme-agent-template <https://github.com/gptme/gptme-agent-template>`_ provides a complete scaffold:
+gptme is designed to run not just interactively, but as a **persistent autonomous agent** — an AI that runs continuously, remembers everything, and gets better over time. This is where gptme truly differentiates itself from other coding assistants.
 
-- **Persistent workspace** — git-tracked "brain" across sessions
-- **Run loops** — scheduled or event-driven autonomous operation
-- **Task management** — structured task queue with GTD-style metadata
-- **Meta-learning** — lessons system captures patterns and improves over time
+🧠 How It Works
+^^^^^^^^^^^^^^
+
+Each agent is a **git repository that serves as its "brain"** — all memory, tasks, knowledge, and configuration are version-controlled and persist across sessions. A dynamic context system assembles relevant information (recent work, active tasks, notifications) at the start of each session, giving the agent situational awareness.
+
+The `gptme-agent-template <https://github.com/gptme/gptme-agent-template>`_ provides a complete scaffold:
+
+- **Persistent workspace** — git-tracked "brain" with journal, tasks, knowledge base, and lessons
+- **Run loops** — scheduled (systemd/launchd) or event-driven autonomous operation
+- **Task management** — structured task queue with YAML metadata and GTD-style workflows
+- **Meta-learning** — lessons system captures behavioral patterns and improves over time
 - **Multi-agent coordination** — file leases, message bus, and work claiming for concurrent agents
+- **External integrations** — GitHub, email, Discord, Twitter, RSS, and more
 
-`Bob <https://github.com/TimeToBuildBob>`_ is the reference implementation — an autonomous AI agent that has completed 1000+ sessions, contributes to open source, and manages its own tasks.
+.. code-block:: bash
 
-See :doc:`agents` for more on building autonomous agents.
+   # Create a new agent
+   gptme-agent create ~/my-agent --name MyAgent
+
+   # Install as a recurring service (runs every 30 min by default)
+   gptme-agent install
+
+   # Check on your agent
+   gptme-agent status
+   gptme-agent logs --follow
+
+🤖 Bob — The Reference Agent
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+`Bob <https://github.com/TimeToBuildBob>`_ (``@TimeToBuildBob``) is the most mature gptme agent and serves as the reference implementation. Bob has been running autonomously since 2024, completing **1700+ sessions** across hundreds of days. He demonstrates what a persistent autonomous agent can actually do:
+
+- **Open source contributions** — opens PRs, reviews code, fixes CI failures, and responds to issues across multiple repositories
+- **Self-managed task queue** — selects work from a prioritized backlog, tracks progress, and closes tasks when done
+- **Continuous learning** — maintains 100+ behavioral lessons learned from experience, preventing repeated mistakes
+- **Social presence** — posts on `Twitter <https://twitter.com/TimeToBuildBob>`_, responds on Discord, writes `blog posts <https://timetobuildbob.github.io/>`_, and sends email
+- **Multi-repo awareness** — monitors CI status, PR queues, and GitHub notifications across an entire organization
+- **Self-improvement** — analyzes its own session trajectories, identifies friction patterns, and optimizes its own workflows
+
+Bob is not a demo — he's a production agent that runs on a schedule, handles real work, and has been iterating on his own architecture for over a year. His workspace is `open source <https://github.com/TimeToBuildBob/bob>`_ and serves as a living example of the agent pattern.
+
+🌐 Multi-Agent Ecosystem
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+gptme supports running **multiple specialized agents** that coordinate through shared infrastructure:
+
+- **Bob** — technical implementation, open source contributions, infrastructure
+- **Alice** — personal assistant, quantified self analysis, agent orchestration
+- **Gordon** — prediction market trading on Polymarket
+- **Sven** — calendar management and WhatsApp bridge
+
+Agents coordinate via a shared coordination layer (SQLite-based file leases, message bus, and work claiming) and communicate through GitHub issues, a shared git repository, and structured messages.
+
+.. tip::
+
+   Creating your own agent takes minutes with the template. See :doc:`agents` for the full guide — from creating your first agent to running it autonomously.
 
 
 Automation & CI
