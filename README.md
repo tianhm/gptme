@@ -347,7 +347,7 @@ gptme-agent install   # runs on a schedule
 gptme-agent status    # check on it
 ```
 
-[**Bob**](https://github.com/TimeToBuildBob) is the reference implementation — a production autonomous agent with 1700+ completed sessions. Bob opens PRs, reviews code, fixes CI, manages his own task queue, maintains 100+ behavioral lessons, posts on [Twitter](https://twitter.com/TimeToBuildBob), responds on Discord, and writes [blog posts](https://timetobuildbob.github.io/). His [workspace is open source](https://github.com/TimeToBuildBob/bob).
+[**Bob**](https://github.com/TimeToBuildBob) is the reference implementation — a production autonomous agent with 1700+ completed sessions. Bob opens PRs, reviews code, fixes CI, manages his own task queue, maintains 100+ behavioral lessons, posts on [Twitter](https://twitter.com/TimeToBuildBob), responds on Discord, and writes [blog posts](https://timetobuildbob.github.io/).
 
 Multiple specialized agents can run in parallel — e.g. Bob (engineering) and [Alice](https://github.com/TimeToLearnAlice) (personal assistant & orchestration) — coordinating through shared infrastructure.
 
