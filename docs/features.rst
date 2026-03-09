@@ -232,14 +232,12 @@ Bob is not a demo — he's a production agent that runs on a schedule, handles r
 🌐 Multi-Agent Ecosystem
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-gptme supports running **multiple specialized agents** that coordinate through shared infrastructure:
+gptme supports running **multiple specialized agents** that coordinate through shared infrastructure. For example:
 
 - **Bob** — technical implementation, open source contributions, infrastructure
 - **Alice** — personal assistant, quantified self analysis, agent orchestration
-- **Gordon** — prediction market trading on Polymarket
-- **Sven** — calendar management and WhatsApp bridge
 
-Agents coordinate via a shared coordination layer (SQLite-based file leases, message bus, and work claiming) and communicate through GitHub issues, a shared git repository, and structured messages.
+Agents coordinate via a shared coordination layer (SQLite-based file leases, message bus, and work claiming) and communicate through GitHub issues, a shared git repository, and structured messages. The architecture supports any number of specialized agents running in parallel.
 
 .. tip::
 
