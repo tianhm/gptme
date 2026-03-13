@@ -334,6 +334,47 @@ def check_json_filter_exit(ctx):
     return ctx.exit_code == 0
 
 
+# --- implement-class checks ---
+
+
+def check_implement_class_has_circle(ctx):
+    """shapes.py must contain a Circle class definition."""
+    content = ctx.files.get("shapes.py", "")
+    return "class Circle" in content
+
+
+def check_implement_class_has_rectangle(ctx):
+    """shapes.py must contain a Rectangle class definition."""
+    content = ctx.files.get("shapes.py", "")
+    return "class Rectangle" in content
+
+
+def check_implement_class_tests_pass(ctx):
+    """All tests in test_shapes.py must pass."""
+    return ctx.exit_code == 0 and "passed" in ctx.stdout
+
+
+def check_implement_class_no_failures(ctx):
+    """No test failures and tests actually ran (exit_code guards against error-only pytest runs)."""
+    return ctx.exit_code == 0 and "FAILED" not in ctx.stdout and "passed" in ctx.stdout
+
+
+# --- optimize-performance checks ---
+
+
+def check_optimize_perf_output(ctx):
+    """fibonacci(35) should output 9227465."""
+    return "9227465" in ctx.stdout.split()
+
+
+def check_optimize_perf_fast(ctx):
+    """Should complete in under 2 seconds (checked by the script's own timing logic)."""
+    # The script itself raises SystemExit('Too slow!') if elapsed > 2s,
+    # and the run command wraps with `timeout 10` as a hard backstop.
+    # Check both: exit_code 0 AND no 'Too slow' message in stderr.
+    return ctx.exit_code == 0 and "Too slow" not in ctx.stderr
+
+
 tests: list["EvalSpec"] = [
     {
         "name": "hello",
@@ -763,6 +804,105 @@ tests: list["EvalSpec"] = [
             "file exists": check_json_filter_file,
             "correct output": check_json_filter_output,
             "clean exit": check_json_filter_exit,
+        },
+    },
+    {
+        "name": "implement-class",
+        "files": {
+            "shapes.py": (
+                "from abc import ABC, abstractmethod\n"
+                "import math\n"
+                "\n"
+                "\n"
+                "class Shape(ABC):\n"
+                '    """Abstract base class for geometric shapes."""\n'
+                "\n"
+                "    @abstractmethod\n"
+                "    def area(self) -> float:\n"
+                "        pass\n"
+                "\n"
+                "    @abstractmethod\n"
+                "    def perimeter(self) -> float:\n"
+                "        pass\n"
+            ),
+            "test_shapes.py": (
+                "from shapes import Shape, Circle, Rectangle\n"
+                "\n"
+                "\n"
+                "def test_circle_area():\n"
+                "    c = Circle(5)\n"
+                "    assert abs(c.area() - 25 * 3.14159265) < 0.01\n"
+                "\n"
+                "\n"
+                "def test_circle_perimeter():\n"
+                "    c = Circle(5)\n"
+                "    assert abs(c.perimeter() - 10 * 3.14159265) < 0.01\n"
+                "\n"
+                "\n"
+                "def test_rectangle_area():\n"
+                "    r = Rectangle(3, 4)\n"
+                "    assert r.area() == 12.0\n"
+                "\n"
+                "\n"
+                "def test_rectangle_perimeter():\n"
+                "    r = Rectangle(3, 4)\n"
+                "    assert r.perimeter() == 14.0\n"
+                "\n"
+                "\n"
+                "def test_isinstance():\n"
+                "    assert isinstance(Circle(1), Shape)\n"
+                "    assert isinstance(Rectangle(1, 1), Shape)\n"
+            ),
+        },
+        "run": "python -m pytest test_shapes.py -v",
+        "prompt": (
+            "Read shapes.py and test_shapes.py. The Shape abstract base class "
+            "is defined but Circle and Rectangle classes are missing. "
+            "Implement both classes in shapes.py so they inherit from Shape "
+            "and all tests pass. Circle takes a radius, Rectangle takes width and height."
+        ),
+        "tools": ["read", "save", "patch", "shell"],
+        "expect": {
+            "Circle defined": check_implement_class_has_circle,
+            "Rectangle defined": check_implement_class_has_rectangle,
+            "tests pass": check_implement_class_tests_pass,
+            "no failures": check_implement_class_no_failures,
+        },
+    },
+    {
+        "name": "optimize-performance",
+        "files": {
+            "main.py": (
+                "import time\n"
+                "\n"
+                "\n"
+                "def fibonacci(n):\n"
+                "    if n <= 1:\n"
+                "        return n\n"
+                "    return fibonacci(n - 1) + fibonacci(n - 2)\n"
+                "\n"
+                "\n"
+                "start = time.time()\n"
+                "result = fibonacci(35)\n"
+                "elapsed = time.time() - start\n"
+                "print(result)\n"
+                "print(f'Time: {elapsed:.2f}s')\n"
+                "if elapsed > 2:\n"
+                "    raise SystemExit('Too slow! fibonacci(35) took more than 2 seconds')\n"
+            ),
+        },
+        "run": "timeout 10 python main.py",
+        "prompt": (
+            "Running main.py computes fibonacci(35) but it's extremely slow due to "
+            "exponential recursion. Optimize the fibonacci function so it completes "
+            "in under 2 seconds. You can use any optimization technique (memoization, "
+            "iteration, etc.) but the function must still produce the correct result. "
+            "Do not change the timing or validation logic at the bottom."
+        ),
+        "tools": ["read", "save", "patch"],
+        "expect": {
+            "correct output": check_optimize_perf_output,
+            "runs fast": check_optimize_perf_fast,
         },
     },
 ]
