@@ -20,6 +20,28 @@ suites: dict[str, list[EvalSpec]] = {
 }
 
 tests: list[EvalSpec] = [test for suite in suites.values() for test in suite]
+
+
+def _check_no_duplicate_names() -> None:
+    """Guard against duplicate test names (silently shadowed by dict comprehension).
+
+    Raises ValueError on import if any two suites share a test name.
+    Regression guard for cce683d25 (write-tests name collision).
+    """
+    seen: dict[str, str] = {}
+    for suite_name, suite_tests in suites.items():
+        for test in suite_tests:
+            name = test["name"]
+            if name in seen:
+                raise ValueError(
+                    f"Duplicate eval test name '{name}' in suite '{suite_name}' "
+                    f"(already defined in '{seen[name]}')"
+                )
+            seen[name] = suite_name
+
+
+_check_no_duplicate_names()
+
 tests_map: dict[str, EvalSpec] = {test["name"]: test for test in tests}
 
 tests_default_ids: list[str] = [
