@@ -352,9 +352,13 @@ class ToolSpec:
             instructions.append(self.instructions)
 
         if tool_format in self.instructions_format:
+            # A format-specific override replaces the auto-generated function listing
+            # for that format. This is intentional: if a tool defines
+            # instructions_format["tool"], it takes responsibility for providing a
+            # concise summary (needed to stay within OpenAI's 1024-char limit, #1697).
+            # The same applies to any other format that has an override.
             instructions.append(self.instructions_format[tool_format])
-
-        if self.functions:
+        elif self.functions:
             instructions.append(self.get_functions_description())
 
         return "\n\n".join(instructions)
