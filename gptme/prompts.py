@@ -1083,7 +1083,14 @@ def prompt_skills_summary(
                     raw_desc = raw_desc[:77] + "..."
                 desc = xml_escape(raw_desc)
                 path = quoteattr(str(skill.path))
-                skill_entries.append(f"  <skill name={name} path={path}>{desc}</skill>")
+                depends_attr = ""
+                if skill.metadata.depends:
+                    depends_attr = (
+                        f" depends={quoteattr(' '.join(skill.metadata.depends))}"
+                    )
+                skill_entries.append(
+                    f"  <skill name={name} path={path}{depends_attr}>{desc}</skill>"
+                )
             content = "\n".join(skill_entries)
             yield Message("system", _xml_section("skills", content))
         else:
@@ -1096,7 +1103,11 @@ def prompt_skills_summary(
                 # Truncate description to keep it compact
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
-                lines.append(f"- **{name}**: {desc}")
+                entry = f"- **{name}**: {desc}"
+                if skill.metadata.depends:
+                    deps_str = ", ".join(skill.metadata.depends)
+                    entry += f" (depends: {deps_str})"
+                lines.append(entry)
                 lines.append(f"  `{skill.path}`")
 
             lines.append(f"\n*{len(skills)} skills available*")
