@@ -80,9 +80,10 @@ pillow = {version = "*"}  # non-optional, needed for image scaling in vision
 matplotlib = {version = "*", optional=true}
 pandas = {version = "*", optional=true}
 numpy = {version = "*", optional=true}
-scipy = {version="*", optional=true}
-sounddevice = {version="^0.5.1", optional=true}
 
+# tool sounds (GPTME_TOOL_SOUNDS=true)
+sounddevice = {version = "*", optional=true}
+scipy = {version = "*", optional=true}
 # server
 flask = {version = "^3.0", optional=true}
 flask-cors = {version = ">=4,<6", optional=true}
@@ -153,10 +154,10 @@ tomli = "^2.2.1"
 server = ["flask", "flask-cors", "pydantic"]
 browser = ["playwright"]
 datascience = ["matplotlib", "pandas", "numpy"]  # pillow (non-opt)
+sounds = ["sounddevice", "scipy"]
 computer = []  # pillow (non-opt)
 pyinstaller = ["pyinstaller"]
 acp = ["agent-client-protocol"]
-tts = ["sounddevice", "scipy", "numpy"]
 telemetry = [
     "opentelemetry-api", "opentelemetry-sdk",
     "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus",
@@ -174,11 +175,11 @@ all = [
     # browser
     "playwright",
     # datascience
-    "matplotlib", "pandas", "numpy", "scipy", # "pillow",
+    "matplotlib", "pandas", "numpy", # "pillow",
+    # tool sounds
+    "sounddevice", "scipy",
     # computer
     # "pillow",
-    # tts
-    "sounddevice", "scipy", "numpy",
     # dspy prompt optimization
     "dspy", "sentence-transformers",
     # telemetry
@@ -247,14 +248,6 @@ module = "numpy.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "scipy.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "sounddevice.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
 module = "acp.*"
 ignore_missing_imports = true
 
@@ -289,6 +282,14 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "acp.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "scipy.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "sounddevice.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
