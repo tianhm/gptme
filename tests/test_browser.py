@@ -39,6 +39,10 @@ def test_snapshot_url():
     assert snapshot, "Snapshot should not be empty"
     assert len(snapshot) > 50, f"Snapshot too short: {len(snapshot)} chars"
 
+    # Should contain page metadata header
+    assert snapshot.startswith("Page: "), "Snapshot should start with page metadata"
+    assert "URL: " in snapshot, "Snapshot should include current URL"
+
     # Should contain typical ARIA elements
     # example.com has a heading and a link
     assert "Example Domain" in snapshot, "Should contain the page title/heading"
@@ -278,8 +282,10 @@ def test_open_page():
     """Test opening a page for interactive browsing."""
     snapshot = open_page("https://example.com")
 
-    # Should return ARIA snapshot
+    # Should return ARIA snapshot with metadata
     assert snapshot, "Snapshot should not be empty"
+    assert snapshot.startswith("Page: "), "Should include page metadata header"
+    assert "URL: " in snapshot, "Should include current URL"
     assert "Example Domain" in snapshot, "Should contain the page title"
 
 

@@ -22,6 +22,7 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
+from ._browser_format import format_snapshot as _format_snapshot
 from ._browser_thread import BrowserThread, _is_connection_error
 
 _browser: BrowserThread | None = None
@@ -367,7 +368,7 @@ def _get_aria_snapshot(browser: Browser, url: str) -> str:
         snapshot = page.locator("body").aria_snapshot()
         if not snapshot:
             return "Error: Could not get accessibility snapshot for this page."
-        return snapshot
+        return _format_snapshot(snapshot, page.url, page.title())
     finally:
         page.close()
         context.close()
@@ -406,7 +407,7 @@ def _page_snapshot() -> str:
     snapshot = _current_page.locator("body").aria_snapshot()
     if not snapshot:
         raise RuntimeError("Could not get accessibility snapshot.")
-    return snapshot
+    return _format_snapshot(snapshot, _current_page.url, _current_page.title())
 
 
 def _open_page(browser: Browser, url: str) -> str:

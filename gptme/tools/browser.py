@@ -384,19 +384,29 @@ def _available_search_engines_text() -> str:
 def examples(tool_format):
     # Define example output with newlines outside f-string (backslashes not allowed in f-string expressions)
     snapshot_example_result = (
+        "Page: Example Domain\n"
+        "URL: https://example.com/\n\n"
         '- WebArea "Example Domain":\n'
         '  - heading "Example Domain" [level=1]\n'
         '  - text "This domain is for use in illustrative examples..."\n'
         '  - link "More information..."'
     )
     interact_open_result = (
+        "Page: Example\n"
+        "URL: https://example.com/\n\n"
         '- WebArea "Example":\n  - textbox "Search" [name="q"]\n  - button "Go"'
     )
     interact_fill_result = (
+        "Page: Example\n"
+        "URL: https://example.com/\n\n"
         '- WebArea "Example":\n  - textbox "Search" [name="q"]: gptme\n  - button "Go"'
     )
     interact_fill_code = "fill_element('input[name=\"q\"]', 'gptme')"
-    interact_click_result = '- WebArea "Search Results":\n  - heading "Results for: gptme"\n  - link "gptme on GitHub"'
+    interact_click_result = (
+        "Page: Search Results\n"
+        "URL: https://example.com/search?q=gptme\n\n"
+        '- WebArea "Search Results":\n  - heading "Results for: gptme"\n  - link "gptme on GitHub"'
+    )
     pdf_example_result = (
         "--- Page 1 ---\n[PDF text content...]\n\n--- Page 2 ---\n[More content...]\n\n---\n"
         "**Note**: This PDF has 42 pages. Showing first 10 pages.\n"
@@ -717,6 +727,9 @@ def snapshot_url(url: str) -> str:
     Returns a structured text representation of the page's accessibility tree,
     showing interactive elements (buttons, links, inputs) with their roles and names.
     Useful for understanding page structure and finding elements to interact with.
+
+    The output includes a metadata header with the page title and current URL
+    (which may differ from the requested URL after redirects).
     """
     assert browser
     if browser == "playwright":
@@ -738,6 +751,8 @@ def open_page(url: str) -> str:
     Use this instead of read_url() when you need to interact with the page
     (click buttons, fill forms, scroll). The page stays open for subsequent
     click_element(), fill_element(), and scroll_page() calls.
+
+    The output includes a metadata header with the page title and current URL.
     """
     assert browser
     if browser == "playwright":
