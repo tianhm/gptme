@@ -27,6 +27,7 @@ from ..logmanager import LogManager, prepare_messages
 from ..message import Message
 from ..telemetry import trace_function
 from ..tools import ToolUse, get_tools
+from ..tools.shell import set_workspace_cwd
 from .api_v2_common import ConfigChangedEvent, ErrorEvent, msg2dict
 from .session_models import (
     ConversationSession,
@@ -556,13 +557,13 @@ def step(
             manager.write()
             logger.debug("Wrote SESSION_START hook messages to disk")
 
-    # TODO: This is not the best way to manage the chdir state, since it's
-    # essentially a shared global across chats (bad), but the fix at least
-    # addresses the issue where chats don't start in the directory they should.
-    # If we are attempting to make a step in a conversation with only one or fewer user
-    # messages, make sure we first chdir to the workspace directory (so that
-    # the conversation starts in the right folder).
-    # Tracked in issue #1486
+    # Set the workspace directory for the shell via thread-safe ContextVar.
+    # This ensures each session's shell starts in the correct directory even
+    # when multiple sessions are being served concurrently.
+    # We also keep os.chdir() for the first message as a fallback for tools
+    # that still use Path.cwd() (save, read, patch, etc.) — a full migration
+    # to workspace-aware helpers is tracked separately.
+    set_workspace_cwd(str(workspace))
     user_messages = [msg for msg in manager.log.messages if msg.role == "user"]
     if len(user_messages) <= 1:
         logger.debug(
