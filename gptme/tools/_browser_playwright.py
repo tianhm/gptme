@@ -337,6 +337,31 @@ def _list_results_duckduckgo(page) -> str:
     return titleurl_to_list(hits)
 
 
+def _get_aria_snapshot(browser: Browser, url: str) -> str:
+    """Load a page and return its ARIA accessibility snapshot."""
+    context = browser.new_context(
+        locale="en-US",
+    )
+    page = context.new_page()
+    try:
+        page.goto(
+            url
+        )  # waits for "load" state by default; networkidle can hang on SPAs/analytics
+        snapshot = page.locator("body").aria_snapshot()
+        if not snapshot:
+            return "Error: Could not get accessibility snapshot for this page."
+        return snapshot
+    finally:
+        page.close()
+        context.close()
+
+
+def aria_snapshot(url: str) -> str:
+    """Get the ARIA accessibility snapshot of a webpage."""
+    logger.info(f"Getting ARIA snapshot of '{url}'")
+    return _execute_with_retry(_get_aria_snapshot, url)
+
+
 def _take_screenshot(
     browser: Browser, url: str, path: Path | str | None = None
 ) -> Path:
