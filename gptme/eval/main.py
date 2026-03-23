@@ -6,6 +6,7 @@ Inspired by a document by Anton Osika and Axel Theorell.
 
 import csv
 import importlib.util
+import json
 import keyword
 import logging
 import os
@@ -196,6 +197,34 @@ def print_available_tests():
     print("(* = included in default suite)")
 
 
+def list_available_tests_json() -> dict:
+    """Return available eval suites and tests as a JSON-serializable dict."""
+    default_names = set(tests_default_ids)
+    suites_data = []
+    total = 0
+    for suite_name, suite_tests in suites.items():
+        total += len(suite_tests)
+        tests_data = [
+            {
+                "name": test["name"],
+                "prompt": test.get("prompt", ""),
+                "default": test["name"] in default_names,
+            }
+            for test in suite_tests
+        ]
+        suites_data.append(
+            {
+                "name": suite_name,
+                "tests": tests_data,
+            }
+        )
+    return {
+        "suites": suites_data,
+        "total_tests": total,
+        "default_suite": list(tests_default_ids),
+    }
+
+
 def print_model_results(model_results: dict[ModelConfig, list[EvalResult]]):
     total_tests = 0
     total_tokens = 0
@@ -366,6 +395,12 @@ def aggregate_and_display_results(result_files: list[str]):
     help="Run evals in Docker container for isolation (prevents host environment pollution)",
 )
 @click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Output results as JSON to stdout (also saves eval_results.json alongside CSV).",
+)
+@click.option(
     "--eval-module",
     "-E",
     "eval_modules",
@@ -382,6 +417,7 @@ def main(
     list_tests: bool = False,
     tool_format: ToolFormat | None = None,
     use_docker: bool = False,
+    json_output: bool = False,
     eval_modules: tuple[Path, ...] = (),
 ):
     """
@@ -393,7 +429,10 @@ def main(
     if list_tests:
         if eval_modules:
             print("Note: --eval-module tests are not included in this listing.")
-        print_available_tests()
+        if json_output:
+            print(json.dumps(list_available_tests_json(), indent=2))
+        else:
+            print_available_tests()
         sys.exit(0)
 
     # Check if we should re-execute inside Docker
@@ -583,20 +622,28 @@ def main(
     if not evals_to_run:
         evals_to_run = tests_default
 
-    print("=== Running evals ===")
+    if not json_output:
+        print("=== Running evals ===")
     model_results = run_evals(
         evals_to_run, model_configs, timeout, parallel, use_docker
     )
-    print("=== Finished ===")
+    if not json_output:
+        print("=== Finished ===")
 
-    print("\n=== Model Results ===")
-    print_model_results(model_results)
+    if json_output:
+        commit_hash = _get_commit_hash()
+        json_data = results_to_json(model_results, commit_hash=commit_hash)
+        print(json.dumps(json_data, indent=2))
+    else:
+        json_data = None
+        print("\n=== Model Results ===")
+        print_model_results(model_results)
 
-    print("\n=== Model Comparison ===")
-    print_model_results_table(model_results)
+        print("\n=== Model Comparison ===")
+        print_model_results_table(model_results)
 
-    # Write results to CSV
-    write_results(model_results)
+    # Write results to CSV (and JSON if flag set)
+    write_results(model_results, write_json=json_output, json_data=json_data)
 
     sys.exit(0)
 
@@ -686,10 +733,52 @@ def read_results_from_csv(filename: str) -> dict[ModelConfig, list[EvalResult]]:
     return dict(model_results)
 
 
-def write_results(model_results: dict[ModelConfig, list[EvalResult]]):
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%SZ")
-    # get current commit hash and dirty status, like: a8b2ef0-dirty
-    # try git first, fall back to package version
+def results_to_json(
+    model_results: dict[ModelConfig, list[EvalResult]],
+    commit_hash: str | None = None,
+) -> dict:
+    """Convert eval results to a JSON-serializable dict.
+
+    Output schema::
+
+        {
+          "timestamp": "2026-03-23T02:30:00Z",
+          "commit": "a8b2ef0",
+          "models": [
+            {
+              "model": "anthropic/claude-sonnet-4-20250514",
+              "tool_format": "tool",
+              "pass_rate": 0.85,
+              "total": 20,
+              "passed": 17,
+              "results": [ { "name": "hello", "status": "success", ... }, ... ]
+            }
+          ]
+        }
+    """
+    models = []
+    for config, results in model_results.items():
+        result_dicts = [r.to_dict() for r in results]
+        total = len(result_dicts)
+        passed = sum(1 for r in result_dicts if r.get("passed"))
+        models.append(
+            {
+                **config.to_dict(),
+                "pass_rate": round(passed / total, 4) if total else 0.0,
+                "total": total,
+                "passed": passed,
+                "results": result_dicts,
+            }
+        )
+    return {
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "commit": commit_hash,
+        "models": models,
+    }
+
+
+def _get_commit_hash() -> str:
+    """Get current commit hash and dirty status, like: a8b2ef0-dirty."""
     git_result = subprocess.run(
         ["git", "describe", "--always", "--dirty", "--exclude", "'*'"],
         check=False,
@@ -698,15 +787,23 @@ def write_results(model_results: dict[ModelConfig, list[EvalResult]]):
         cwd=project_dir,
     )
     if git_result.returncode == 0 and git_result.stdout.strip():
-        commit_hash = git_result.stdout.strip()
-    else:
-        # not in a git repo, use package version
-        from importlib.metadata import PackageNotFoundError, version
+        return git_result.stdout.strip()
+    # not in a git repo, use package version
+    from importlib.metadata import PackageNotFoundError, version
 
-        try:
-            commit_hash = f"v{version('gptme')}"
-        except PackageNotFoundError:
-            commit_hash = "unknown"
+    try:
+        return f"v{version('gptme')}"
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def write_results(
+    model_results: dict[ModelConfig, list[EvalResult]],
+    write_json: bool = False,
+    json_data: dict | None = None,
+):
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+    commit_hash = _get_commit_hash()
     eval_results_dir = Path(
         os.environ.get("EVAL_RESULTS_DIR", project_dir / "eval_results")
     )
@@ -766,5 +863,16 @@ def write_results(model_results: dict[ModelConfig, list[EvalResult]]):
                 writer.writerow(row)
                 _write_case_results(test_dir / "cases.csv", result.results)
 
-    print(f"\nResults saved to {csv_filename.resolve()}")
-    print(f"Output files saved in {results_dir.resolve()}")
+    # When --json is active, status messages go to stderr to keep stdout clean JSON
+    _status_file = sys.stderr if write_json else sys.stdout
+
+    if write_json:
+        if json_data is None:
+            json_data = results_to_json(model_results, commit_hash=commit_hash)
+        json_filename = results_dir / "eval_results.json"
+        with open(json_filename, "w") as f:
+            json.dump(json_data, f, indent=2)
+        print(f"\nJSON results saved to {json_filename.resolve()}", file=_status_file)
+
+    print(f"\nResults saved to {csv_filename.resolve()}", file=_status_file)
+    print(f"Output files saved in {results_dir.resolve()}", file=_status_file)
