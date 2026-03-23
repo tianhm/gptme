@@ -8,6 +8,7 @@ Command groups are split into separate modules for maintainability:
 """
 
 import io
+import json
 import logging
 import os
 import sys
@@ -18,7 +19,7 @@ from pathlib import Path
 import click
 
 from ..config import get_config
-from ..llm.models import list_models
+from ..llm.models import list_models, model_to_dict
 from ..message import Message
 from ..util.context import include_paths
 from .cmd_chats import chats
@@ -525,6 +526,7 @@ def models():
     is_flag=True,
     help="Only show models from providers with configured API keys",
 )
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 def models_list(
     provider: str | None,
     pricing: bool,
@@ -533,6 +535,7 @@ def models_list(
     simple: bool,
     include_deprecated: bool,
     available: bool,
+    as_json: bool,
 ):
     """List available models."""
 
@@ -545,12 +548,14 @@ def models_list(
         simple_format=simple,
         dynamic_fetch=True,
         available_only=available,
+        json_output=as_json,
     )
 
 
 @models.command("info")
 @click.argument("model_name")
-def models_info(model_name: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def models_info(model_name: str, as_json: bool):
     """Show detailed information about a specific model."""
     from ..llm.models import get_model  # fmt: skip
 
@@ -559,6 +564,10 @@ def models_info(model_name: str):
     except Exception as e:
         print(f"Error getting model info: {e}")
         sys.exit(1)
+
+    if as_json:
+        print(json.dumps(model_to_dict(model), indent=2))
+        return
 
     print(f"Model: {model.full}")
     print(f"Provider: {model.provider}")
