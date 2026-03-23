@@ -12,6 +12,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from collections.abc import Generator
 from datetime import datetime, timezone
@@ -112,19 +113,50 @@ def docker_reexec(argv: list[str]) -> None:
     # Get config to also check config.toml for API keys
     config = get_config()
 
-    env_args = []
+    # Collect env vars to pass into the container.
+    # Use --env-file with a temporary file (mode 0600) so that secret values
+    # never appear in the process argument list visible via ``ps aux`` or
+    # ``/proc/<pid>/cmdline``.  See CWE-214.
+    env_entries: list[str] = []
     for var in env_vars_to_pass:
         # Check both environment variables and config.toml
         value = config.get_env(var)
         if value:
-            env_args.extend(["-e", f"{var}={value}"])
+            env_entries.append(f"{var}={value}")
+
+    # Write env vars to a secure temporary file for --env-file.
+    # Use tempfile.mkstemp() which atomically creates the file with 0o600
+    # permissions (via os.O_CREAT | os.O_EXCL), avoiding the TOCTOU race
+    # that NamedTemporaryFile + deferred chmod would introduce.
+    env_file_path: str | None = None
+    env_file_args: list[str] = []
+    if env_entries:
+        fd, env_file_path = tempfile.mkstemp(
+            prefix="gptme-docker-env-",
+            suffix=".env",
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write("\n".join(env_entries) + "\n")
+        except BaseException:
+            # os.fdopen took ownership of fd; the context manager already
+            # closed it (even on exception), so do NOT call os.close(fd)
+            # here — that would raise EBADF and shadow the real error.
+            try:
+                os.unlink(env_file_path)
+            except OSError:
+                pass
+            env_file_path = None
+            raise
+        env_file_args = ["--env-file", env_file_path]
 
     # Construct docker run command
     docker_cmd = [
         "docker",
         "run",
         "--rm",
-        *env_args,
+        *env_file_args,
         "-v",
         f"{git_root}/eval_results:/app/eval_results",
         "-v",
@@ -134,30 +166,29 @@ def docker_reexec(argv: list[str]) -> None:
         image,
     ] + argv
 
-    # Redact API keys in log output for security
-    def redact_env_args(cmd: list[str]) -> list[str]:
-        """Redact API key values from docker command for safe logging."""
-        redacted = []
-        i = 0
-        while i < len(cmd):
-            if cmd[i] == "-e" and i + 1 < len(cmd):
-                env_assignment = cmd[i + 1]
-                if "=" in env_assignment:
-                    var_name = env_assignment.split("=", 1)[0]
-                    if "KEY" in var_name or "TOKEN" in var_name:
-                        redacted.append(cmd[i])
-                        redacted.append(f"{var_name}=***REDACTED***")
-                        i += 2
-                        continue
-            redacted.append(cmd[i])
-            i += 1
-        return redacted
+    env_var_names = [e.split("=", 1)[0] for e in env_entries]
+    # Replace the actual temp path with a placeholder in the log to avoid
+    # leaking the env file location to log sinks (see CWE-214).
+    logged_cmd = [
+        "<env-file>" if i > 0 and docker_cmd[i - 1] == "--env-file" else tok
+        for i, tok in enumerate(docker_cmd)
+    ]
+    logger.info(
+        "Re-executing inside Docker: %s (env vars: %s)",
+        " ".join(logged_cmd),
+        ", ".join(env_var_names) if env_var_names else "none",
+    )
 
-    logger.info(f"Re-executing inside Docker: {' '.join(redact_env_args(docker_cmd))}")
-
-    # Run and exit with same code
-    result = subprocess.run(docker_cmd, check=False)
-    sys.exit(result.returncode)
+    # Run and exit with same code, ensuring env file cleanup
+    try:
+        result = subprocess.run(docker_cmd, check=False)
+        sys.exit(result.returncode)
+    finally:
+        if env_file_path is not None:
+            try:
+                os.unlink(env_file_path)
+            except OSError:
+                pass
 
 
 project_dir = Path(__file__).parent.parent.parent
