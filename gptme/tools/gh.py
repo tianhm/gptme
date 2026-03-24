@@ -5,7 +5,11 @@ import time
 from collections.abc import Generator
 
 from ..message import Message
-from ..util.gh import get_github_pr_content, parse_github_url
+from ..util.gh import (
+    get_github_issue_content,
+    get_github_pr_content,
+    parse_github_url,
+)
 from . import Parameter, ToolSpec, ToolUse
 
 
@@ -288,10 +292,10 @@ def _format_check_results(check_runs: list, head_sha: str, pr_number: int) -> st
     return output
 
 
-def _extract_pr_url(
+def _extract_url(
     args: list[str] | None, kwargs: dict[str, str] | None, arg_offset: int = 2
 ) -> str | None:
-    """Extract PR URL from args or kwargs."""
+    """Extract a GitHub URL from args or kwargs."""
     if args and len(args) > arg_offset:
         return args[arg_offset]
     if kwargs:
@@ -303,7 +307,7 @@ def _handle_pr_status(
     args: list[str] | None, kwargs: dict[str, str] | None
 ) -> Generator[Message, None, None]:
     """Handle `gh pr status <url> [commit_sha]` command."""
-    url = _extract_pr_url(args, kwargs)
+    url = _extract_url(args, kwargs)
     if not url:
         yield Message("system", "Error: No PR URL provided")
         return
@@ -368,7 +372,7 @@ def execute_gh(
         yield from _handle_pr_status(args, kwargs)
 
     elif args and len(args) >= 2 and args[0] == "pr" and args[1] == "checks":
-        url = _extract_pr_url(args, kwargs)
+        url = _extract_url(args, kwargs)
         if not url:
             yield Message("system", "Error: No PR URL provided")
             return
@@ -388,7 +392,7 @@ def execute_gh(
         )
 
     elif args and len(args) >= 2 and args[0] == "pr" and args[1] == "view":
-        url = _extract_pr_url(args, kwargs)
+        url = _extract_url(args, kwargs)
         if not url:
             yield Message("system", "Error: No PR URL provided")
             return
@@ -408,20 +412,55 @@ def execute_gh(
                     "system",
                     "Error: Failed to fetch PR content. Make sure 'gh' CLI is installed and authenticated.",
                 )
+    elif args and len(args) >= 2 and args[0] == "issue" and args[1] == "view":
+        url = _extract_url(args, kwargs)
+        if not url:
+            yield Message("system", "Error: No issue URL provided")
+            return
+
+        github_info = parse_github_url(url)
+        if not github_info:
+            yield Message(
+                "system",
+                f"Error: Invalid GitHub URL: {url}\n\nExpected format: https://github.com/owner/repo/issues/number",
+            )
+            return
+
+        if github_info["type"] != "issues":
+            yield Message(
+                "system",
+                f"Error: URL is not a GitHub issue URL (got {github_info['type']}). Use `gh pr view` for pull requests.",
+            )
+            return
+
+        content = get_github_issue_content(
+            github_info["owner"], github_info["repo"], github_info["number"]
+        )
+        if content:
+            yield Message("system", content)
+        else:
+            yield Message(
+                "system",
+                "Error: Failed to fetch issue content. Make sure 'gh' CLI is installed and authenticated.",
+            )
     else:
         yield Message(
             "system",
-            "Error: Unknown gh command. Available: gh pr view <url>, gh pr status <url>, gh pr checks <url>",
+            "Error: Unknown gh command. Available: gh issue view <url>, gh pr view <url>, gh pr status <url>, gh pr checks <url>",
         )
 
 
 instructions = """Interact with GitHub via the GitHub CLI (gh).
 
-For reading PRs with full context (review comments, code context, suggestions), use:
+Use `gh issue view <issue_url>` to read an issue with its full body and all comments in a single call — this gives richer context than shell-based `gh issue view` and avoids extra round-trips:
+```gh issue view <issue_url>
+```
+
+Use `gh pr view <pr_url>` to read a PR with its description, review comments, and code context:
 ```gh pr view <pr_url>
 ```
 
-To get a quick status check of CI checks (with run IDs for failed checks):
+To get CI check status (with run IDs for failed checks):
 ```gh pr status <pr_url> [commit_sha]
 ```
 
@@ -429,28 +468,30 @@ To wait for all CI checks to complete:
 ```gh pr checks <pr_url> [commit_sha]
 ```
 
-The optional commit_sha allows checking a specific commit instead of the PR head.
-This is useful for checking previous commits without waiting for new builds.
+The optional commit_sha checks a specific commit instead of the PR head.
 
-For multi-line comments, use `--body-file` with a single-quoted heredoc:
+For multi-line comments, use `--body-file` with a heredoc:
 ```shell
 gh issue comment NUM --repo owner/repo --body-file - << 'EOF'
 ## Summary
-Line 1
-
-Line 2
+Body here
 EOF
 ```
-Never use `--body "text\\nmore text"`:
-- `\\n` in double-quoted strings is literal backslash-n, not a newline.
-- `$` in double-quoted strings triggers variable expansion (e.g. `$42,000` → `,000`).
-The single-quoted `<< 'EOF'` heredoc prevents both issues.
+Avoid `--body "text\\nmore text"`: `\\n` posts literally, `$` triggers expansion.
 
 For other operations, use the `shell` tool with the `gh` command."""
 
 
 def examples(tool_format):
     return f"""
+> User: read issue with full context including comments
+> Assistant:
+{
+        ToolUse(
+            "gh", ["issue", "view", "https://github.com/owner/repo/issues/42"], None
+        ).to_output(tool_format)
+    }
+
 > User: read PR with full context including review comments
 > Assistant:
 {
@@ -538,14 +579,6 @@ EOF''',
 > Assistant:
 {ToolUse("shell", [], "gh issue list --repo $REPO").to_output(tool_format)}
 
-> User: read issue with comments
-> Assistant:
-{
-        ToolUse("shell", [], "gh issue view $ISSUE --repo $REPO --comments").to_output(
-            tool_format
-        )
-    }
-
 > User: show recent workflows
 > Assistant:
 {ToolUse("shell", [], "gh run list --repo $REPO --limit 5").to_output(tool_format)}
@@ -572,7 +605,7 @@ tool: ToolSpec = ToolSpec(
         Parameter(
             name="url",
             type="string",
-            description="GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)",
+            description="GitHub issue or PR URL (e.g., https://github.com/owner/repo/issues/42 or .../pull/123)",
             required=True,
         ),
     ],
