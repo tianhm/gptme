@@ -13,6 +13,7 @@ from ..util.gh import (
     get_github_pr_diff,
     get_github_pr_list,
     get_github_run_logs,
+    merge_github_pr,
     parse_github_ref,
     parse_github_url,
     search_github_issues,
@@ -435,13 +436,78 @@ def _handle_pr_status(
         yield Message("system", f"Error: Failed to parse check data: {e}")
 
 
+def _handle_pr_merge(
+    args: list[str] | None, kwargs: dict[str, str] | None
+) -> Generator[Message, None, None]:
+    """Handle `gh pr merge <ref> [--squash|--rebase|--merge] [--auto] [--delete-branch] [--match-head-commit SHA]`."""
+    info, err = _resolve_ref(args, kwargs, "pull", "PR reference")
+    if err:
+        yield err
+        return
+
+    assert info is not None
+    pr_number = info["number"]
+    owner = info["owner"]
+    repo = info["repo"]
+
+    # Parse flags from remaining args (index 3+)
+    # Boolean flags (no value): --squash, --rebase, --merge, --auto, --delete-branch
+    # Value flags: --match-head-commit SHA
+    method = "squash"  # Default
+    auto = False
+    delete_branch = False
+    match_head: str | None = None
+
+    if args:
+        i = 3
+        while i < len(args):
+            arg = args[i]
+            if arg in ("--squash", "--rebase", "--merge"):
+                method = arg[2:]
+            elif arg == "--auto":
+                auto = True
+            elif arg == "--delete-branch":
+                delete_branch = True
+            elif arg == "--match-head-commit":
+                if i + 1 < len(args):
+                    match_head = args[i + 1]
+                    i += 1
+                else:
+                    yield Message(
+                        "system", "Error: --match-head-commit requires a SHA value"
+                    )
+                    return
+            i += 1
+
+    result = merge_github_pr(
+        owner,
+        repo,
+        pr_number,
+        method=method,
+        auto=auto,
+        delete_branch=delete_branch,
+        match_head_commit=match_head,
+    )
+
+    if result["success"]:
+        output = str(result["message"])
+        if "sha" in result:
+            output += f"\nMerge commit: {result['sha']}"
+        yield Message("system", output)
+    else:
+        yield Message("system", f"Error: {result['message']}")
+
+
 def execute_gh(
     code: str | None,
     args: list[str] | None,
     kwargs: dict[str, str] | None,
 ) -> Generator[Message, None, None]:
     """Execute GitHub operations."""
-    if args and len(args) >= 2 and args[0] == "pr" and args[1] == "status":
+    if args and len(args) >= 2 and args[0] == "pr" and args[1] == "merge":
+        yield from _handle_pr_merge(args, kwargs)
+
+    elif args and len(args) >= 2 and args[0] == "pr" and args[1] == "status":
         yield from _handle_pr_status(args, kwargs)
 
     elif args and len(args) >= 2 and args[0] == "pr" and args[1] == "checks":
@@ -673,7 +739,7 @@ def execute_gh(
     else:
         yield Message(
             "system",
-            "Error: Unknown gh command. Available: gh issue list, gh issue view, gh pr list, gh pr view, gh pr diff, gh pr status, gh pr checks, gh run view, gh search issues, gh search prs\n\nReferences can be URLs, owner/repo#N, #N, or bare numbers.",
+            "Error: Unknown gh command. Available: gh issue list, gh issue view, gh pr list, gh pr view, gh pr diff, gh pr merge, gh pr status, gh pr checks, gh run view, gh search issues, gh search prs\n\nReferences can be URLs, owner/repo#N, #N, or bare numbers.",
         )
 
 
@@ -681,32 +747,38 @@ instructions = """Interact with GitHub via the GitHub CLI (gh).
 
 Refs: full URLs, `owner/repo#N`, `#N`, or bare `N` (when in a git repo).
 
-List issues/PRs (--repo, --state, --label, --limit):
+List issues/PRs:
 ```gh issue list --repo owner/repo --state open --limit 20
 gh pr list --repo owner/repo --state open --limit 20
 ```
 
-Search issues/PRs across repos (--repo, --state, --author, --label, --limit):
+Search issues/PRs across repos:
 ```gh search issues "bug fix" --repo owner/repo --state open --limit 10
 gh search prs "feature" --author username --state open
 ```
 
-Read issue/PR with full body and comments:
+Read issue/PR:
 ```gh issue view owner/repo#42
 gh pr view owner/repo#123
 ```
 
-Inspect code changes (diffstat + unified diff):
+Inspect code changes:
 ```gh pr diff owner/repo#123
 ```
 
-CI status (run IDs for failed checks):
+Merge a pull request (default: squash):
+```gh pr merge owner/repo#123
+gh pr merge owner/repo#123 --rebase
+gh pr merge owner/repo#123 --squash --auto --delete-branch --match-head-commit abc1234
+```
+
+CI status:
 ```gh pr status <ref> [commit_sha]
 gh pr checks <ref> [commit_sha]
 gh run view <run-id>
 ```
 
-Multi-line comments (avoids `\\n` literal issues):
+Multi-line comments:
 ```shell
 gh issue comment NUM --repo owner/repo --body-file - << 'EOF'
 Body here
@@ -789,6 +861,23 @@ def examples(tool_format):
 > System: [12:34:56] ✅ 4 passed, ❌ 2 failed, 🔄 3 in progress
 > System: ...
 > System: ❌ Checks failed: 2 failed, 4 passed
+
+> User: merge PR #123 on owner/repo
+> Assistant:
+{ToolUse("gh", ["pr", "merge", "owner/repo#123"], None).to_output(tool_format)}
+> System: ✓ Squashed and merged pull request #123
+> System: Merge commit: abc1234def5678
+
+> User: auto-merge PR when checks pass, and delete the branch
+> Assistant:
+{
+        ToolUse(
+            "gh",
+            ["pr", "merge", "owner/repo#123", "--squash", "--auto", "--delete-branch"],
+            None,
+        ).to_output(tool_format)
+    }
+> System: ✓ Pull request #123 will be automatically merged via squash when all checks pass
 
 > User: create a public repo from the current directory, and push. Note that --confirm and -y are deprecated, and no longer needed.
 > Assistant:
