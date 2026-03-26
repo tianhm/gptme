@@ -997,3 +997,187 @@ class TestResolveRepoForList:
         assert err is None
         assert flags["state"] == "closed"
         assert flags["limit"] == "5"
+
+
+# --- gh search dispatch ---
+
+
+class TestSearchDispatch:
+    @patch("gptme.tools.gh.search_github_issues")
+    def test_search_issues_dispatches(self, mock_search):
+        """gh search issues dispatches to search_github_issues."""
+        mock_search.return_value = "Search results"
+        messages = list(execute_gh(None, ["search", "issues", "auth", "bug"], None))
+        assert len(messages) == 1
+        assert messages[0].content == "Search results"
+        mock_search.assert_called_once_with(
+            "auth bug",
+            repo=None,
+            state=None,
+            author=None,
+            assignee=None,
+            label=None,
+            limit=20,
+        )
+
+    @patch("gptme.tools.gh.search_github_prs")
+    def test_search_prs_dispatches(self, mock_search):
+        """gh search prs dispatches to search_github_prs."""
+        mock_search.return_value = "PR results"
+        messages = list(execute_gh(None, ["search", "prs", "feature"], None))
+        assert len(messages) == 1
+        assert messages[0].content == "PR results"
+        mock_search.assert_called_once_with(
+            "feature",
+            repo=None,
+            state=None,
+            author=None,
+            label=None,
+            limit=20,
+        )
+
+    @patch("gptme.tools.gh.search_github_issues")
+    def test_search_issues_with_flags(self, mock_search):
+        """gh search issues passes flags correctly."""
+        mock_search.return_value = "results"
+        messages = list(
+            execute_gh(
+                None,
+                [
+                    "search",
+                    "issues",
+                    "bug",
+                    "--repo",
+                    "owner/repo",
+                    "--state",
+                    "open",
+                    "--author",
+                    "alice",
+                    "--label",
+                    "critical",
+                    "--limit",
+                    "5",
+                ],
+                None,
+            )
+        )
+        assert len(messages) == 1
+        mock_search.assert_called_once_with(
+            "bug",
+            repo="owner/repo",
+            state="open",
+            author="alice",
+            assignee=None,
+            label="critical",
+            limit=5,
+        )
+
+    @patch("gptme.tools.gh.search_github_prs")
+    def test_search_prs_with_flags(self, mock_search):
+        """gh search prs passes flags correctly."""
+        mock_search.return_value = "results"
+        messages = list(
+            execute_gh(
+                None,
+                ["search", "prs", "fix", "--author", "bob", "--state", "merged"],
+                None,
+            )
+        )
+        assert len(messages) == 1
+        mock_search.assert_called_once_with(
+            "fix",
+            repo=None,
+            state="merged",
+            author="bob",
+            label=None,
+            limit=20,
+        )
+
+    def test_search_no_query(self):
+        """gh search issues without query shows error."""
+        messages = list(execute_gh(None, ["search", "issues"], None))
+        assert len(messages) == 1
+        assert "No search query" in messages[0].content
+
+    def test_search_trailing_flag_errors(self):
+        """gh search rejects flags without values."""
+        messages = list(execute_gh(None, ["search", "issues", "auth", "--state"], None))
+        assert len(messages) == 1
+        assert "Flag --state requires a value" in messages[0].content
+
+    def test_search_flag_followed_by_flag_errors(self):
+        """gh search rejects flags whose next token is another flag."""
+        messages = list(
+            execute_gh(
+                None,
+                ["search", "issues", "auth", "--state", "--author", "bob"],
+                None,
+            )
+        )
+        assert len(messages) == 1
+        assert "Flag --state requires a value" in messages[0].content
+
+    @patch("gptme.tools.gh.search_github_issues")
+    def test_search_flag_without_value(self, mock_search):
+        """Dangling search flags return an explicit error."""
+        messages = list(execute_gh(None, ["search", "issues", "auth", "--state"], None))
+        assert len(messages) == 1
+        assert "Flag --state requires a value" in messages[0].content
+        mock_search.assert_not_called()
+
+    def test_search_invalid_limit(self):
+        """gh search rejects non-integer --limit values explicitly."""
+        for bad_limit in ["abc", "-5", "1.5"]:
+            messages = list(
+                execute_gh(
+                    None,
+                    ["search", "issues", "auth", "--limit", bad_limit],
+                    None,
+                )
+            )
+            assert len(messages) == 1, f"Expected 1 message for limit={bad_limit!r}"
+            assert "--limit requires a positive integer" in messages[0].content
+
+    @patch("gptme.tools.gh.search_github_issues")
+    def test_search_failure(self, mock_search):
+        """gh search returns error on failure."""
+        mock_search.return_value = None
+        messages = list(execute_gh(None, ["search", "issues", "query"], None))
+        assert len(messages) == 1
+        assert "Failed to search" in messages[0].content
+
+    @patch("gptme.tools.gh.search_github_issues")
+    def test_search_issues_multi_word_query(self, mock_search):
+        """Multi-word queries are joined correctly."""
+        mock_search.return_value = "results"
+        list(execute_gh(None, ["search", "issues", "fix", "auth", "bug"], None))
+        mock_search.assert_called_once()
+        assert mock_search.call_args[0][0] == "fix auth bug"
+
+    def test_search_prs_rejects_assignee(self):
+        """gh search prs rejects --assignee with a clear error (not silently ignored)."""
+        messages = list(
+            execute_gh(
+                None,
+                ["search", "prs", "auth", "--assignee", "alice"],
+                None,
+            )
+        )
+        assert len(messages) == 1
+        assert "--assignee is not supported for PR search" in messages[0].content
+        assert "--author" in messages[0].content
+
+    @patch("gptme.tools.gh.search_github_issues")
+    def test_search_issues_flags_between_words(self, mock_search):
+        """Flags interspersed with query words are parsed correctly."""
+        mock_search.return_value = "results"
+        list(
+            execute_gh(
+                None,
+                ["search", "issues", "auth", "--repo", "o/r", "bug"],
+                None,
+            )
+        )
+        mock_search.assert_called_once()
+        assert mock_search.call_args[0][0] == "auth bug"
+        assert mock_search.call_args[1]["repo"] == "o/r"
