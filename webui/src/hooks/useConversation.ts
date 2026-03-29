@@ -13,6 +13,8 @@ import {
   setPendingTool,
   setExecutingTool,
   addMessage,
+  setMessageStatus,
+  removeMessage,
   initConversation,
   selectedConversation$,
   updateConversationName,
@@ -359,31 +361,51 @@ export function useConversation(conversationId: string, serverId?: string) {
       setExecutingTool(conversationId, null, null);
     }
 
-    // Create user message
+    // Upload pending files first if any
+    let filePaths = options?.files || [];
+    if (options?.pendingFiles?.length) {
+      try {
+        const uploadResult = await api.uploadFiles(conversationId, options.pendingFiles);
+        filePaths = [...filePaths, ...uploadResult.files.map((f) => f.path)];
+      } catch (error) {
+        console.error('[useConversation] File upload failed:', error);
+        toast({
+          variant: 'destructive',
+          title: 'Upload failed',
+          description: 'Failed to upload attached files',
+        });
+        // Continue sending the message without files
+      }
+    }
+
+    // Create user message with pending status
     const userMessage: Message = {
       role: 'user',
       content: message,
       timestamp: new Date().toISOString(),
-      ...(options?.files && options.files.length > 0 ? { files: options.files } : {}),
+      ...(filePaths.length > 0 ? { files: filePaths } : {}),
+      _status: 'pending',
     };
 
-    // Add message to conversation
+    // Add message to conversation (optimistic)
     addMessage(conversationId, userMessage);
 
     try {
       // Send the message
       await api.sendMessage(conversationId, userMessage);
+      setMessageStatus(conversationId, userMessage.timestamp!, 'sent');
 
       // Start generation
       await api.step(conversationId, options?.model, options?.stream);
     } catch (error) {
       console.error('Error sending message:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Failed to send message';
+      setMessageStatus(conversationId, userMessage.timestamp!, 'failed', errorMsg);
       toast({
         variant: 'destructive',
-        title: 'Error',
-        description: 'Failed to send message',
+        title: 'Failed to send',
+        description: errorMsg,
       });
-      throw error;
     }
   };
 
@@ -458,9 +480,20 @@ export function useConversation(conversationId: string, serverId?: string) {
     }
   };
 
+  const retryMessage = async (failedMessage: Message) => {
+    if (!conversation$) return;
+    // Remove the failed message and re-send
+    removeMessage(conversationId, failedMessage.timestamp!);
+    await sendMessage({
+      message: failedMessage.content,
+      options: failedMessage.files?.length ? { files: failedMessage.files } : undefined,
+    });
+  };
+
   return {
     conversation$,
     sendMessage,
+    retryMessage,
     confirmTool,
     interruptGeneration,
   };

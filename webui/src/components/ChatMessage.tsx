@@ -8,7 +8,7 @@ import { ObservableHint, type Observable } from '@legendapp/state';
 import { Memo, useObservable, useObserveEffect } from '@legendapp/state/react';
 import * as smd from '@/utils/smd';
 import { customRenderer, type CustomRenderer } from '@/utils/markdownRenderer';
-import { Clipboard, Check } from 'lucide-react';
+import { Clipboard, Check, AlertCircle, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
@@ -47,6 +47,7 @@ interface Props {
   conversationId: string;
   agentAvatarUrl?: string;
   agentName?: string;
+  onRetry?: (message: Message) => void;
 }
 
 export const ChatMessage: FC<Props> = ({
@@ -56,6 +57,7 @@ export const ChatMessage: FC<Props> = ({
   conversationId,
   agentAvatarUrl,
   agentName,
+  onRetry,
 }) => {
   const { api, connectionConfig } = useApi();
   const { settings } = useSettings();
@@ -308,27 +310,51 @@ export const ChatMessage: FC<Props> = ({
                         }}
                       </Memo>
                       {renderFiles()}
-                      <Memo>
-                        {() => {
-                          const timestamp = (message$.get() as Message)?.timestamp;
-                          if (!timestamp) return null;
-                          const { short, full } = formatTimestamp(timestamp);
-                          if (!short) return null;
-                          return (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <div className="mt-0.5 select-none text-right text-[10px] text-muted-foreground/50 opacity-0 transition-opacity group-hover/message:opacity-100">
-                                    {short}
-                                  </div>
-                                </TooltipTrigger>
-                                <TooltipContent side="bottom">{full}</TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          );
-                        }}
-                      </Memo>
                     </div>
+                    {/* Failed message indicator */}
+                    <Memo>
+                      {() => {
+                        const msg = message$.get() as Message;
+                        if (msg._status !== 'failed') return null;
+                        return (
+                          <div className="flex items-center gap-2 px-3 py-1 text-xs text-destructive">
+                            <AlertCircle className="h-3 w-3" />
+                            <span>{msg._error || 'Failed to send'}</span>
+                            {onRetry && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-5 gap-1 px-1.5 text-xs text-destructive hover:text-destructive"
+                                onClick={() => onRetry(msg)}
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                Retry
+                              </Button>
+                            )}
+                          </div>
+                        );
+                      }}
+                    </Memo>
+                    <Memo>
+                      {() => {
+                        const timestamp = (message$.get() as Message)?.timestamp;
+                        if (!timestamp) return null;
+                        const { short, full } = formatTimestamp(timestamp);
+                        if (!short) return null;
+                        return (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="h-0 select-none overflow-visible px-3 text-right text-[10px] leading-4 text-muted-foreground/50 opacity-0 transition-opacity group-hover/message:opacity-100">
+                                  {short}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom">{full}</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        );
+                      }}
+                    </Memo>
                   </div>
                 </div>
               </div>
