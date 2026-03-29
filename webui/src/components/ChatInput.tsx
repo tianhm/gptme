@@ -1,4 +1,16 @@
-import { Send, Loader2, Settings, X, Bot, Folder, Clock, Paperclip, File } from 'lucide-react';
+import {
+  Send,
+  Loader2,
+  Settings,
+  X,
+  Bot,
+  Folder,
+  Clock,
+  Paperclip,
+  File,
+  ChevronDown,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -13,7 +25,8 @@ import {
 } from 'react';
 import { useApi } from '@/contexts/ApiContext';
 import { Badge } from '@/components/ui/badge';
-import { ModelSelector } from '@/components/ModelSelector';
+import { ModelPicker } from '@/components/ModelPicker';
+import { ProviderIcon } from '@/components/ProviderIcon';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
@@ -21,13 +34,26 @@ import { Label } from '@/components/ui/label';
 import { type Observable } from '@legendapp/state';
 import { Computed, use$ } from '@legendapp/state/react';
 import { conversations$ } from '@/stores/conversations';
-import { selectedAgent$, selectedWorkspace$ } from '@/stores/sidebar';
+import {
+  selectedAgent$,
+  selectedWorkspace$,
+  rightSidebarVisible$,
+  rightSidebarActiveTab$,
+} from '@/stores/sidebar';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { WorkspaceSelector } from '@/components/WorkspaceSelector';
 import type { WorkspaceProject, Agent } from '@/utils/workspaceUtils';
 import { useModels } from '@/hooks/useModels';
+import { useAgents } from '@/hooks/useAgents';
 import { useFileAutocomplete } from '@/hooks/useFileAutocomplete';
 import { FileAutocomplete } from '@/components/FileAutocomplete';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 export interface ChatOptions {
   model?: string;
@@ -50,41 +76,94 @@ interface Props {
 }
 
 interface ChatOptionsProps {
-  selectedModel: string;
-  setSelectedModel: (model: string) => void;
   selectedWorkspace: string;
   setSelectedWorkspace: (workspace: string) => void;
+  selectedAgent: Agent | null;
+  setSelectedAgent: (agent: Agent | null) => void;
+  availableAgents: Agent[];
+  baseUrl: string;
   streamingEnabled: boolean;
   setStreamingEnabled: (enabled: boolean) => void;
   availableWorkspaces: WorkspaceProject[];
   isDisabled: boolean;
   showWorkspaceSelector: boolean;
   onAddWorkspace?: (path: string) => void;
+  onOpenChatSettings?: () => void;
 }
 
 const ChatOptionsPanel: FC<ChatOptionsProps> = ({
-  selectedModel,
-  setSelectedModel,
   selectedWorkspace,
   setSelectedWorkspace,
+  selectedAgent,
+  setSelectedAgent,
+  availableAgents,
+  baseUrl,
   streamingEnabled,
   setStreamingEnabled,
   availableWorkspaces,
   isDisabled,
   showWorkspaceSelector,
   onAddWorkspace,
+  onOpenChatSettings,
 }) => (
   <div className="space-y-8">
-    <div className="space-y-1">
-      <Label>Model</Label>
-      <ModelSelector
-        value={selectedModel}
-        onValueChange={setSelectedModel}
-        disabled={isDisabled}
-        showFormField={false}
-        placeholder="Select model"
-      />
-    </div>
+    {showWorkspaceSelector && availableAgents.length > 0 && (
+      <div className="space-y-1">
+        <Label>Agent</Label>
+        <Select
+          value={selectedAgent?.path || '_none'}
+          onValueChange={(val) => {
+            if (val === '_none') {
+              setSelectedAgent(null);
+            } else {
+              const agent = availableAgents.find((a) => a.path === val);
+              if (agent) setSelectedAgent(agent);
+            }
+          }}
+          disabled={isDisabled}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="No agent">
+              {selectedAgent ? (
+                <div className="flex items-center gap-2">
+                  {selectedAgent.hasAvatar ? (
+                    <img
+                      src={`${baseUrl}/api/v2/agents/avatar?path=${encodeURIComponent(selectedAgent.path)}`}
+                      alt={selectedAgent.name}
+                      className="h-4 w-4 rounded-full object-cover"
+                    />
+                  ) : (
+                    <Bot className="h-3.5 w-3.5" />
+                  )}
+                  <span>{selectedAgent.name}</span>
+                </div>
+              ) : (
+                'No agent'
+              )}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="_none">No agent</SelectItem>
+            {availableAgents.map((agent) => (
+              <SelectItem key={agent.path} value={agent.path}>
+                <div className="flex items-center gap-2">
+                  {agent.hasAvatar ? (
+                    <img
+                      src={`${baseUrl}/api/v2/agents/avatar?path=${encodeURIComponent(agent.path)}`}
+                      alt={agent.name}
+                      className="h-4 w-4 rounded-full object-cover"
+                    />
+                  ) : (
+                    <Bot className="h-3.5 w-3.5" />
+                  )}
+                  <span>{agent.name}</span>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    )}
 
     {showWorkspaceSelector && (
       <WorkspaceSelector
@@ -103,6 +182,17 @@ const ChatOptionsPanel: FC<ChatOptionsProps> = ({
       setStreamingEnabled={setStreamingEnabled}
       isDisabled={isDisabled}
     />
+
+    {onOpenChatSettings && (
+      <button
+        type="button"
+        onClick={onOpenChatSettings}
+        className="flex w-full items-center gap-2 border-t pt-4 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" />
+        Chat settings
+      </button>
+    )}
   </div>
 );
 
@@ -121,6 +211,43 @@ const StreamingToggle: FC<{
     />
   </div>
 );
+
+const ModelBadge: FC<{
+  model: string;
+  models: { id: string; provider: string; model: string }[];
+  onModelChange: (model: string) => void;
+  isDisabled: boolean;
+}> = ({ model, models, onModelChange, isDisabled }) => {
+  const [open, setOpen] = useState(false);
+  const modelInfo = models.find((m) => m.id === model);
+  const displayName = modelInfo?.model || model.split('/').pop() || model;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 max-w-[200px] rounded-sm px-1.5 text-[10px] text-muted-foreground transition-all hover:bg-accent hover:text-muted-foreground hover:opacity-100"
+          disabled={isDisabled}
+        >
+          {modelInfo?.provider && <ProviderIcon provider={modelInfo.provider} size={10} />}
+          <span className="ml-1 truncate">{displayName}</span>
+          <ChevronDown className="ml-0.5 h-2 w-2 flex-shrink-0" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-0" align="start">
+        <ModelPicker
+          value={model}
+          onSelect={(id) => {
+            onModelChange(id);
+            setOpen(false);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+};
 
 const OptionsButton: FC<{ isDisabled: boolean; children: React.ReactNode }> = ({
   isDisabled,
@@ -212,10 +339,22 @@ const WorkspaceBadge: FC<{ workspace: string; onRemove: () => void }> = ({
   );
 };
 
-const AgentBadge: FC<{ agent: Agent; onRemove: () => void }> = ({ agent, onRemove }) => (
+const AgentBadge: FC<{ agent: Agent; baseUrl: string; onRemove: () => void }> = ({
+  agent,
+  baseUrl,
+  onRemove,
+}) => (
   <Badge variant="secondary" className="flex items-center gap-1.5 pr-1">
     <div className="flex items-center gap-1.5">
-      <Bot className="h-3 w-3" />
+      {agent.hasAvatar ? (
+        <img
+          src={`${baseUrl}/api/v2/agents/avatar?path=${encodeURIComponent(agent.path)}`}
+          alt={agent.name}
+          className="h-4 w-4 rounded-full object-cover"
+        />
+      ) : (
+        <Bot className="h-3 w-3" />
+      )}
       <span className="text-xs">{agent.name}</span>
     </div>
     <Button
@@ -297,12 +436,12 @@ export const ChatInput: FC<Props> = ({
   value,
   onChange,
 }) => {
-  const { isConnected$ } = useApi();
+  const { isConnected$, connectionConfig } = useApi();
   const sidebarSelectedWorkspace = use$(selectedWorkspace$);
   const sidebarSelectedAgent = use$(selectedAgent$);
 
   // Use dynamic models instead of static list
-  const { defaultModel: apiDefaultModel } = useModels();
+  const { models: modelInfos, defaultModel: apiDefaultModel } = useModels();
 
   // Get conversation config to read the actual model
   const conversation$ = conversationId ? conversations$.get(conversationId) : null;
@@ -452,8 +591,9 @@ export const ChatInput: FC<Props> = ({
 
   const isConnected = use$(isConnected$);
 
-  // Get available workspaces using the reusable hook
-  const { workspaces: availableWorkspaces, addCustomWorkspace } = useWorkspaces(false); // Don't fetch, just subscribe to cache changes
+  // Get available workspaces and agents using reusable hooks
+  const { workspaces: availableWorkspaces, addCustomWorkspace } = useWorkspaces(false);
+  const { agents: availableAgents } = useAgents(false);
 
   // File autocomplete for @ mentions
   const fileAutocomplete = useFileAutocomplete({
@@ -514,19 +654,24 @@ export const ChatInput: FC<Props> = ({
     wasGenerating.current = isGenerating;
   }, [isGenerating, messageQueue, onSend]);
 
-  // Update workspace when sidebar selection changes (only for new conversations)
+  // Update workspace when sidebar/agent selection changes (only for new conversations)
+  // Agent selection defaults workspace to agent's path, but explicit workspace choice takes priority
   useEffect(() => {
     if (!conversationId && sidebarSelectedWorkspace) {
       setSelectedWorkspace(sidebarSelectedWorkspace);
       setWorkspaceExplicitlySelected(true);
-    } else if (!conversationId && sidebarSelectedAgent && sidebarSelectedAgent.path) {
+    } else if (
+      !conversationId &&
+      sidebarSelectedAgent &&
+      sidebarSelectedAgent.path &&
+      !workspaceExplicitlySelected
+    ) {
       setSelectedWorkspace(sidebarSelectedAgent.path);
-      setWorkspaceExplicitlySelected(false); // Agent-derived workspace, not explicit
     } else if (!conversationId && !sidebarSelectedWorkspace && !sidebarSelectedAgent) {
       setSelectedWorkspace('.');
       setWorkspaceExplicitlySelected(false);
     }
-  }, [conversationId, sidebarSelectedWorkspace, sidebarSelectedAgent]);
+  }, [conversationId, sidebarSelectedWorkspace, sidebarSelectedAgent, workspaceExplicitlySelected]);
 
   // Wrapper function for explicit workspace selection
   const handleWorkspaceChange = (workspace: string) => {
@@ -766,27 +911,15 @@ export const ChatInput: FC<Props> = ({
                 />
 
                 <div className="absolute bottom-1.5 left-1.5 flex items-center gap-2">
-                  <OptionsButton isDisabled={isDisabled}>
-                    <ChatOptionsPanel
-                      selectedModel={effectiveModel}
-                      setSelectedModel={(model: string) => {
-                        setSelectedModel(model);
-                        setHasExplicitModelSelection(true);
-                      }}
-                      selectedWorkspace={selectedWorkspace}
-                      setSelectedWorkspace={handleWorkspaceChange}
-                      streamingEnabled={streamingEnabled}
-                      setStreamingEnabled={setStreamingEnabled}
-                      availableWorkspaces={availableWorkspaces}
-                      isDisabled={isDisabled}
-                      showWorkspaceSelector={!conversationId}
-                      onAddWorkspace={(path: string) => {
-                        console.log('[ChatInput] Adding new workspace:', path);
-                        addCustomWorkspace(path);
-                      }}
-                    />
-                  </OptionsButton>
-
+                  <ModelBadge
+                    model={effectiveModel}
+                    models={modelInfos}
+                    onModelChange={(model: string) => {
+                      setSelectedModel(model);
+                      setHasExplicitModelSelection(true);
+                    }}
+                    isDisabled={isDisabled}
+                  />
                   {/* File attach button */}
                   <Button
                     type="button"
@@ -801,10 +934,39 @@ export const ChatInput: FC<Props> = ({
                     Attach
                   </Button>
 
+                  <OptionsButton isDisabled={isDisabled}>
+                    <ChatOptionsPanel
+                      selectedWorkspace={selectedWorkspace}
+                      setSelectedWorkspace={handleWorkspaceChange}
+                      selectedAgent={sidebarSelectedAgent}
+                      setSelectedAgent={(agent) => selectedAgent$.set(agent)}
+                      availableAgents={availableAgents}
+                      baseUrl={connectionConfig.baseUrl.replace(/\/+$/, '')}
+                      streamingEnabled={streamingEnabled}
+                      setStreamingEnabled={setStreamingEnabled}
+                      availableWorkspaces={availableWorkspaces}
+                      isDisabled={isDisabled}
+                      showWorkspaceSelector={!conversationId}
+                      onAddWorkspace={(path: string) => {
+                        console.log('[ChatInput] Adding new workspace:', path);
+                        addCustomWorkspace(path);
+                      }}
+                      onOpenChatSettings={
+                        conversationId
+                          ? () => {
+                              rightSidebarActiveTab$.set('settings');
+                              rightSidebarVisible$.set(true);
+                            }
+                          : undefined
+                      }
+                    />
+                  </OptionsButton>
+
                   {/* Agent badge for new conversations */}
                   {!conversationId && sidebarSelectedAgent && (
                     <AgentBadge
                       agent={sidebarSelectedAgent}
+                      baseUrl={connectionConfig.baseUrl.replace(/\/+$/, '')}
                       onRemove={() => selectedAgent$.set(null)}
                     />
                   )}
