@@ -332,6 +332,20 @@ export class ApiClient {
       onError: (error: string) => void;
       onConfigChanged?: (config: ChatConfig, changedFields: string[]) => void;
       onConnected?: () => void;
+      onReconnectState?: (state: {
+        generating: boolean;
+        pendingTools: Array<{
+          tool_id: string;
+          tooluse: ToolUse;
+          auto_confirm: boolean;
+        }>;
+      }) => void;
+      onConversationEdited?: (data: {
+        index: number;
+        truncated: boolean;
+        log: Message[];
+        branches: Record<string, Message[]>;
+      }) => void;
     }
   ): Promise<void> {
     // Close any existing event stream for this conversation
@@ -481,6 +495,18 @@ export class ApiClient {
             clearTimeout(sessionIdTimeout);
             // Notify that connection is established
             callbacks.onConnected?.();
+            // Restore state on reconnect (pending tools, generating flag)
+            if (callbacks.onReconnectState && (data.pending_tools?.length || data.generating)) {
+              callbacks.onReconnectState({
+                generating: data.generating ?? false,
+                pendingTools: data.pending_tools ?? [],
+              });
+            }
+            break;
+
+          case 'conversation_edited':
+            console.log(`[ApiClient] Conversation edited:`, data);
+            callbacks.onConversationEdited?.(data);
             break;
 
           case 'interrupted':
@@ -799,6 +825,38 @@ export class ApiClient {
       }
       throw error;
     }
+  }
+
+  async editMessage(
+    logfile: string,
+    index: number,
+    content?: string,
+    truncate: boolean = false
+  ): Promise<ConversationResponse> {
+    if (!this.isConnected) {
+      throw new ApiClientError('Not connected to API');
+    }
+    const url = `${this.baseUrl}/api/v2/conversations/${logfile}/messages/${index}${truncate ? '?truncate=1' : ''}`;
+    const body: Record<string, string> = {};
+    if (content !== undefined) body.content = content;
+    return this.fetchJson<ConversationResponse>(url, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async rerunTools(logfile: string): Promise<{ status: string; tool_ids: string[] }> {
+    if (!this.isConnected) {
+      throw new ApiClientError('Not connected to API');
+    }
+    const sessionId = this.sessions$.get(logfile);
+    if (!sessionId) {
+      throw new ApiClientError('No active session for this conversation');
+    }
+    return this.fetchJson(`${this.baseUrl}/api/v2/conversations/${logfile}/rerun`, {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId }),
+    });
   }
 
   async uploadFiles(

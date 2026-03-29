@@ -7,6 +7,7 @@ Session management, tool execution, and agent creation are handled by separate m
 
 import logging
 import shutil
+from dataclasses import replace
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -413,6 +414,118 @@ def api_conversation_post(conversation_id: str):
     )
 
     return flask.jsonify({"status": "ok"})
+
+
+@v2_api.route(
+    "/api/v2/conversations/<string:conversation_id>/messages/<int:index>",
+    methods=["PATCH"],
+)
+@require_auth
+@api_doc(
+    summary="Edit message in conversation (V2)",
+    description="Edit a user message in a conversation. With ?truncate=1, removes all messages after the edited one.",
+    responses={
+        200: ConversationResponse,
+        400: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+    },
+    parameters=[
+        CONVERSATION_ID_PARAM,
+        {
+            "name": "index",
+            "in": "path",
+            "required": True,
+            "schema": {"type": "integer"},
+            "description": "Message index",
+        },
+        {
+            "name": "truncate",
+            "in": "query",
+            "required": False,
+            "schema": {"type": "string", "enum": ["0", "1"]},
+            "description": "If '1', remove all messages after the edited one",
+        },
+    ],
+    tags=["conversations-v2"],
+)
+def api_conversation_edit_message(conversation_id: str, index: int):
+    """Edit a message in a conversation.
+
+    Only user messages can be edited. Creates a backup branch before editing.
+    With ?truncate=1, removes all messages after the edited one.
+    """
+    # Validate conversation_id to prevent path traversal
+    if error := _validate_conversation_id(conversation_id):
+        return error
+
+    req_json = request.json or {}
+    content = req_json.get("content")
+    truncate = request.args.get("truncate") == "1"
+
+    # Content is required for edits, but optional for pure truncation
+    if not truncate and (not content or not content.strip()):
+        return flask.jsonify({"error": "content is required and cannot be empty"}), 400
+
+    # Check if generation is in progress
+    sessions = SessionManager.get_sessions_for_conversation(conversation_id)
+    for sess in sessions:
+        if sess.generating:
+            return (
+                flask.jsonify({"error": "Cannot edit while generation is in progress"}),
+                409,
+            )
+
+    try:
+        manager = LogManager.load(conversation_id, lock=False)
+    except FileNotFoundError:
+        return (
+            flask.jsonify({"error": f"Conversation not found: {conversation_id}"}),
+            404,
+        )
+
+    msgs = list(manager.log.messages)
+    if index < 0 or index >= len(msgs):
+        return (
+            flask.jsonify(
+                {"error": f"Message index {index} out of range (0-{len(msgs) - 1})"}
+            ),
+            404,
+        )
+
+    # Content changes are only allowed on user messages.
+    # Truncation (without content change) is allowed on any message.
+    content_changed = content is not None and content != msgs[index].content
+    if content_changed and msgs[index].role != "user":
+        return flask.jsonify({"error": "Can only edit user messages"}), 400
+
+    if content_changed:
+        assert content is not None  # guaranteed by content_changed check
+        edited_msg = replace(msgs[index], content=content)
+        new_msgs = msgs[:index] + [edited_msg] + ([] if truncate else msgs[index + 1 :])
+    elif truncate:
+        new_msgs = msgs[: index + 1]
+    else:
+        return flask.jsonify({"error": "No changes requested"}), 400
+
+    manager.edit(Log(new_msgs))
+
+    # Build response with updated conversation
+    log_dict = manager.to_dict(branches=True)
+
+    # Emit SSE event
+    SessionManager.add_event(
+        conversation_id,
+        {
+            "type": "conversation_edited",
+            "index": index,
+            "truncated": truncate,
+            "log": log_dict.get("log", []),
+            "branches": log_dict.get("branches", {}),
+        },
+    )
+
+    return flask.jsonify(log_dict)
 
 
 @v2_api.route("/api/v2/conversations/<string:conversation_id>", methods=["DELETE"])

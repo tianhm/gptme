@@ -15,6 +15,9 @@ import {
   addMessage,
   setMessageStatus,
   removeMessage,
+  replaceLog,
+  updateBranches,
+  setCurrentBranch,
   initConversation,
   selectedConversation$,
   updateConversationName,
@@ -305,11 +308,35 @@ export function useConversation(conversationId: string, serverId?: string) {
               if (needsStep) {
                 console.log('[useConversation] Triggering initial step after subscription');
                 setNeedsInitialStep(conversationId, false);
-                // Use the api from context to trigger step
                 api.step(conversationId).catch((error) => {
                   console.error('[useConversation] Error triggering initial step:', error);
                 });
               }
+            },
+            onReconnectState: (state) => {
+              console.log('[useConversation] Restoring state on reconnect:', state);
+              if (state.generating) {
+                setGenerating(conversationId, true);
+              }
+              // Restore first pending tool (if any)
+              if (state.pendingTools.length > 0) {
+                if (state.pendingTools.length > 1) {
+                  console.warn(
+                    '[useConversation] Multiple pending tools on reconnect — only restoring the first'
+                  );
+                }
+                const pt = state.pendingTools[0];
+                setPendingTool(conversationId, pt.tool_id, pt.tooluse);
+                if (!pt.auto_confirm) {
+                  setGenerating(conversationId, false);
+                }
+              }
+            },
+            onConversationEdited: (data) => {
+              console.log('[useConversation] Conversation edited:', data);
+              updateBranches(conversationId, data.branches);
+              // Reset to main branch (setCurrentBranch also replaces data.log)
+              setCurrentBranch(conversationId, 'main');
             },
           })
           .catch((err) => {
@@ -490,10 +517,88 @@ export function useConversation(conversationId: string, serverId?: string) {
     });
   };
 
+  const editMessage = async (index: number, content: string, truncate: boolean = false) => {
+    try {
+      const result = await api.editMessage(conversationId, index, content, truncate);
+      // Use API response directly (SSE event may also arrive, but this is immediate)
+      replaceLog(conversationId, result.log);
+      if (result.branches) {
+        updateBranches(conversationId, result.branches);
+      }
+
+      // After truncation, trigger re-generation
+      if (truncate) {
+        await api.step(conversationId);
+      }
+    } catch (error) {
+      console.error('Error editing message:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Failed to edit message';
+      toast({ variant: 'destructive', title: 'Edit failed', description: errorMsg });
+    }
+  };
+
+  const rerunFromMessage = async (index: number) => {
+    if (!conversation$) return;
+    const log = conversation$.data.log.get();
+    const isLastMessage = index === log.length - 1;
+
+    try {
+      if (!isLastMessage) {
+        // Truncate after this message (creates backup branch)
+        const result = await api.editMessage(conversationId, index, undefined, true);
+        replaceLog(conversationId, result.log);
+        if (result.branches) {
+          updateBranches(conversationId, result.branches);
+        }
+      }
+      // Re-run tools from the (now last) assistant message
+      // This parses tool uses and sets them as pending, without calling the LLM
+      try {
+        await api.rerunTools(conversationId);
+      } catch {
+        // No tools found — fall back to step() (regenerate)
+        await api.step(conversationId);
+      }
+    } catch (error) {
+      console.error('Error re-running from message:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Failed to re-run';
+      toast({ variant: 'destructive', title: 'Re-run failed', description: errorMsg });
+    }
+  };
+
+  const regenerateMessage = async (index: number) => {
+    if (!conversation$) return;
+    // Remove the assistant message and everything after, then step to regenerate
+    // Truncate at the message BEFORE this one (the user message)
+    const prevIndex = index - 1;
+    if (prevIndex < 0) return;
+
+    try {
+      const result = await api.editMessage(conversationId, prevIndex, undefined, true);
+      replaceLog(conversationId, result.log);
+      if (result.branches) {
+        updateBranches(conversationId, result.branches);
+      }
+      await api.step(conversationId);
+    } catch (error) {
+      console.error('Error regenerating message:', error);
+      const errorMsg = error instanceof Error ? error.message : 'Failed to regenerate';
+      toast({ variant: 'destructive', title: 'Regenerate failed', description: errorMsg });
+    }
+  };
+
+  const switchBranch = (branchName: string) => {
+    setCurrentBranch(conversationId, branchName);
+  };
+
   return {
     conversation$,
     sendMessage,
     retryMessage,
+    editMessage,
+    rerunFromMessage,
+    regenerateMessage,
+    switchBranch,
     confirmTool,
     interruptGeneration,
   };
