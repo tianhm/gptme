@@ -153,22 +153,22 @@ def api_conversations():
     limit = int(request.args.get("limit", 100))
     search = request.args.get("search", "").strip().lower()
 
+    # Use fast tail-only scan for list/search — reads last 8KB for
+    # preview/model, skips json.loads() on every metadata line.
+    # Full file is still read for line count, but without JSON parsing.
     if search:
         conversations = []
-        for conv in get_user_conversations():
+        for conv in get_user_conversations(detail=False):
             if (
                 search in conv.name.lower()
                 or search in conv.id.lower()
-                or (
-                    conv.last_message_preview
-                    and search in conv.last_message_preview.lower()
-                )
+                or search in (conv.last_message_preview or "").lower()
             ):
                 conversations.append(conv)
                 if len(conversations) >= limit:
                     break
     else:
-        conversations = list(islice(get_user_conversations(), limit))
+        conversations = list(islice(get_user_conversations(detail=False), limit))
     return flask.jsonify(conversations)
 
 
