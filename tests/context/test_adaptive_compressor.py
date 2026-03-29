@@ -242,7 +242,7 @@ class TestExtractiveCompress:
         assert len(result) >= len(content) * 0.9
 
     def test_task_type_affects_selection(self):
-        """Different task types should potentially select different sentences."""
+        """Different task types should select different sentences."""
         content = (
             "The system started normally. "
             "An exception was thrown in the stack trace. "
@@ -255,9 +255,14 @@ class TestExtractiveCompress:
         impl = extractive_compress(
             content, target_ratio=0.4, task_type="implementation"
         )
-        # Both should be valid strings; they may differ due to task-specific scoring
-        assert isinstance(diag, str)
-        assert isinstance(impl, str)
+        # Both should be compressed (shorter than original)
+        assert len(diag) < len(content)
+        assert len(impl) < len(content)
+        # Diagnostic should favor error/exception sentences; implementation should
+        # favor design/architecture sentences — so the outputs should differ.
+        assert diag != impl
+        assert "exception" in diag.lower() or "debug" in diag.lower()
+        assert "design" in impl.lower() or "architecture" in impl.lower()
 
     def test_code_blocks_with_markers_in_sentences(self):
         """Code block markers embedded in sentences should be preserved."""
@@ -388,5 +393,8 @@ class TestAdaptiveCompressor:
             context_files=[f"api{i}.py" for i in range(5)],
             current_context=["class Foo:", "def bar:", "function baz:", "extra"],
         )
-        # Should detect reference implementations
+        # current_context should surface reference implementations in the rationale
         assert isinstance(result, CompressionResult)
+        assert 0.10 <= result.compression_ratio <= 0.50
+        assert "Task Type:" in result.rationale
+        assert "Reference implementation available in workspace" in result.rationale
