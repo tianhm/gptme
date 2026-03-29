@@ -140,7 +140,7 @@ def api_config():
             "name": "search",
             "in": "query",
             "schema": {"type": "string"},
-            "description": "Filter conversations by name (case-insensitive substring match)",
+            "description": "Filter conversations by name, id, or last message preview (case-insensitive substring match)",
         },
     ],
 )
@@ -148,7 +148,7 @@ def api_conversations():
     """List conversations (V2).
 
     Get a list of user conversations with metadata using the V2 API.
-    Supports optional search filtering by conversation name.
+    Supports optional search filtering by conversation name, id, or last message preview.
     """
     limit = int(request.args.get("limit", 100))
     search = request.args.get("search", "").strip().lower()
@@ -156,7 +156,14 @@ def api_conversations():
     if search:
         conversations = []
         for conv in get_user_conversations():
-            if search in conv.name.lower() or search in conv.id.lower():
+            if (
+                search in conv.name.lower()
+                or search in conv.id.lower()
+                or (
+                    conv.last_message_preview
+                    and search in conv.last_message_preview.lower()
+                )
+            ):
                 conversations.append(conv)
                 if len(conversations) >= limit:
                     break
