@@ -536,6 +536,109 @@ def api_conversation_edit_message(conversation_id: str, index: int):
     return flask.jsonify(log_dict)
 
 
+@v2_api.route(
+    "/api/v2/conversations/<string:conversation_id>/messages/<int:index>",
+    methods=["DELETE"],
+)
+@require_auth
+@api_doc(
+    summary="Delete message from conversation (V2)",
+    description="Delete a message from a conversation. Creates a backup branch before deleting.",
+    responses={
+        200: ConversationResponse,
+        400: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+    },
+    parameters=[
+        CONVERSATION_ID_PARAM,
+        {
+            "name": "index",
+            "in": "path",
+            "required": True,
+            "schema": {"type": "integer"},
+            "description": "Message index",
+        },
+    ],
+    tags=["conversations-v2"],
+)
+def api_conversation_delete_message(conversation_id: str, index: int):
+    """Delete a message from a conversation.
+
+    Removes the message at the given index and keeps all other messages intact.
+    Creates a backup branch before deleting.
+    """
+    # Validate conversation_id to prevent path traversal
+    if error := _validate_conversation_id(conversation_id):
+        return error
+
+    # Check if generation is in progress
+    sessions = SessionManager.get_sessions_for_conversation(conversation_id)
+    for sess in sessions:
+        if sess.generating:
+            return (
+                flask.jsonify(
+                    {"error": "Cannot delete while generation is in progress"}
+                ),
+                409,
+            )
+
+    try:
+        manager = LogManager.load(conversation_id, lock=False)
+    except FileNotFoundError:
+        return (
+            flask.jsonify({"error": f"Conversation not found: {conversation_id}"}),
+            404,
+        )
+
+    msgs = list(manager.log.messages)
+    if index < 0 or index >= len(msgs):
+        return (
+            flask.jsonify(
+                {"error": f"Message index {index} out of range (0-{len(msgs) - 1})"}
+            ),
+            404,
+        )
+
+    # Cannot delete system messages
+    if msgs[index].role == "system":
+        return flask.jsonify({"error": "Cannot delete system messages"}), 400
+
+    new_msgs = msgs[:index] + msgs[index + 1 :]
+
+    # Validate role sequence: consecutive same-role messages break LLM APIs
+    non_system = [m for m in new_msgs if m.role != "system"]
+    for i in range(1, len(non_system)):
+        if non_system[i].role == non_system[i - 1].role:
+            return (
+                flask.jsonify(
+                    {
+                        "error": f"Deleting this message would create consecutive {non_system[i].role!r} messages, which is not supported by LLM APIs"
+                    }
+                ),
+                400,
+            )
+
+    manager.edit(Log(new_msgs))
+
+    # Build response with updated conversation
+    log_dict = manager.to_dict(branches=True)
+
+    # Emit SSE event (reuse conversation_edited — client handles log replacement)
+    SessionManager.add_event(
+        conversation_id,
+        {
+            "type": "conversation_edited",
+            "index": index,
+            "truncated": False,
+            "log": log_dict.get("log", []),
+            "branches": log_dict.get("branches", {}),
+        },
+    )
+
+    return flask.jsonify(log_dict)
+
+
 @v2_api.route("/api/v2/conversations/<string:conversation_id>", methods=["DELETE"])
 @require_auth
 @api_doc(
