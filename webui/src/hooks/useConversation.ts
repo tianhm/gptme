@@ -24,6 +24,7 @@ import {
   setNeedsInitialStep,
 } from '@/stores/conversations';
 import { playChime } from '@/utils/audio';
+import { findLatestAssistantIndexForError } from '@/utils/conversationErrorHandling';
 import { notifyGenerationComplete, notifyToolConfirmation } from '@/utils/notifications';
 import { ApiClientError } from '@/utils/api';
 
@@ -284,6 +285,31 @@ export function useConversation(conversationId: string, serverId?: string) {
             },
             onError: (error) => {
               console.error('[useConversation] Error:', error);
+              setGenerating(conversationId, false);
+              setPendingTool(conversationId, null, null);
+              setExecutingTool(conversationId, null, null);
+              messageJustCompleted.current = false;
+
+              const messages$ = conversation$?.data.log;
+              const assistantIndex = findLatestAssistantIndexForError(messages$?.peek());
+              const assistantMessage$ =
+                assistantIndex >= 0 ? messages$?.[assistantIndex] : undefined;
+              const streamingAssistantMessage$ = assistantMessage$ as
+                | (typeof assistantMessage$ & { isComplete?: { set: (value: boolean) => void } })
+                | undefined;
+
+              if (assistantMessage$?.role.get() === 'assistant') {
+                const content = assistantMessage$.content.get();
+                if (content === '') {
+                  const timestamp = assistantMessage$.timestamp?.get();
+                  if (timestamp) {
+                    removeMessage(conversationId, timestamp);
+                  }
+                } else if (streamingAssistantMessage$?.isComplete) {
+                  streamingAssistantMessage$.isComplete.set(true);
+                }
+              }
+
               toast({
                 variant: 'destructive',
                 title: 'Error',
