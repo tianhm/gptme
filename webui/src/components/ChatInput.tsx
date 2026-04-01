@@ -705,20 +705,20 @@ export const ChatInput: FC<Props> = ({
     wasGenerating.current = isGenerating;
   }, [isGenerating, messageQueue, onSend]);
 
-  // Update workspace when sidebar/agent selection changes (only for new conversations)
-  // Agent selection defaults workspace to agent's path, but explicit workspace choice takes priority
+  // Sync workspace from sidebar/agent selection (only for new conversations).
+  // Sidebar workspace selections sync both ways. Agent default applies only when
+  // the user hasn't made an explicit pick. Clearing sidebar filters always resets
+  // the ChatInput badge regardless of workspaceExplicitlySelected.
   useEffect(() => {
-    if (!conversationId && sidebarSelectedWorkspace) {
+    if (conversationId) return; // only for new conversations
+
+    if (sidebarSelectedWorkspace) {
       setSelectedWorkspace(sidebarSelectedWorkspace);
       setWorkspaceExplicitlySelected(true);
-    } else if (
-      !conversationId &&
-      sidebarSelectedAgent &&
-      sidebarSelectedAgent.path &&
-      !workspaceExplicitlySelected
-    ) {
+    } else if (sidebarSelectedAgent?.path && !workspaceExplicitlySelected) {
       setSelectedWorkspace(sidebarSelectedAgent.path);
-    } else if (!conversationId && !sidebarSelectedWorkspace && !sidebarSelectedAgent) {
+    } else if (!sidebarSelectedWorkspace && !sidebarSelectedAgent) {
+      // Sidebar cleared — reset ChatInput workspace badge
       setSelectedWorkspace('.');
       setWorkspaceExplicitlySelected(false);
     }
@@ -728,6 +728,8 @@ export const ChatInput: FC<Props> = ({
   const handleWorkspaceChange = (workspace: string) => {
     setSelectedWorkspace(workspace);
     setWorkspaceExplicitlySelected(workspace !== '.');
+    // Sync to sidebar observable so the conversation list filters accordingly
+    selectedWorkspace$.set(workspace === '.' ? '' : workspace);
   };
 
   // Edit mode: save with truncate option
@@ -1111,10 +1113,7 @@ export const ChatInput: FC<Props> = ({
                         workspaceExplicitlySelected && (
                           <WorkspaceBadge
                             workspace={selectedWorkspace}
-                            onRemove={() => {
-                              setSelectedWorkspace('.');
-                              setWorkspaceExplicitlySelected(false);
-                            }}
+                            onRemove={() => handleWorkspaceChange('.')}
                           />
                         )}
                     </div>
