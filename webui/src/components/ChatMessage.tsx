@@ -405,9 +405,25 @@ export const ChatMessage: FC<Props> = ({
   };
 
   const chainType$ = useMessageChainType(message$, previousMessage$, nextMessage$);
+
+  // Compute visual chain once: adjusts chain type to avoid border issues next to borderless
+  // assistant messages. Used by both messageClasses$ and wrapperClasses$.
+  const visualChain$ = useObservable(() => {
+    const chain = chainType$.get();
+    const prevIsAssistant = previousMessage$?.role?.get() === 'assistant';
+    const nextIsAssistant = nextMessage$?.role?.get() === 'assistant';
+    let visualChain = chain;
+    if (prevIsAssistant && (visualChain === 'middle' || visualChain === 'end')) {
+      visualChain = visualChain === 'middle' ? 'start' : 'standalone';
+    }
+    if (nextIsAssistant && (visualChain === 'middle' || visualChain === 'start')) {
+      visualChain = visualChain === 'middle' ? 'end' : 'standalone';
+    }
+    return visualChain;
+  });
+
   const messageClasses$ = useObservable(() => {
     const isAssistant = isAssistant$.get();
-    const chain = chainType$.get();
 
     // Assistant messages: borderless, page-native surface with subtle hover highlight
     if (isAssistant) {
@@ -427,18 +443,18 @@ export const ChatMessage: FC<Props> = ({
         : 'bg-card';
 
     // Chain rounding + borders for non-assistant messages
+    const visualChain = visualChain$.get();
     const chainClasses = [
-      (chain === 'standalone' && 'rounded-lg') || '',
-      (chain === 'start' && 'rounded-t-lg') || '',
-      (chain === 'end' && 'rounded-b-lg') || '',
-      (chain !== 'start' && chain !== 'standalone' && 'border-t-0') || '',
+      (visualChain === 'standalone' && 'rounded-lg') || '',
+      (visualChain === 'start' && 'rounded-t-lg') || '',
+      (visualChain === 'end' && 'rounded-b-lg') || '',
+      (visualChain !== 'start' && visualChain !== 'standalone' && 'border-t-0') || '',
       'border',
     ].join(' ');
 
     return `${roleClasses} ${chainClasses}`;
   });
   const wrapperClasses$ = useObservable(() => {
-    const chain = chainType$.get();
     const isAssistant = isAssistant$.get();
 
     // Assistant messages get consistent spacing (not tight chain spacing)
@@ -446,9 +462,11 @@ export const ChatMessage: FC<Props> = ({
       return 'mt-2 mb-2';
     }
 
+    // Use visual chain to avoid tight overlap with borderless assistant messages
+    const visualChain = visualChain$.get();
     return `
-        ${chain !== 'start' && chain !== 'standalone' ? '-mt-[2px]' : 'mt-4'}
-        ${chain === 'standalone' ? 'mb-4' : 'mb-0'}
+        ${visualChain !== 'start' && visualChain !== 'standalone' ? '-mt-[2px]' : 'mt-4'}
+        ${visualChain === 'standalone' ? 'mb-4' : 'mb-0'}
       `;
   });
 
