@@ -16,6 +16,7 @@ import csv
 import html
 import io
 import json
+import math
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -268,25 +269,41 @@ def aggregate_results(results: list[dict], min_tests: int = 4) -> list[dict]:
                 "pass_rate": total_passed / total_tests if total_tests > 0 else 0,
             }
 
-    # For each base model, pick the best format (highest pass rate).
-    # Tie-break: prefer format with more tests.
+    # Compute Wilson score lower bound for all format entries.
+    # This penalizes models tested on few tests: 4/4 (100%) ranks below
+    # 56/59 (95%) because the confidence interval is much wider with n=4.
+    # Uses z=1.0 (~68% confidence) for a moderate penalty.
+    z = 1.0
+    z2 = z * z
+    for stats in fmt_stats.values():
+        n: int = stats["total_tests"]  # type: ignore[assignment]
+        p: float = stats["pass_rate"]  # type: ignore[assignment]
+        if n > 0:
+            stats["ranking_score"] = (
+                p + z2 / (2 * n) - z * math.sqrt((p * (1 - p) / n) + z2 / (4 * n * n))
+            ) / (1 + z2 / n)
+        else:
+            stats["ranking_score"] = 0
+
+    # For each base model, pick the best format by Wilson score (consistent
+    # with the final ranking criterion). Tie-break: prefer format with more tests.
     best_by_model: dict[str, dict] = {}
     for (model, _fmt), stats in fmt_stats.items():
         current = best_by_model.get(model)
         if (
             current is None
-            or stats["pass_rate"] > current["pass_rate"]
+            or stats["ranking_score"] > current["ranking_score"]
             or (
-                stats["pass_rate"] == current["pass_rate"]
+                stats["ranking_score"] == current["ranking_score"]
                 and stats["total_tests"] > current["total_tests"]
             )
         ):
             best_by_model[model] = stats
 
-    # Sort by pass rate descending, then total tests descending
+    # Sort by Wilson score descending, then total tests descending
     ranked = sorted(
         best_by_model.values(),
-        key=lambda x: (-x["pass_rate"], -x["total_tests"]),
+        key=lambda x: (-x.get("ranking_score", 0), -x["total_tests"]),
     )
     return ranked
 
