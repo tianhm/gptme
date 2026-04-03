@@ -624,9 +624,64 @@ def test_format_html_escapes_model_names(tmp_path):
     )
     results = load_results(tmp_path)
     ranked = aggregate_results(results, min_tests=3)
-    html = format_html_page(ranked)
-    assert "<script>" not in html
-    assert "&lt;script&gt;" in html
+    output = format_html_page(ranked)
+    # The model name must be escaped — no raw <script>evil</script> in data cells
+    assert "<script>evil</script>" not in output
+    assert "&lt;script&gt;" in output
+    # data-model attribute must also be escaped (single-quote injection risk)
+    assert "data-model='some/&lt;script&gt;evil&lt;/script&gt;'" in output
+
+
+def test_format_html_escapes_single_quote_in_data_model(tmp_path):
+    """data-model attribute value escapes single quotes to prevent attribute injection."""
+    _create_eval_results(
+        tmp_path,
+        [
+            {
+                "dir": "run1",
+                "rows": [
+                    ("vendor/model's-name", "tool", f"test-{i}", "true")
+                    for i in range(5)
+                ],
+            }
+        ],
+    )
+    results = load_results(tmp_path)
+    ranked = aggregate_results(results, min_tests=3)
+    output = format_html_page(ranked)
+    # Raw single quote must not appear in the data-model attribute value
+    assert "data-model='vendor/model's-name'" not in output
+    # Must be escaped as &#x27;
+    assert "&#x27;" in output
+
+
+def test_format_html_interactive_features(tmp_path):
+    """HTML output includes interactive sort/filter features."""
+    _create_eval_results(
+        tmp_path,
+        [
+            {
+                "dir": "run1",
+                "rows": [("model-a", "tool", f"test-{i}", "true") for i in range(5)]
+                + [("model-b", "tool", f"test-{i}", "false") for i in range(5)],
+            }
+        ],
+    )
+    results = load_results(tmp_path)
+    ranked = aggregate_results(results, min_tests=3)
+    output = format_html_page(ranked)
+    # Search input
+    assert 'id="search"' in output
+    assert 'placeholder="Filter models..."' in output
+    # Sortable headers with data-sort attributes
+    assert 'data-sort="rate"' in output
+    assert 'data-sort="model"' in output
+    # Data attributes on rows for JS sorting
+    assert "data-rate=" in output
+    assert "data-model=" in output
+    # JavaScript included
+    assert "sortTable" in output
+    assert "filterRows" in output
 
 
 def test_main_graceful_on_missing_results(tmp_path, capsys, monkeypatch):
