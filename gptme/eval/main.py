@@ -85,6 +85,7 @@ def docker_reexec(argv: list[str]) -> None:
             ["docker", "image", "inspect", image],
             check=True,
             capture_output=True,
+            text=True,
             timeout=30,
         )
         logger.info(f"Using existing Docker image: {image}")
