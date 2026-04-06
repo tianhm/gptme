@@ -73,6 +73,18 @@ def test_check_merge_no_conflict_markers_detects_tracked_file_conflict_markers()
     )
 
 
+def test_check_merge_no_conflict_markers_ignores_setup_sh():
+    """setup.sh often contains conflict markers as part of fixture data."""
+    assert check_merge_no_conflict_markers(
+        _ctx(
+            files={
+                "setup.sh": "<<<<<<< ours\nraw conflict data\n=======\nother\n>>>>>>> theirs\n",
+                "utils.py": "def f(): pass\n",
+            }
+        )
+    )
+
+
 def test_check_merge_commit_completed_requires_merge_head_absent():
     assert check_merge_commit_completed(
         _ctx(files={".git/HEAD": "ref: refs/heads/master\n"})
