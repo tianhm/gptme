@@ -668,7 +668,7 @@ git commit -q -m "initial: add greet function"
     # Scenario 5: Write tests for existing code
     # A text processing module exists with no tests.  Agent must read the
     # implementation, understand the behaviour (including edge cases), and
-    # produce a comprehensive test suite that passes.
+    # produce a focused test suite (at least 6 tests) that passes.
     # Tests: code comprehension, test design, edge-case coverage.
     # -------------------------------------------------------------------
     {
@@ -713,10 +713,11 @@ def extract_emails(text):
         "run": "python3 -m pytest test_text_processor.py -q 2>&1",
         "prompt": (
             "The module `text_processor.py` has three utility functions but no "
-            "tests. Write a comprehensive test suite in `test_text_processor.py` "
+            "tests. Write a focused test suite in `test_text_processor.py` "
             "that covers all three functions (`word_count`, `truncate`, "
             "`extract_emails`) including edge cases such as empty strings, None "
-            "input, and boundary conditions. Make sure all tests pass."
+            "input, and boundary conditions. Write at least 6 tests total "
+            "(2+ per function), keep the suite concise, and make sure all tests pass."
         ),
         "tools": ["shell", "save", "read"],
         "expect": {
@@ -919,11 +920,14 @@ grep -q '^<<<<<<< ' utils.py
         "prompt": (
             "Run `bash setup.sh` to initialise the repository. It creates two "
             "branches that both modify `utils.py` and starts a merge that "
-            "conflicts. Resolve the merge conflict in `utils.py` so that BOTH "
-            "features are preserved:\n"
+            "conflicts. Read `utils.py` to see the conflict markers, then write "
+            "the resolved file without any `<<<<<<<`, `=======`, or `>>>>>>>` "
+            "lines, preserving BOTH features:\n"
             "1. `format_name` should handle `None` arguments (return 'Unknown')\n"
             "2. `format_name_upper` should exist and work correctly\n"
-            "After resolving, complete the merge commit and verify all tests pass."
+            "After writing the resolved file, run "
+            "`git add utils.py && git commit --no-edit` to complete the merge, "
+            "then verify all tests pass."
         ),
         "tools": ["shell", "save", "read"],
         "expect": {
