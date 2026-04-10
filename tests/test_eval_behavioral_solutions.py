@@ -9,7 +9,7 @@ This is critical infrastructure for idea #19 (eval-to-lesson feedback loop):
 before running expensive baseline experiments with real models, we need
 confidence that the checkers correctly identify good work.
 
-Covers all 28 behavioral scenarios:
+Covers all 30 behavioral scenarios:
   git-selective-commit, multi-file-rename, iterative-debug,
   stage-new-files, write-test-suite, test-driven-error-handling,
   merge-conflict-resolution, extract-function-refactor, debug-data-pipeline,
@@ -18,7 +18,8 @@ Covers all 28 behavioral scenarios:
   fix-security-path-traversal, refactor-for-testability, add-type-hints,
   noisy-worktree-fix, fix-data-mutation, optimize-n-squared, remove-dead-code,
   fix-mutable-default, add-deprecation-warning, add-docstrings, retry-with-backoff,
-  validate-user-input, rate-limiting, circuit-breaker
+  validate-user-input, rate-limiting, circuit-breaker, implement-lru-cache,
+  implement-event-emitter
 """
 
 import subprocess
@@ -1094,6 +1095,36 @@ def _apply_solution(workspace: Path, scenario_name: str) -> None:
                     if len(self._cache) > self._max_size:
                         self._cache.popitem(last=False)
                     return value
+            """)
+        )
+
+    elif scenario_name == "implement-event-emitter":
+        (workspace / "emitter.py").write_text(
+            textwrap.dedent("""\
+            \"\"\"Simple event emitter (Observer pattern) implementation.\"\"\"
+
+            from collections import defaultdict
+            from typing import Callable
+
+
+            class EventEmitter:
+                \"\"\"Emit named events and notify registered listeners.\"\"\"
+
+                def __init__(self) -> None:
+                    self._handlers: dict[str, list[Callable]] = defaultdict(list)
+
+                def on(self, event: str, handler: Callable) -> None:
+                    self._handlers[event].append(handler)
+
+                def off(self, event: str, handler: Callable) -> None:
+                    try:
+                        self._handlers[event].remove(handler)
+                    except (KeyError, ValueError):
+                        pass
+
+                def emit(self, event: str, *args, **kwargs) -> None:
+                    for handler in list(self._handlers[event]):
+                        handler(*args, **kwargs)
             """)
         )
 
