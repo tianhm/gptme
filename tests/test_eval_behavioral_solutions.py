@@ -9,7 +9,7 @@ This is critical infrastructure for idea #19 (eval-to-lesson feedback loop):
 before running expensive baseline experiments with real models, we need
 confidence that the checkers correctly identify good work.
 
-Covers all 28 behavioral scenarios:
+Covers all 29 behavioral scenarios:
   git-selective-commit, multi-file-rename, iterative-debug,
   stage-new-files, write-test-suite, test-driven-error-handling,
   merge-conflict-resolution, extract-function-refactor, debug-data-pipeline,
@@ -18,7 +18,7 @@ Covers all 28 behavioral scenarios:
   fix-security-path-traversal, refactor-for-testability, add-type-hints,
   noisy-worktree-fix, fix-data-mutation, optimize-n-squared, remove-dead-code,
   fix-mutable-default, add-deprecation-warning, add-docstrings, retry-with-backoff,
-  validate-user-input, rate-limiting
+  validate-user-input, rate-limiting, circuit-breaker
 """
 
 import subprocess
@@ -920,6 +920,71 @@ def _apply_solution(workspace: Path, scenario_name: str) -> None:
                 if age < 0 or age > 150:
                     raise ValueError(f"age must be between 0 and 150, got {age}")
                 return {"name": name, "age": age, "email": email}
+            """)
+        )
+
+    elif scenario_name == "circuit-breaker":
+        (workspace / "client.py").write_text(
+            textwrap.dedent("""\
+            \"\"\"API client with circuit breaker pattern.\"\"\"
+
+            import urllib.request
+            import json
+
+
+            class CircuitOpenError(Exception):
+                \"\"\"Raised when circuit breaker is open.\"\"\"
+
+
+            class CircuitBreaker:
+                \"\"\"Circuit breaker: tracks failures and opens after threshold.\"\"\"
+
+                OPEN = "open"
+                CLOSED = "closed"
+                FAILURE_THRESHOLD = 3
+
+                def __init__(self):
+                    self.failure_count = 0
+                    self.state = self.CLOSED
+
+                def record_failure(self):
+                    self.failure_count += 1
+                    if self.failure_count >= self.FAILURE_THRESHOLD:
+                        self.state = self.OPEN
+
+                def record_success(self):
+                    self.failure_count = 0
+                    self.state = self.CLOSED
+
+                def is_open(self):
+                    return self.state == self.OPEN
+
+
+            class APIClient:
+                \"\"\"API client with circuit breaker protection.\"\"\"
+
+                def __init__(self, api_key: str):
+                    self.api_key = api_key
+                    self.base_url = "https://api.example.com"
+                    self._circuit_breaker = CircuitBreaker()
+
+                def get(self, endpoint: str) -> dict:
+                    \"\"\"Make a GET request, raising CircuitOpenError if circuit is open.\"\"\"
+                    if self._circuit_breaker.is_open():
+                        raise CircuitOpenError("Circuit is open")
+                    url = f"{self.base_url}/{endpoint}"
+                    req = urllib.request.Request(
+                        url, headers={"Authorization": f"Bearer {self.api_key}"}
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            result = json.loads(resp.read().decode())
+                            self._circuit_breaker.record_success()
+                            return result
+                    except urllib.error.HTTPError as e:
+                        if e.code >= 500:
+                            self._circuit_breaker.record_failure()
+                        raise
             """)
         )
 
