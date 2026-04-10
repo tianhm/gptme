@@ -181,6 +181,15 @@ from .use_existing_helper import (  # noqa: F401
     check_reuse_uses_normalize,
     check_reuse_utils_unchanged,
 )
+from .validate_user_input import (  # noqa: F401
+    check_custom_exception,
+    check_range_validation,
+    check_string_sanitization,
+    check_type_validation,
+)
+from .validate_user_input import (  # noqa: F401
+    check_tests_pass as check_validate_user_input_tests_pass,
+)
 from .write_test_suite import (  # noqa: F401
     check_write_tests_covers_extract_emails,
     check_write_tests_covers_truncate,
