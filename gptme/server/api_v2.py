@@ -64,6 +64,28 @@ from .openapi_docs import (
 
 logger = logging.getLogger(__name__)
 
+# Raster image extensions allowed for user avatars.
+# SVG excluded: can embed <script> tags (XSS via crafted SVG).
+_ALLOWED_AVATAR_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico"}
+
+
+def _is_valid_image_content(path: "Path") -> bool:
+    """Validate file content is a recognised image format using Pillow.
+
+    Extension checks can be bypassed by renaming a file; this validates the
+    actual content via magic-byte / header parsing.  Pillow is already a hard
+    runtime dependency (needed for vision support), so no extra install cost.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            _ = img.format  # triggers format detection from file content
+        return True
+    except Exception:
+        return False
+
+
 v2_api = flask.Blueprint("v2_api", __name__)
 
 # Register sub-blueprints
@@ -1059,8 +1081,14 @@ def api_conversation_agent_avatar(conversation_id: str):
     except ValueError:
         return flask.jsonify({"error": "Invalid avatar path"}), 400
 
+    if full_path.suffix.lower() not in _ALLOWED_AVATAR_EXTS:
+        return flask.jsonify({"error": "Avatar must be an image file"}), 400
+
     if not full_path.exists():
         return flask.jsonify({"error": "Avatar file not found"}), 404
+
+    if not _is_valid_image_content(full_path):
+        return flask.jsonify({"error": "Avatar must be a valid image file"}), 400
 
     return flask.send_file(full_path)
 
@@ -1089,8 +1117,14 @@ def _serve_agent_avatar(agent_path_str: str):
     except ValueError:
         return flask.jsonify({"error": "Invalid avatar path"}), 400
 
+    if full_path.suffix.lower() not in _ALLOWED_AVATAR_EXTS:
+        return flask.jsonify({"error": "Avatar must be an image file"}), 400
+
     if not full_path.exists():
         return flask.jsonify({"error": "Avatar file not found"}), 404
+
+    if not _is_valid_image_content(full_path):
+        return flask.jsonify({"error": "Avatar must be a valid image file"}), 400
 
     return flask.send_file(full_path)
 
@@ -1198,7 +1232,17 @@ def api_user_avatar():
 
     full_path = Path(avatar_path).expanduser().resolve()
 
+    # Security: validate path points to a raster image file to prevent serving
+    # sensitive files (e.g. ~/.ssh/id_rsa) via a malicious config value.
+    # SVG is excluded: it can embed <script> tags and execute JS in the
+    # server's origin when navigated to directly (XSS via crafted SVG).
+    if full_path.suffix.lower() not in _ALLOWED_AVATAR_EXTS:
+        return flask.jsonify({"error": "Avatar must be an image file"}), 400
+
     if not full_path.exists():
         return flask.jsonify({"error": "Avatar file not found"}), 404
+
+    if not _is_valid_image_content(full_path):
+        return flask.jsonify({"error": "Avatar must be a valid image file"}), 400
 
     return flask.send_file(full_path)
