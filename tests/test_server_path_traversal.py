@@ -355,6 +355,105 @@ class TestAvatarPathSecurity:
         assert "image" in data["error"].lower()
 
 
+class TestAgentCreationPathValidation:
+    """Agent creation endpoint must reject paths outside the server working directory."""
+
+    def _put_agent(self, client: FlaskClient, path: str | None = None):
+        """Helper to send an agent creation request with optional path."""
+        payload = {
+            "name": "test-agent",
+            "template_repo": "https://github.com/gptme/gptme-agent-template",
+            "template_branch": "master",
+            "fork_command": "echo ok",
+        }
+        if path is not None:
+            payload["path"] = path
+        return client.put(
+            "/api/v2/agents",
+            json=payload,
+            content_type="application/json",
+        )
+
+    def test_rejects_absolute_path_outside_cwd(
+        self, client: FlaskClient, tmp_path, monkeypatch
+    ):
+        """Absolute paths outside server working directory must be rejected."""
+        from gptme.server import api_v2_agents
+
+        monkeypatch.setattr(
+            api_v2_agents, "INITIAL_WORKING_DIRECTORY", tmp_path.resolve()
+        )
+        response = self._put_agent(client, path="/tmp/evil-agent")
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["error"] == "Path must be within the server working directory"
+
+    def test_rejects_home_directory_path(
+        self, client: FlaskClient, tmp_path, monkeypatch
+    ):
+        """Paths under home directory but outside cwd must be rejected."""
+        from gptme.server import api_v2_agents
+
+        monkeypatch.setattr(
+            api_v2_agents, "INITIAL_WORKING_DIRECTORY", tmp_path.resolve()
+        )
+        response = self._put_agent(client, path="~/sneaky-agent")
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["error"] == "Path must be within the server working directory"
+
+    def test_rejects_traversal_in_path(
+        self, client: FlaskClient, tmp_path, monkeypatch
+    ):
+        """Path traversal via ../ must be rejected."""
+        from gptme.server import api_v2_agents
+
+        monkeypatch.setattr(
+            api_v2_agents, "INITIAL_WORKING_DIRECTORY", tmp_path.resolve()
+        )
+        response = self._put_agent(client, path="../../../tmp/escape")
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["error"] == "Path must be within the server working directory"
+
+    def test_rejects_etc_path(self, client: FlaskClient, tmp_path, monkeypatch):
+        """System directories must be rejected."""
+        from gptme.server import api_v2_agents
+
+        monkeypatch.setattr(
+            api_v2_agents, "INITIAL_WORKING_DIRECTORY", tmp_path.resolve()
+        )
+        response = self._put_agent(client, path="/etc/gptme-agent")
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["error"] == "Path must be within the server working directory"
+
+    def test_rejects_name_that_slugifies_to_empty(
+        self, client: FlaskClient, tmp_path, monkeypatch
+    ):
+        """Names that produce an empty slug must be rejected to prevent workspace-at-cwd."""
+        from gptme.server import api_v2_agents
+
+        monkeypatch.setattr(
+            api_v2_agents, "INITIAL_WORKING_DIRECTORY", tmp_path.resolve()
+        )
+        # "@#$%" slugifies to "" — INITIAL_WORKING_DIRECTORY / "" == INITIAL_WORKING_DIRECTORY
+        payload = {
+            "name": "@#$%",
+            "template_repo": "https://github.com/gptme/gptme-agent-template",
+            "template_branch": "master",
+            "fork_command": "echo ok",
+        }
+        response = client.put(
+            "/api/v2/agents",
+            json=payload,
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+        data = response.get_json()
+        assert "alphanumeric" in data["error"].lower()
+
+
 class TestValidateBranchUnit:
     """Unit tests for _validate_branch function (requires Flask app context)."""
 
