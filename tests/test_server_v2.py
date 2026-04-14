@@ -1197,3 +1197,56 @@ def test_v2_step_last_error_set_on_failure(v2_conv, client: FlaskClient):
     assert "Model not found" in session.last_error
     # Session should not be stuck in generating state
     assert not session.generating
+
+
+def test_v2_create_conversation_missing_content(client: FlaskClient):
+    """Creating a conversation with a message missing 'content' returns 400."""
+    import uuid
+
+    conv_id = f"test-missing-content-{uuid.uuid4().hex[:8]}"
+    response = client.put(
+        f"/api/v2/conversations/{conv_id}",
+        json={
+            "messages": [{"role": "user"}],
+        },
+    )
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data is not None
+    assert "content" in data["error"].lower()
+
+
+def test_v2_create_conversation_invalid_timestamp(client: FlaskClient):
+    """Creating a conversation with an invalid timestamp returns 400."""
+    import uuid
+
+    conv_id = f"test-bad-timestamp-{uuid.uuid4().hex[:8]}"
+    response = client.put(
+        f"/api/v2/conversations/{conv_id}",
+        json={
+            "messages": [
+                {"role": "user", "content": "hello", "timestamp": "not-a-date"}
+            ],
+        },
+    )
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data is not None
+    assert "timestamp" in data["error"].lower()
+
+
+def test_v2_create_conversation_non_string_timestamp(client: FlaskClient):
+    """Creating a conversation with a non-string timestamp returns 400 (not 500)."""
+    import uuid
+
+    conv_id = f"test-numeric-ts-{uuid.uuid4().hex[:8]}"
+    response = client.put(
+        f"/api/v2/conversations/{conv_id}",
+        json={
+            "messages": [{"role": "user", "content": "hello", "timestamp": 12345}],
+        },
+    )
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data is not None
+    assert "timestamp" in data["error"].lower()
