@@ -1007,6 +1007,15 @@ def api_conversation_config_patch(conversation_id: str):
 
     logdir = get_logs_dir() / conversation_id
 
+    # Guard: check conversation exists before any side-effecting operations.
+    # ChatConfig.save() creates the logdir on disk and set_config/init_tools mutate
+    # process-wide state, so the 404 check must come first.
+    if not logdir.exists():
+        return (
+            flask.jsonify({"error": f"Conversation not found: {conversation_id}"}),
+            404,
+        )
+
     # Create and set config
     req_json["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
     request_config = ChatConfig.from_dict(req_json)
@@ -1022,6 +1031,7 @@ def api_conversation_config_patch(conversation_id: str):
 
     # Update system prompt with new tools
     manager = LogManager.load(conversation_id, lock=False)
+
     if len(manager.log.messages) >= 1 and manager.log.messages[0].role == "system":
         # Remove leading system messages and replace with new ones
         # Use immutable Log interface instead of mutating the frozen dataclass's list
