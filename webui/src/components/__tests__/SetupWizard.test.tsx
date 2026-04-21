@@ -8,17 +8,47 @@ const mockConnect = jest.fn();
 const mockOpen = jest.fn();
 const mockFetch = jest.fn();
 const isConnected$ = observable(false);
+const mockIsTauriEnvironment = jest.fn(() => false);
+
+type MockTauriServerStatus = {
+  running: boolean;
+  port: number;
+  port_available: boolean;
+  manages_local_server: boolean;
+};
+
+type MockUseTauriServerStatusResult = {
+  isLoading: boolean;
+  managesLocalServer: boolean | null;
+  serverStatus: MockTauriServerStatus | null;
+};
+
+const mockUseTauriServerStatus = jest.fn(
+  (): MockUseTauriServerStatusResult => ({
+    isLoading: false,
+    managesLocalServer: false,
+    serverStatus: null,
+  })
+);
 
 jest.mock('@/contexts/ApiContext', () => ({
   useApi: () => ({
     isConnected$,
     connect: mockConnect,
-    connectionConfig: { baseUrl: 'http://localhost:5700' },
+    connectionConfig: {
+      baseUrl: 'http://127.0.0.1:5700',
+      authToken: null,
+      useAuthToken: false,
+    },
   }),
 }));
 
 jest.mock('@/utils/tauri', () => ({
-  isTauriEnvironment: () => false,
+  isTauriEnvironment: () => mockIsTauriEnvironment(),
+}));
+
+jest.mock('@/hooks/useTauriServerStatus', () => ({
+  useTauriServerStatus: () => mockUseTauriServerStatus(),
 }));
 
 jest.mock('@legendapp/state/react', () => ({
@@ -39,6 +69,10 @@ jest.mock('@/components/ui/button', () => ({
   Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
     <button {...props}>{children}</button>
   ),
+}));
+
+jest.mock('@/components/ui/input', () => ({
+  Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
 }));
 
 jest.mock('lucide-react', () => ({
@@ -63,6 +97,12 @@ describe('SetupWizard', () => {
     Object.defineProperty(window, 'fetch', {
       writable: true,
       value: mockFetch,
+    });
+    mockIsTauriEnvironment.mockReturnValue(false);
+    mockUseTauriServerStatus.mockReturnValue({
+      isLoading: false,
+      managesLocalServer: false,
+      serverStatus: null,
     });
     Object.defineProperty(window, 'open', {
       writable: true,
@@ -117,7 +157,7 @@ describe('SetupWizard', () => {
     });
 
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledWith('http://localhost:5700/api/v2');
+      expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:5700/api/v2');
     });
 
     await waitFor(() => {
@@ -190,5 +230,63 @@ describe('SetupWizard', () => {
       screen.queryByRole('heading', { name: /configure a provider/i })
     ).not.toBeInTheDocument();
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('connects to a remote server during tauri mobile setup', async () => {
+    mockIsTauriEnvironment.mockReturnValue(true);
+    mockUseTauriServerStatus.mockReturnValue({
+      isLoading: false,
+      managesLocalServer: false,
+      serverStatus: {
+        running: false,
+        port: 5700,
+        port_available: false,
+        manages_local_server: false,
+      },
+    });
+    mockConnect.mockResolvedValue(undefined);
+
+    render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /get started/i }));
+    fireEvent.click(screen.getByRole('button', { name: /remote server/i }));
+    fireEvent.change(screen.getByPlaceholderText('https://bob.example.com'), {
+      target: { value: 'https://bob.example.com/' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Optional API token'), {
+      target: { value: 'secret-token' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+
+    await waitFor(() => {
+      expect(mockConnect).toHaveBeenCalledWith({
+        baseUrl: 'https://bob.example.com',
+        authToken: 'secret-token',
+        useAuthToken: true,
+      });
+    });
+  });
+
+  it('waits for tauri status before enabling the server mode choice', () => {
+    mockIsTauriEnvironment.mockReturnValue(true);
+    mockUseTauriServerStatus.mockReturnValue({
+      isLoading: true,
+      managesLocalServer: null,
+      serverStatus: null,
+    });
+
+    render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /get started/i }));
+
+    expect(screen.getByRole('button', { name: /monitor checking environment/i })).toBeDisabled();
   });
 });
