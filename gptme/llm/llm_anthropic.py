@@ -32,11 +32,11 @@ ENV_REASONING = "GPTME_REASONING"
 ENV_REASONING_BUDGET = "GPTME_REASONING_BUDGET"
 ENV_THINKING_EFFORT = "GPTME_THINKING_EFFORT"
 
-# Ergonomic named levels that map to budget_tokens values, mirroring the
-# ``low``/``medium``/``high``/``xhigh``/``max`` levels Anthropic exposes via
-# ``output_config.effort`` (Opus 4.7+). True ``xhigh``/``max`` semantics
-# (adaptive thinking) require a newer ``anthropic`` SDK than gptme currently
-# pins; these values are approximations until that bump lands. See #2183.
+# Named effort levels → budget_tokens fallback values.  When the installed
+# anthropic SDK exposes ``output_config.effort`` (>= 0.77) these are only
+# used as the ``budget_tokens`` guard for max_tokens clamping; the true
+# effort semantics (including ``xhigh``/``max`` adaptive thinking) are passed
+# via ``output_config``.  On older SDKs they serve as the sole signal.
 _THINKING_EFFORT_BUDGETS: dict[str, int] = {
     "low": 2000,
     "medium": 8000,
@@ -44,11 +44,23 @@ _THINKING_EFFORT_BUDGETS: dict[str, int] = {
     "xhigh": 24000,
     "max": 32000,
 }
+_EffortLevel = Literal["low", "medium", "high", "xhigh", "max"]
 
 if TYPE_CHECKING:
     # noreorder
     import anthropic.types  # fmt: skip
     from anthropic import Anthropic  # fmt: skip
+
+# output_config.effort was added in anthropic SDK 0.77.  On older installs the
+# effort levels still work via the budget_tokens shim above; xhigh/max are
+# approximations until the user upgrades.  No SDK constraint bump required —
+# the code degrades gracefully.
+try:
+    import anthropic.types as _anthropic_types
+except ImportError:
+    _HAS_OUTPUT_CONFIG = False
+else:
+    _HAS_OUTPUT_CONFIG = hasattr(_anthropic_types, "OutputConfigParam")
 
 logger = logging.getLogger(__name__)
 
@@ -186,13 +198,7 @@ def _resolve_thinking_budget() -> int:
     budget_raw = os.environ.get(ENV_REASONING_BUDGET)
 
     if effort is not None:
-        level = effort.strip().lower()
-        if level not in _THINKING_EFFORT_BUDGETS:
-            valid = ", ".join(_THINKING_EFFORT_BUDGETS)
-            raise ValueError(
-                f"Invalid {ENV_THINKING_EFFORT} value: {effort!r}. "
-                f"Must be one of: {valid}."
-            )
+        level = _normalize_effort_level(effort)
         if budget_raw is not None:
             logger.warning(
                 "Both %s and %s set; using %s=%s",
@@ -212,6 +218,47 @@ def _resolve_thinking_budget() -> int:
             f"Invalid {ENV_REASONING_BUDGET} value: {budget_raw!r}. "
             "Must be a valid integer."
         ) from parse_err
+
+
+def _normalize_effort_level(effort: str) -> _EffortLevel:
+    level = effort.strip().lower()
+    if level not in _THINKING_EFFORT_BUDGETS:
+        valid = ", ".join(_THINKING_EFFORT_BUDGETS)
+        raise ValueError(
+            f"Invalid {ENV_THINKING_EFFORT} value: {effort!r}. Must be one of: {valid}."
+        )
+    return cast(_EffortLevel, level)
+
+
+def _resolve_effort_level() -> _EffortLevel | None:
+    """Return the raw effort level from ``GPTME_THINKING_EFFORT``, or ``None``.
+
+    Returns ``None`` when the env var is not set (i.e. the budget is driven
+    by ``GPTME_REASONING_BUDGET`` instead).
+    """
+    effort = os.environ.get(ENV_THINKING_EFFORT)
+    if effort is None:
+        return None
+    return _normalize_effort_level(effort)
+
+
+class _OutputConfig(TypedDict):
+    effort: _EffortLevel
+
+
+class _OutputConfigKwargs(TypedDict, total=False):
+    output_config: _OutputConfig
+
+
+def _output_config_kwargs(*, use_thinking: bool) -> _OutputConfigKwargs:
+    if not (use_thinking and _HAS_OUTPUT_CONFIG):
+        return {}
+
+    effort_level = _resolve_effort_level()
+    if effort_level is None:
+        return {}
+
+    return {"output_config": {"effort": effort_level}}
 
 
 def _adjust_thinking_budget(
@@ -510,7 +557,12 @@ def chat(
         max_tokens, thinking_budget, use_thinking
     )
 
-    response = _anthropic.messages.create(
+    # Pass output_config.effort when the SDK supports it (>= 0.77) and
+    # GPTME_THINKING_EFFORT is set.  This enables true xhigh/max semantics
+    # (adaptive thinking) that budget_tokens cannot express.
+    output_config_kwargs = _output_config_kwargs(use_thinking=use_thinking)
+
+    response = _anthropic.messages.create(  # type: ignore[call-overload, misc]
         model=api_model,
         messages=messages_dicts,
         system=system_messages,
@@ -523,6 +575,7 @@ def chat(
             if use_thinking
             else NOT_GIVEN
         ),
+        **output_config_kwargs,
         # We set a timeout for non-streaming requests to prevent Anthropic's
         # "Streaming is strongly recommended" warning/error.
         timeout=60,
@@ -606,7 +659,9 @@ def stream(
         max_tokens, thinking_budget, use_thinking
     )
 
-    with _anthropic.messages.stream(
+    output_config_kwargs = _output_config_kwargs(use_thinking=use_thinking)
+
+    with _anthropic.messages.stream(  # type: ignore[call-arg, misc]
         model=api_model,
         messages=messages_dicts,
         system=system_messages,
@@ -619,6 +674,7 @@ def stream(
             if use_thinking
             else NOT_GIVEN
         ),
+        **output_config_kwargs,
     ) as stream:
         for chunk in stream:
             match chunk.type:

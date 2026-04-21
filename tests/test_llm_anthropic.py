@@ -4,7 +4,10 @@ import os
 import pytest
 
 from gptme.llm.llm_anthropic import (
+    _HAS_OUTPUT_CONFIG,
+    _output_config_kwargs,
     _prepare_messages_for_api,
+    _resolve_effort_level,
     _resolve_thinking_budget,
 )
 from gptme.message import Message
@@ -511,3 +514,74 @@ class TestResolveThinkingBudget:
             and "GPTME_REASONING_BUDGET" in rec.message
             for rec in caplog.records
         )
+
+
+class TestResolveEffortLevel:
+    """_resolve_effort_level returns the raw level string or None."""
+
+    def setup_method(self):
+        self._saved = os.environ.pop("GPTME_THINKING_EFFORT", None)
+
+    def teardown_method(self):
+        if self._saved is None:
+            os.environ.pop("GPTME_THINKING_EFFORT", None)
+        else:
+            os.environ["GPTME_THINKING_EFFORT"] = self._saved
+
+    def test_returns_none_when_not_set(self):
+        assert _resolve_effort_level() is None
+
+    @pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+    def test_returns_level_string(self, level):
+        os.environ["GPTME_THINKING_EFFORT"] = level
+        assert _resolve_effort_level() == level
+
+    def test_normalises_to_lowercase(self):
+        os.environ["GPTME_THINKING_EFFORT"] = "XHIGH"
+        assert _resolve_effort_level() == "xhigh"
+
+    def test_raises_on_invalid_level(self):
+        os.environ["GPTME_THINKING_EFFORT"] = "extreme"
+        with pytest.raises(ValueError, match="Invalid GPTME_THINKING_EFFORT"):
+            _resolve_effort_level()
+
+
+class TestOutputConfigKwargs:
+    def setup_method(self):
+        self._saved = os.environ.pop("GPTME_THINKING_EFFORT", None)
+
+    def teardown_method(self):
+        if self._saved is None:
+            os.environ.pop("GPTME_THINKING_EFFORT", None)
+        else:
+            os.environ["GPTME_THINKING_EFFORT"] = self._saved
+
+    def test_returns_empty_when_not_using_thinking(self, monkeypatch):
+        monkeypatch.setattr("gptme.llm.llm_anthropic._HAS_OUTPUT_CONFIG", True)
+        os.environ["GPTME_THINKING_EFFORT"] = "xhigh"
+
+        assert _output_config_kwargs(use_thinking=False) == {}
+
+    def test_returns_empty_when_sdk_does_not_support_output_config(self, monkeypatch):
+        monkeypatch.setattr("gptme.llm.llm_anthropic._HAS_OUTPUT_CONFIG", False)
+        os.environ["GPTME_THINKING_EFFORT"] = "xhigh"
+
+        assert _output_config_kwargs(use_thinking=True) == {}
+
+    def test_returns_empty_when_effort_is_unset(self, monkeypatch):
+        monkeypatch.setattr("gptme.llm.llm_anthropic._HAS_OUTPUT_CONFIG", True)
+
+        assert _output_config_kwargs(use_thinking=True) == {}
+
+    def test_returns_output_config_when_supported(self, monkeypatch):
+        monkeypatch.setattr("gptme.llm.llm_anthropic._HAS_OUTPUT_CONFIG", True)
+        os.environ["GPTME_THINKING_EFFORT"] = "XHIGH"
+
+        assert _output_config_kwargs(use_thinking=True) == {
+            "output_config": {"effort": "xhigh"}
+        }
+
+
+def test_has_output_config_is_bool():
+    """_HAS_OUTPUT_CONFIG must be a bool (True when SDK >= 0.77)."""
+    assert isinstance(_HAS_OUTPUT_CONFIG, bool)
