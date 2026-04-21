@@ -46,6 +46,14 @@ _THINKING_EFFORT_BUDGETS: dict[str, int] = {
 }
 _EffortLevel = Literal["low", "medium", "high", "xhigh", "max"]
 
+# Models that reject the legacy ``thinking: {type: "enabled", budget_tokens: N}``
+# format with HTTP 400 and require ``thinking: {type: "adaptive"}`` + the
+# ``output_config.effort`` parameter.  See
+# https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking
+# ("Manual extended thinking is no longer supported on Claude Opus 4.7 or
+# later models and returns a 400 error.")
+_ADAPTIVE_THINKING_MODELS: frozenset[str] = frozenset({"claude-opus-4-7"})
+
 if TYPE_CHECKING:
     # noreorder
     import anthropic.types  # fmt: skip
@@ -261,8 +269,43 @@ def _output_config_kwargs(*, use_thinking: bool) -> _OutputConfigKwargs:
     return {"output_config": {"effort": effort_level}}
 
 
+def _requires_adaptive_thinking(model: str) -> bool:
+    """Return True if ``model`` rejects legacy ``thinking.type=enabled`` with 400.
+
+    Such models only accept adaptive thinking (``thinking.type=adaptive``)
+    plus ``output_config.effort``.  Handles bare names, vendor prefixes, and
+    Anthropic's dated-release suffixes (e.g. ``claude-opus-4-7-20260401``).
+    """
+    # Strip vendor prefix: "anthropic/claude-opus-4-7" -> "claude-opus-4-7",
+    # "openrouter/anthropic/claude-opus-4-7" -> "claude-opus-4-7".
+    base = model.rsplit("/", 1)[-1]
+    if base in _ADAPTIVE_THINKING_MODELS:
+        return True
+    # Match dated-release suffix: "claude-opus-4-7-20260401".
+    return any(base.startswith(known + "-") for known in _ADAPTIVE_THINKING_MODELS)
+
+
+def _build_thinking_param(
+    model: str, use_thinking: bool, thinking_budget: int
+) -> dict[str, object] | None:
+    """Build the ``thinking`` kwarg for Anthropic's messages API.
+
+    Returns ``None`` when thinking is disabled so callers can substitute
+    the SDK's ``NOT_GIVEN`` sentinel.  Branches on model capability:
+
+    - Adaptive-only models (Opus 4.7+): ``{"type": "adaptive"}`` (effort
+      flows through ``output_config`` separately).
+    - All other reasoning models: ``{"type": "enabled", "budget_tokens": N}``.
+    """
+    if not use_thinking:
+        return None
+    if _requires_adaptive_thinking(model):
+        return {"type": "adaptive"}
+    return {"type": "enabled", "budget_tokens": thinking_budget}
+
+
 def _adjust_thinking_budget(
-    max_tokens: int, thinking_budget: int, use_thinking: bool
+    max_tokens: int, thinking_budget: int, use_thinking: bool, model: str = ""
 ) -> tuple[int, bool]:
     """Clamp thinking_budget to fit within max_tokens for Anthropic's extended thinking.
 
@@ -272,8 +315,13 @@ def _adjust_thinking_budget(
 
     Always reserves at least _MIN_RESPONSE_TOKENS for the actual response;
     disables thinking entirely when max_tokens is too small to be useful.
+
+    Adaptive-thinking models (Opus 4.7+) have no ``budget_tokens`` constraint —
+    the API allocates tokens internally — so the clamping logic is skipped for them.
     """
-    if not use_thinking or max_tokens >= thinking_budget + _MIN_RESPONSE_TOKENS:
+    if not use_thinking or _requires_adaptive_thinking(model):
+        return thinking_budget, use_thinking
+    if max_tokens >= thinking_budget + _MIN_RESPONSE_TOKENS:
         return thinking_budget, use_thinking
     new_budget = max_tokens - _MIN_RESPONSE_TOKENS
     if new_budget <= 0:
@@ -554,13 +602,14 @@ def chat(
         max_tokens if max_tokens is not None else (model_meta.max_output or 4096)
     )
     thinking_budget, use_thinking = _adjust_thinking_budget(
-        max_tokens, thinking_budget, use_thinking
+        max_tokens, thinking_budget, use_thinking, model=model
     )
 
     # Pass output_config.effort when the SDK supports it (>= 0.77) and
     # GPTME_THINKING_EFFORT is set.  This enables true xhigh/max semantics
     # (adaptive thinking) that budget_tokens cannot express.
     output_config_kwargs = _output_config_kwargs(use_thinking=use_thinking)
+    thinking_param = _build_thinking_param(model, use_thinking, thinking_budget)
 
     response = _anthropic.messages.create(  # type: ignore[call-overload, misc]
         model=api_model,
@@ -570,11 +619,7 @@ def chat(
         top_p=TOP_P if not model_meta.supports_reasoning else NOT_GIVEN,
         max_tokens=max_tokens,
         tools=tools_dict or NOT_GIVEN,
-        thinking=(
-            {"type": "enabled", "budget_tokens": thinking_budget}
-            if use_thinking
-            else NOT_GIVEN
-        ),
+        thinking=thinking_param if thinking_param is not None else NOT_GIVEN,
         **output_config_kwargs,
         # We set a timeout for non-streaming requests to prevent Anthropic's
         # "Streaming is strongly recommended" warning/error.
@@ -656,10 +701,11 @@ def stream(
         max_tokens if max_tokens is not None else (model_meta.max_output or 4096)
     )
     thinking_budget, use_thinking = _adjust_thinking_budget(
-        max_tokens, thinking_budget, use_thinking
+        max_tokens, thinking_budget, use_thinking, model=model
     )
 
     output_config_kwargs = _output_config_kwargs(use_thinking=use_thinking)
+    thinking_param = _build_thinking_param(model, use_thinking, thinking_budget)
 
     with _anthropic.messages.stream(  # type: ignore[call-arg, misc]
         model=api_model,
@@ -669,11 +715,7 @@ def stream(
         top_p=TOP_P if not model_meta.supports_reasoning else NOT_GIVEN,
         max_tokens=max_tokens,
         tools=tools_dict or NOT_GIVEN,
-        thinking=(
-            {"type": "enabled", "budget_tokens": thinking_budget}
-            if use_thinking
-            else NOT_GIVEN
-        ),
+        thinking=thinking_param if thinking_param is not None else NOT_GIVEN,  # type: ignore[arg-type]
         **output_config_kwargs,
     ) as stream:
         for chunk in stream:
