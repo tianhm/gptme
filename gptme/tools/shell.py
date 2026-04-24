@@ -31,8 +31,9 @@ from ..message import Message
 from ..util import get_installed_programs
 from ..util.ask_execute import execute_with_confirmation
 from ..util.context import md_codeblock
+from ..util.context_savings import record_context_savings
 from ..util.output_storage import save_large_output
-from ..util.tokens import get_tokenizer
+from ..util.tokens import get_tokenizer, len_tokens
 from .base import (
     Parameter,
     ToolSpec,
@@ -1364,11 +1365,14 @@ def _shorten_stdout(
     will_truncate_by_tokens = False
     tokenizer = None
     tokens: list[int] = []
+    # Resolved lazily on first use, reused by tokenizer + savings-recording paths.
+    model_name: str | None = None
     if pre_tokens is not None and post_tokens is not None:
         from ..llm.models import get_default_model  # fmt: skip
 
         model = get_default_model()
-        tokenizer = get_tokenizer(model.model if model else "gpt-4")
+        model_name = model.model if model else "gpt-4"
+        tokenizer = get_tokenizer(model_name)
         if tokenizer is not None:
             tokens = tokenizer.encode(stdout)
             will_truncate_by_tokens = len(tokens) > pre_tokens + post_tokens
@@ -1428,7 +1432,9 @@ def _shorten_stdout(
     # check that if pre_tokens is set, so is post_tokens, and vice versa
     assert (pre_tokens is None) == (post_tokens is None)
     if pre_tokens is not None and post_tokens is not None:
-        if not will_truncate_by_tokens:
+        if not will_truncate_by_tokens and tokenizer is None:
+            # tokenizer may still be unavailable (char-based estimate used above);
+            # try once more for a precise check before deciding not to truncate.
             from ..llm.models import get_default_model  # fmt: skip
 
             model = get_default_model()
@@ -1455,7 +1461,24 @@ def _shorten_stdout(
             truncation_msg += ") ..."
             lines = [stdout[:pre_chars]] + [truncation_msg] + [stdout[-post_chars:]]
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    if saved_path and logdir:
+        if model_name is None:
+            from ..llm.models import get_default_model  # fmt: skip
+
+            model = get_default_model()
+            model_name = model.model if model else "gpt-4"
+        record_context_savings(
+            logdir=logdir,
+            source="shell",
+            original_tokens=len_tokens(stdout, model_name),
+            kept_tokens=len_tokens(result, model_name),
+            command_info=cmd,
+            saved_path=saved_path,
+        )
+
+    return result
 
 
 def _find_max_heredoc_pos(node, current_max: int = 0) -> int:
