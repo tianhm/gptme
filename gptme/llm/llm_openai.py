@@ -13,7 +13,7 @@ from openai import NOT_GIVEN
 from typing_extensions import NotRequired
 
 from ..config import Config, get_config
-from ..constants import TEMPERATURE, TOP_P
+from ..constants import OPENAI_VERBOSITY, TEMPERATURE, TOP_P
 from ..message import Message, MessageMetadata, UsageData, msgs2dicts
 from ..telemetry import _calculate_llm_cost, record_llm_request
 from ..tools import ToolSpec
@@ -551,6 +551,34 @@ def retry_generator_on_openai_error(max_retries: int = 5, base_delay: float = 1.
     return decorator
 
 
+_VALID_VERBOSITY = {"low", "medium", "high"}
+_verbosity_warned = False  # warn at most once per process lifetime
+
+
+def _maybe_apply_verbosity(body: dict[str, Any], model_meta: ModelMeta) -> None:
+    """Add verbosity request-body field for GPT-5+ models when set.
+
+    GPT-5 family models support a `verbosity` parameter to control output length.
+    Unset or invalid values result in the parameter being omitted (OpenAI default
+    of "medium" applies).
+    """
+    global _verbosity_warned
+    if not OPENAI_VERBOSITY:
+        return
+    if not model_meta.model.startswith("gpt-5"):
+        return
+    if OPENAI_VERBOSITY not in _VALID_VERBOSITY:
+        if not _verbosity_warned:
+            logger.warning(
+                "OPENAI_VERBOSITY=%r is not one of %s; ignoring.",
+                OPENAI_VERBOSITY,
+                sorted(_VALID_VERBOSITY),
+            )
+            _verbosity_warned = True
+        return
+    body["verbosity"] = OPENAI_VERBOSITY
+
+
 @retry_on_openai_error()
 def chat(
     messages: list[Message],
@@ -645,6 +673,7 @@ def extra_body(
 ) -> dict[str, Any]:
     """Return extra body for the OpenAI API based on the model."""
     body: dict[str, Any] = {}
+    _maybe_apply_verbosity(body, model_meta)
     if provider == "openrouter":
         # Enable detailed usage info including cached tokens
         # See: https://openrouter.ai/docs/guides/usage-accounting
