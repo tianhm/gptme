@@ -32,7 +32,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["../bins/gptme-server"]
+    "externalBin": ["../bins/gptme-server"],
+    "macOS": {
+      "infoPlist": "./Info.plist"
+    }
   },
   "plugins": {
     "deep-link": {
