@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { observable } from '@legendapp/state';
 import { SetupWizard } from '../SetupWizard';
 import { SettingsProvider } from '@/contexts/SettingsContext';
+import { setupWizard$ } from '@/stores/setupWizard';
 
 const mockConnect = jest.fn();
 const mockOpen = jest.fn();
@@ -103,6 +104,9 @@ describe('SetupWizard', () => {
   beforeEach(() => {
     localStorage.clear();
     isConnected$.set(false);
+    setupWizard$.step.set('welcome');
+    setupWizard$.open.set(false);
+    setupWizard$.providerStatusVersion.set(0);
     mockConnect.mockReset();
     mockOpen.mockReset();
     mockFetch.mockReset();
@@ -185,6 +189,7 @@ describe('SetupWizard', () => {
         hasCompletedSetup: true,
       });
     });
+    expect(setupWizard$.providerStatusVersion.get()).toBe(1);
     expect(screen.getByRole('heading', { name: /you're all set/i })).toBeInTheDocument();
   });
 
@@ -230,6 +235,35 @@ describe('SetupWizard', () => {
     expect(screen.getByRole('option', { name: /deepseek/i })).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem('gptme-settings') || '{}')).not.toMatchObject({
       hasCompletedSetup: true,
+    });
+  });
+
+  it('reopens directly to provider setup when requested externally', async () => {
+    localStorage.setItem('gptme-settings', JSON.stringify({ hasCompletedSetup: true }));
+
+    const { rerender } = render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    expect(
+      screen.queryByRole('heading', { name: /configure a provider/i })
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      setupWizard$.step.set('provider');
+      setupWizard$.open.set(true);
+    });
+
+    rerender(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /configure a provider/i })).toBeInTheDocument();
     });
   });
 
