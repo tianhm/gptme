@@ -26,6 +26,18 @@ fn is_port_available(port: u16) -> bool {
 }
 
 #[cfg(desktop)]
+async fn is_server_responsive(port: u16) -> bool {
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+    use tokio::time::timeout;
+    let addr = format!("127.0.0.1:{}", port);
+    timeout(Duration::from_millis(500), TcpStream::connect(&addr))
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false)
+}
+
+#[cfg(desktop)]
 struct ServerProcess(Arc<Mutex<Option<CommandChild>>>);
 
 #[derive(serde::Serialize)]
@@ -34,18 +46,25 @@ struct ServerStatus {
     port: u16,
     port_available: bool,
     manages_local_server: bool,
+    existing_server_detected: bool,
 }
 
 #[cfg(desktop)]
 #[tauri::command]
-fn get_server_status(state: tauri::State<'_, ServerProcess>) -> ServerStatus {
+async fn get_server_status(state: tauri::State<'_, ServerProcess>) -> Result<ServerStatus, String> {
     let running = state.0.lock().map(|guard| guard.is_some()).unwrap_or(false);
-    ServerStatus {
+    let port_available = is_port_available(GPTME_SERVER_PORT);
+    // Only probe TCP when the port is occupied but we're not managing it —
+    // avoids false-positive existing_server_detected during TIME_WAIT after stop_server.
+    let existing_server_detected =
+        !running && !port_available && is_server_responsive(GPTME_SERVER_PORT).await;
+    Ok(ServerStatus {
         running,
         port: GPTME_SERVER_PORT,
-        port_available: is_port_available(GPTME_SERVER_PORT),
+        port_available,
         manages_local_server: true,
-    }
+        existing_server_detected,
+    })
 }
 
 #[cfg(not(desktop))]
@@ -56,6 +75,7 @@ fn get_server_status() -> ServerStatus {
         port: GPTME_SERVER_PORT,
         port_available: false,
         manages_local_server: false,
+        existing_server_detected: false,
     }
 }
 
@@ -92,7 +112,7 @@ async fn start_server(
         }
     }
 
-    spawn_server_sidecar(&app, state.0.clone())?;
+    spawn_server_sidecar(&app, state.0.clone()).await?;
     Ok(GPTME_SERVER_PORT)
 }
 
@@ -119,11 +139,23 @@ fn desktop_cors_origin() -> &'static str {
 }
 
 #[cfg(desktop)]
-fn spawn_server_sidecar(
+async fn spawn_server_sidecar(
     app: &tauri::AppHandle,
     state_arc: Arc<Mutex<Option<CommandChild>>>,
 ) -> Result<(), String> {
     if !is_port_available(GPTME_SERVER_PORT) {
+        // Port is occupied — check if a server is already responding there.
+        // This is the common crash-recovery case: the gptme-server sidecar
+        // outlived the Tauri process and is still listening on the port.
+        // Reuse it silently rather than showing a blocking error dialog.
+        if is_server_responsive(GPTME_SERVER_PORT).await {
+            log::info!(
+                "Port {} is occupied and a server is already responding — \
+                 reusing existing gptme-server (likely a leftover from a previous session)",
+                GPTME_SERVER_PORT
+            );
+            return Ok(());
+        }
         return Err(format!("Port {} is already in use", GPTME_SERVER_PORT));
     }
 
@@ -327,7 +359,7 @@ pub fn run() {
 
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(err) = spawn_server_sidecar(&app_handle, child_handle) {
+                    if let Err(err) = spawn_server_sidecar(&app_handle, child_handle).await {
                         log::error!("Failed to start gptme-server: {}", err);
                         if err.contains("already in use") {
                             show_port_conflict_dialog(&app_handle);
@@ -413,6 +445,16 @@ mod tests {
         assert!(is_port_available(port));
     }
 
+    #[tokio::test]
+    #[cfg(desktop)]
+    async fn test_is_server_responsive_on_listening_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(is_server_responsive(port).await);
+        drop(listener);
+        assert!(!is_server_responsive(port).await);
+    }
+
     #[test]
     fn test_extract_auth_code_valid() {
         let url = url::Url::parse("gptme://pairing-complete?code=abc123def").unwrap();
@@ -458,12 +500,14 @@ mod tests {
             port: 5700,
             port_available: true,
             manages_local_server: true,
+            existing_server_detected: false,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"running\":false"));
         assert!(json.contains("\"port\":5700"));
         assert!(json.contains("\"port_available\":true"));
         assert!(json.contains("\"manages_local_server\":true"));
+        assert!(json.contains("\"existing_server_detected\":false"));
     }
 
     #[test]
