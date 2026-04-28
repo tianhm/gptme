@@ -18,6 +18,7 @@ import flask
 from dateutil.parser import isoparse
 from flask import request
 
+from gptme.__version__ import __version__
 from gptme.config import (
     ChatConfig,
     Config,
@@ -190,6 +191,7 @@ def api_root():
         {
             "message": "gptme v2 API",
             "documentation": "https://gptme.org/docs/server.html",
+            "version": __version__,
             "capabilities": capabilities,
             "provider_configured": provider_configured,
         }

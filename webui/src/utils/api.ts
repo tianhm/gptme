@@ -655,6 +655,14 @@ export class ApiClient {
     return info;
   }
 
+  async getServerInfo(): Promise<{ version?: string }> {
+    if (!this.isConnected) {
+      throw new ApiClientError('Not connected to API');
+    }
+    const data = await this.fetchJson<{ version?: string }>(`${this.baseUrl}/api/v2`);
+    return data;
+  }
+
   async getConversations(limit: number = 100): Promise<ConversationSummary[]> {
     if (!this.isConnected) {
       throw new ApiClientError('Not connected to API');
