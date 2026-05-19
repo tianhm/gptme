@@ -14,6 +14,7 @@ import pytest
 from gptme.hooks.workspace_agents import (
     AGENT_BINARIES,
     AgentInfo,
+    _configure_windows_kernel32_process_functions,
     _extract_flag,
     _format_agent_line,
     _format_duration,
@@ -227,6 +228,33 @@ class TestGetProcessMemoryMb:
 
 
 class TestWindowsProcessIntrospection:
+    def test_configure_windows_kernel32_process_functions(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class FakeFunction:
+            def __init__(self) -> None:
+                self.argtypes = None
+                self.restype = None
+
+        class FakeKernel32:
+            def __init__(self) -> None:
+                self.OpenProcess = FakeFunction()
+                self.CloseHandle = FakeFunction()
+
+        kernel32 = FakeKernel32()
+
+        _configure_windows_kernel32_process_functions(kernel32, ctypes, wintypes)
+
+        assert kernel32.OpenProcess.argtypes == [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        assert kernel32.OpenProcess.restype == wintypes.HANDLE
+        assert kernel32.CloseHandle.argtypes == [wintypes.HANDLE]
+        assert kernel32.CloseHandle.restype == wintypes.BOOL
+
     def test_split_windows_cmdline_direct(self) -> None:
         import ctypes
 
@@ -332,6 +360,29 @@ class TestWindowsProcessIntrospection:
         ):
             assert _get_process_cwd(123) == r"C:\\workspace"
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError("boom"),
+            AttributeError("boom"),
+            TypeError("boom"),
+            ValueError("boom"),
+        ],
+    )
+    def test_get_process_cwd_windows_dispatch_handles_lookup_error(
+        self, error: Exception
+    ) -> None:
+        with (
+            patch(
+                "gptme.hooks.workspace_agents.platform.system", return_value="Windows"
+            ),
+            patch(
+                "gptme.hooks.workspace_agents._get_windows_process_strings",
+                side_effect=error,
+            ),
+        ):
+            assert _get_process_cwd(123) is None
+
     def test_get_process_cmdline_windows_dispatch(self) -> None:
         raw_cmdline = 'codex exec --model "gpt-5" "Run tests"'
         expected = ["codex", "exec", "--model", "gpt-5", "Run tests"]
@@ -350,6 +401,29 @@ class TestWindowsProcessIntrospection:
         ):
             assert _get_process_cmdline(123) == expected
         mock_split.assert_called_once_with(raw_cmdline)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError("boom"),
+            AttributeError("boom"),
+            TypeError("boom"),
+            ValueError("boom"),
+        ],
+    )
+    def test_get_process_cmdline_windows_dispatch_handles_lookup_error(
+        self, error: Exception
+    ) -> None:
+        with (
+            patch(
+                "gptme.hooks.workspace_agents.platform.system", return_value="Windows"
+            ),
+            patch(
+                "gptme.hooks.workspace_agents._get_windows_process_strings",
+                side_effect=error,
+            ),
+        ):
+            assert _get_process_cmdline(123) == []
 
     def test_get_all_pids_windows_dispatch(self) -> None:
         with (
@@ -376,6 +450,29 @@ class TestWindowsProcessIntrospection:
         ):
             assert _get_process_timing(123) == expected
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError("boom"),
+            AttributeError("boom"),
+            TypeError("boom"),
+            ValueError("boom"),
+        ],
+    )
+    def test_get_process_timing_windows_dispatch_handles_lookup_error(
+        self, error: Exception
+    ) -> None:
+        with (
+            patch(
+                "gptme.hooks.workspace_agents.platform.system", return_value="Windows"
+            ),
+            patch(
+                "gptme.hooks.workspace_agents._get_windows_process_timing",
+                side_effect=error,
+            ),
+        ):
+            assert _get_process_timing(123) == (None, None, None)
+
     def test_get_process_memory_windows_dispatch(self) -> None:
         with (
             patch(
@@ -387,6 +484,29 @@ class TestWindowsProcessIntrospection:
             ),
         ):
             assert _get_process_memory_mb(123) == 64.0
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError("boom"),
+            AttributeError("boom"),
+            TypeError("boom"),
+            ValueError("boom"),
+        ],
+    )
+    def test_get_process_memory_windows_dispatch_handles_lookup_error(
+        self, error: Exception
+    ) -> None:
+        with (
+            patch(
+                "gptme.hooks.workspace_agents.platform.system", return_value="Windows"
+            ),
+            patch(
+                "gptme.hooks.workspace_agents._get_windows_process_memory_mb",
+                side_effect=error,
+            ),
+        ):
+            assert _get_process_memory_mb(123) is None
 
 
 class TestFormatAgentLineMemory:
