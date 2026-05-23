@@ -359,8 +359,13 @@ class HybridLessonMatcher(LessonMatcher):
 
         import numpy as np
 
-        # Generate lesson embedding from title and body
-        lesson_text = f"{lesson.title}\n{lesson.body[:500]}"  # Limit to first 500 chars
+        # Use description field for semantic matching — it encodes "when to use" in prose,
+        # which is more informative than raw body text for retrieval.
+        # Prefer explicit frontmatter description, fall back to extracted first-paragraph,
+        # then fall back to body[:500] so title-only embedding never silently degrades
+        # lessons that have no description field.
+        desc = lesson.metadata.description or lesson.description or lesson.body[:500]
+        lesson_text = f"{lesson.title}\n{desc}"
         lesson_embed = self.embedder.encode(lesson_text, convert_to_numpy=True)
 
         # Cosine similarity (guard against zero-norm embeddings)
