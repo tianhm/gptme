@@ -24,18 +24,18 @@ test.describe('Setup wizard', () => {
     await page.getByRole('button', { name: /get started/i }).click();
     await expect(page.getByRole('heading', { name: /choose your setup/i })).toBeVisible();
 
-    await page.getByRole('button', { name: /cloud/i }).click();
+    await page.getByRole('button', { name: /cloud\s/i }).click();
     await expect(page.getByRole('heading', { name: /cloud setup/i })).toBeVisible();
     await expect(page.getByText(/you'll be redirected to gptme\.ai to sign in/i)).toBeVisible();
 
     await page.getByRole('button', { name: /^back$/i }).click();
     await expect(page.getByRole('heading', { name: /choose your setup/i })).toBeVisible();
 
-    await page.getByRole('button', { name: /local/i }).click();
+    await page.getByRole('button', { name: /local\s/i }).click();
     await expect(
       page.getByRole('heading', { name: /local setup|remote server setup/i })
     ).toBeVisible();
-    await expect(page.getByRole('button', { name: /connect/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
   });
 
   test('skip persists setup completion', async ({ page }) => {
