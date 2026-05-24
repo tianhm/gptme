@@ -530,15 +530,32 @@ def tools_info(
 )
 def tools_call(tool_name: str, function_name: str, arg: list[str]):
     """Call a tool with the given arguments."""
-    from ..tools import get_tool, get_tools, init_tools  # fmt: skip
+    from ..tools import get_available_tools, get_tool, init_tools  # fmt: skip
 
-    # Initialize tools
-    init_tools()
+    # Load the requested tool even if it is not part of the default toolchain.
+    # Some tools (e.g. computer, rag, subagent) expose callable functions but
+    # are not loaded by default, so a bare init_tools() would leave them
+    # uncallable. init_tools raises ValueError for two distinct reasons:
+    #   (1) tool name is genuinely unknown — safe to fall back to default init
+    #       so the not-found branch can enumerate the full tool list.
+    #   (2) tool matched get_available_tools() but was inexplicably absent from
+    #       loaded_tools after init — internal consistency failure, must not be
+    #       swallowed.
+    # Pre-flighting against get_available_tools() separates the two cases
+    # without needing to parse error message text. Only route to targeted init
+    # when the tool is available (has its runtime deps installed); tools that
+    # are discovered but unavailable (is_available=False) fall through to the
+    # default init so get_toolchain's strict-mode dep check is never hit.
+    available_names = {t.name for t in get_available_tools() if t.is_available}
+    if tool_name in available_names:
+        init_tools(allowlist=[tool_name])
+    else:
+        init_tools()
 
     tool = get_tool(tool_name)
     if not tool:
         print(f"Tool '{tool_name}' not found. Available tools:")
-        for t in get_tools():
+        for t in sorted(get_available_tools(), key=lambda t: t.name):
             print(f"- {t.name}")
         sys.exit(1)
 
