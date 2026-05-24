@@ -15,6 +15,7 @@ from .llm import guess_provider_from_config, init_llm, is_custom_provider
 from .llm.models import (
     PROVIDERS,
     CustomProvider,
+    ModelMeta,
     Provider,
     get_model,
     get_recommended_model,
@@ -136,6 +137,10 @@ def init_model(
             "Full guide: https://gptme.org/docs/getting-started.html"
         )
 
+    # Holds a pre-resolved ModelMeta when the resolution step already fetched it,
+    # so the final get_model(model_full) call below can be skipped.
+    _resolved_meta: ModelMeta | None = None
+
     # Check if model has provider/model format
     if "/" in model:
         provider_part = model.split("/")[0]
@@ -147,8 +152,21 @@ def init_model(
             provider = CustomProvider(provider_part)
             model_name = "/".join(model.split("/")[1:])  # Rest after provider
         else:
-            # Unknown provider format, treat as provider only
-            provider, model_name = cast(tuple[Provider, str], (model, None))
+            # Unrecognized provider prefix. Delegate to get_model(), which can
+            # still resolve provider-less model names (e.g. OpenRouter's
+            # "meta-llama/llama-3.1-405b-instruct") via dynamic lookup.
+            # Previously this mistook the whole "a/b" string for a provider name
+            # and crashed in get_recommended_model() with a misleading message.
+            resolved = get_model(model)
+            if resolved.provider == "unknown":
+                raise ValueError(
+                    f"Unknown model {model!r}. Use 'provider/model' with a known "
+                    f"provider (e.g. 'openrouter/{model}'), or configure a custom "
+                    f"provider. Run 'gptme-util models list' to see available models."
+                )
+            provider = resolved.provider
+            model_name = resolved.model
+            _resolved_meta = resolved  # reuse below; avoids a redundant second lookup
     else:
         # No slash - check if it's a custom provider with default model
         if is_custom_provider(model):
@@ -168,7 +186,7 @@ def init_model(
     console.log(f"Using model: [green]{model_full}[/green]")
     init_llm(provider)
 
-    model_meta = get_model(model_full)
+    model_meta = _resolved_meta or get_model(model_full)
 
     # Apply GPTME_CONTEXT_LENGTH override (useful for local models with non-standard context)
     context_length_str = os.environ.get("GPTME_CONTEXT_LENGTH")
