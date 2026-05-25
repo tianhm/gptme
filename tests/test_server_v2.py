@@ -255,6 +255,20 @@ def test_v2_user_default_model_rejects_unqualified_model(client: FlaskClient):
     assert data == {"error": "model must be fully qualified as provider/model"}
 
 
+@pytest.mark.parametrize(
+    "endpoint", ["/api/v2/user/api-key", "/api/v2/user/default-model"]
+)
+@pytest.mark.parametrize("body", [[], [1, 2, 3], "string", 42])
+def test_v2_user_endpoints_reject_non_object_json(
+    client: FlaskClient, endpoint: str, body: object
+):
+    """User-setting endpoints should reject non-object JSON bodies with 400."""
+    response = client.post(endpoint, json=body)
+
+    assert response.status_code == 400
+    assert "object" in response.get_json()["error"].lower()
+
+
 class _FakeExternalSessionItem:
     def __init__(self):
         self.id = "abc123"
@@ -1428,6 +1442,20 @@ def test_v2_post_message_rejects_invalid_files_payload(
     assert response.get_json() == {"error": "files must be a list of strings"}
 
 
+@pytest.mark.parametrize("body", [[], [1, 2, 3], "string", 42])
+def test_v2_post_message_rejects_non_object_json(client: FlaskClient, body: object):
+    """POST /conversations/<id> should reject non-object JSON bodies with 400."""
+    conversation_id = create_conversation(client)["conversation_id"]
+
+    response = client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert "object" in response.get_json()["error"].lower()
+
+
 def test_v2_edit_message_preserves_uri_files(client: FlaskClient):
     """Test that editing message files preserves URI attachments."""
     conversation_id = create_conversation(client)["conversation_id"]
@@ -1710,7 +1738,7 @@ def test_v2_create_conversation_non_string_timestamp(client: FlaskClient):
     assert "timestamp" in data["error"].lower()
 
 
-@pytest.mark.parametrize("body", [[], "string", 42])
+@pytest.mark.parametrize("body", [[], [1, 2, 3], "string", 42])
 def test_v2_create_conversation_non_object_body(client: FlaskClient, body: object):
     """PUT /conversations/<id> with a non-object JSON body returns 400 (not 500)."""
     import uuid
@@ -1724,6 +1752,42 @@ def test_v2_create_conversation_non_object_body(client: FlaskClient, body: objec
     data = response.get_json()
     assert data is not None
     assert "object" in data["error"].lower()
+
+
+def test_v2_create_conversation_empty_body_defaults(client: FlaskClient):
+    """PUT /conversations/<id> with no body creates a default conversation."""
+    import uuid
+
+    conv_id = f"test-empty-body-{uuid.uuid4().hex[:8]}"
+    response = client.put(f"/api/v2/conversations/{conv_id}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data is not None
+    assert data["conversation_id"] == conv_id
+    assert "session_id" in data
+
+
+def test_v2_create_conversation_malformed_json_body(client: FlaskClient):
+    """PUT /conversations/<id> with malformed JSON returns 400 (not Werkzeug 400).
+
+    When get_json(silent=True) encounters malformed JSON (e.g. {bad:),
+    it returns None rather than raising BadRequest.  The endpoint should
+    surface a structured "No JSON data provided" error instead of the
+    raw Werkzeug 400 that flask.request.json would have produced.
+    """
+    import uuid
+
+    conv_id = f"test-malformed-json-{uuid.uuid4().hex[:8]}"
+    response = client.put(
+        f"/api/v2/conversations/{conv_id}",
+        data="{bad:",  # malformed JSON: unclosed brace
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data is not None
+    assert "No JSON data" in data["error"]
 
 
 @pytest.mark.parametrize("messages", ["not-a-list", 42, {"key": "val"}])

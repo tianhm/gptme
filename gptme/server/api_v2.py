@@ -456,10 +456,13 @@ def api_conversation_put(conversation_id: str):
 
     logdir = get_logs_dir() / conversation_id
 
-    req_json = flask.request.json
-    if req_json is not None and not isinstance(req_json, dict):
+    req_json = request.get_json(silent=True)
+    if req_json is None:
+        if request.get_data(cache=True):
+            return flask.jsonify({"error": "No JSON data provided"}), 400
+        req_json = {}
+    if not isinstance(req_json, dict):
         return flask.jsonify({"error": "JSON body must be an object"}), 400
-    req_json = req_json or {}
 
     # Validate auto_confirm type before any side effects (CWE-20: truthy coercion).
     # "false" (string) is truthy in Python — must reject non-bool/int values.
@@ -606,9 +609,11 @@ def api_conversation_post(conversation_id: str):
     if error := _validate_conversation_id(conversation_id):
         return error
 
-    req_json = flask.request.json
-    if not req_json:
+    req_json = request.get_json(silent=True)
+    if req_json is None:
         return flask.jsonify({"error": "No JSON data provided"}), 400
+    if not isinstance(req_json, dict):
+        return flask.jsonify({"error": "JSON body must be an object"}), 400
 
     if "role" not in req_json or "content" not in req_json:
         return flask.jsonify({"error": "Missing required fields (role, content)"}), 400
@@ -1419,9 +1424,11 @@ def api_user():
 )
 def api_user_api_key():
     """Persist a provider API key into user config."""
-    req_json = flask.request.json
-    if not req_json:
+    req_json = request.get_json(silent=True)
+    if req_json is None:
         return flask.jsonify({"error": "No JSON data provided"}), 400
+    if not isinstance(req_json, dict):
+        return flask.jsonify({"error": "JSON body must be an object"}), 400
 
     provider = req_json.get("provider")
     api_key = req_json.get("api_key")
@@ -1484,9 +1491,11 @@ def api_user_api_key():
 )
 def api_user_default_model():
     """Persist the default model into user config."""
-    req_json = flask.request.json
-    if not req_json:
+    req_json = request.get_json(silent=True)
+    if req_json is None:
         return flask.jsonify({"error": "No JSON data provided"}), 400
+    if not isinstance(req_json, dict):
+        return flask.jsonify({"error": "JSON body must be an object"}), 400
 
     model = req_json.get("model")
     if not isinstance(model, str):
