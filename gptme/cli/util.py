@@ -257,11 +257,14 @@ def tokens_count(text: str | None, model: str, file: str | None):
     if file:
         with open(file) as f:
             text = f.read()
-    elif text == "-" or (not text and not sys.stdin.isatty()):
+    elif text == "-":
         text = sys.stdin.read()
 
     if not text:
-        print("Error: No text provided. Use --file or pipe text to stdin.")
+        print(
+            "Error: No text provided. Use --file, a text argument, "
+            "or '-' to read from stdin."
+        )
         sys.exit(1)
 
     # Validate model
