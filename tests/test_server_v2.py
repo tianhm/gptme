@@ -1654,6 +1654,26 @@ def test_v2_create_conversation_missing_content(client: FlaskClient):
     assert "content" in data["error"].lower()
 
 
+@pytest.mark.parametrize("bad_content", [12345, None, True])
+def test_v2_create_conversation_non_string_content(
+    client: FlaskClient, bad_content: object
+):
+    """Creating a conversation with non-string message content returns 400 (not 500)."""
+    import uuid
+
+    conv_id = f"test-non-str-content-{uuid.uuid4().hex[:8]}"
+    response = client.put(
+        f"/api/v2/conversations/{conv_id}",
+        json={
+            "messages": [{"role": "user", "content": bad_content}],
+        },
+    )
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data is not None
+    assert "content" in data["error"].lower()
+
+
 def test_v2_create_conversation_invalid_timestamp(client: FlaskClient):
     """Creating a conversation with an invalid timestamp returns 400."""
     import uuid
