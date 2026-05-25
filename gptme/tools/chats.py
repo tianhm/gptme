@@ -6,6 +6,7 @@ import json as json_mod
 import logging
 import re
 import statistics
+import sys
 import textwrap
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,8 @@ def _get_matching_messages(
     log_manager, query: str, system=False
 ) -> list[tuple[int, Message]]:
     """Get messages matching the query."""
+    if not query.strip():
+        return []
     return [
         (i, msg)
         for i, msg in enumerate(log_manager.log)
@@ -86,6 +89,10 @@ def search_chats(
         context_size (int): Number of characters to show around each match.
         max_matches (int): Maximum number of matches to show per conversation.
     """
+    if not query.strip():
+        print("Error: search query cannot be empty.", file=sys.stderr)
+        return
+
     from ..logmanager import LogManager, list_conversations  # fmt: skip
 
     results: list[dict] = []
