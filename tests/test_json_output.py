@@ -78,6 +78,30 @@ class TestOutputFormatValidation:
             f"Unexpected output-format error in exception: {result.exception}"
         )
 
+    def test_json_resume_error_keeps_stdout_clean(self, monkeypatch, tmp_path):
+        """JSON mode must not leak Rich logs onto stdout on early resume errors."""
+        runner_cls: Any = CliRunner
+        try:
+            runner = runner_cls(mix_stderr=False)
+        except TypeError:
+            runner = runner_cls()
+        result = runner.invoke(
+            cli.main,
+            ["--output-format", "json", "--non-interactive", "--resume"],
+            env={
+                "HOME": str(tmp_path),
+                "XDG_DATA_HOME": str(tmp_path),
+                "XDG_STATE_HOME": str(tmp_path / "state"),
+            },
+        )
+
+        assert result.exit_code == 2
+        assert result.stdout.strip() == "", (
+            "stdout must stay empty on early JSON-mode errors so supervisors don't "
+            "see non-JSON bytes before the process exits"
+        )
+        assert "No previous conversations to resume" in result.stderr
+
     def test_noninteractive_missing_prompt_has_no_fake_resume_hint(
         self, monkeypatch, tmp_path: Path
     ):
