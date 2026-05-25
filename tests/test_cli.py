@@ -71,6 +71,16 @@ def test_version(runner: CliRunner):
     assert "gptme" in result.output
 
 
+@pytest.mark.parametrize("bad_name", ["../bad-name", ".", "..", "foo/bar", "foo\\bar"])
+def test_name_rejects_path_traversal(bad_name: str, runner: CliRunner):
+    result = runner.invoke(
+        cli.main,
+        ["--name", bad_name, "--non-interactive", "hello"],
+    )
+    assert result.exit_code == 2
+    assert "conversation name must be a single path component" in result.output
+
+
 def test_command_exit(args: list[str], runner: CliRunner):
     args.append("/exit")
     result = runner.invoke(cli.main, args)
