@@ -172,6 +172,51 @@ def test_resume_named_missing_conversation_does_not_fallback_to_latest(
     assert f"No conversation named '{missing}' to resume" in result.output
 
 
+def test_missing_custom_tool_path_is_reported_as_usage_error(
+    runner: CliRunner, tmp_path: Path
+):
+    missing_tool = tmp_path / "missing_tool.py"
+
+    result = runner.invoke(
+        cli.main,
+        [
+            "--non-interactive",
+            "--name",
+            "missing-custom-tool",
+            "-t",
+            str(missing_tool),
+            "hello",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Tool" in result.output
+    assert str(missing_tool) in result.output
+    assert "Traceback" not in result.output
+
+
+def test_should_print_resume_hint_requires_nonempty_conversation_log(tmp_path: Path):
+    logdir = tmp_path / "resume-hint"
+    logdir.mkdir()
+
+    assert not cli._should_print_resume_hint(logdir, "text")
+
+    log_file = logdir / "conversation.jsonl"
+    log_file.write_text("")
+    assert not cli._should_print_resume_hint(logdir, "text")
+
+    log_file.write_text('{"role":"user","content":"hello"}\n')
+    assert cli._should_print_resume_hint(logdir, "text")
+
+
+def test_should_print_resume_hint_is_disabled_for_json_output(tmp_path: Path):
+    logdir = tmp_path / "json-output"
+    logdir.mkdir()
+    (logdir / "conversation.jsonl").write_text('{"role":"user","content":"hello"}\n')
+
+    assert not cli._should_print_resume_hint(logdir, "json")
+
+
 def test_command_exit(args: list[str], runner: CliRunner):
     args.append("/exit")
     result = runner.invoke(cli.main, args)
