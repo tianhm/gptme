@@ -521,6 +521,14 @@ def api_conversation_put(conversation_id: str):
     if not isinstance(config_raw, dict):
         return flask.jsonify({"error": "'config' must be an object"}), 400
 
+    # Load or create the chat config, overriding values from request config if provided
+    config_dict = dict(config_raw)
+    config_dict["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
+    try:
+        request_config = ChatConfig.from_dict(config_dict, create_workspace=False)
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+
     # Create the log directory atomically to avoid TOCTOU race
     try:
         logdir.mkdir(parents=True)
@@ -530,10 +538,6 @@ def api_conversation_put(conversation_id: str):
             409,
         )
 
-    # Load or create the chat config, overriding values from request config if provided
-    config_dict = dict(config_raw)
-    config_dict["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
-    request_config = ChatConfig.from_dict(config_dict)
     chat_config = ChatConfig.load_or_create(logdir, request_config)
     prompt = req_json.get("prompt", "full")
 
@@ -1177,8 +1181,11 @@ def api_conversation_config_patch(conversation_id: str):
 
     # Create and set config
     req_json["_logdir"] = logdir  # Pass logdir for "@log" workspace resolution
-    request_config = ChatConfig.from_dict(req_json)
-    chat_config = ChatConfig.load_or_create(logdir, request_config).save()
+    try:
+        request_config = ChatConfig.from_dict(req_json)
+        chat_config = ChatConfig.load_or_create(logdir, request_config).save()
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
     config = Config.from_workspace(workspace=chat_config.workspace)
     config.chat = chat_config
     set_config(config)
