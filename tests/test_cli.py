@@ -172,6 +172,20 @@ def test_resume_named_missing_conversation_does_not_fallback_to_latest(
     assert f"No conversation named '{missing}' to resume" in result.output
 
 
+def test_get_logdir_resume_named_conversation_skips_conversation_scan(
+    monkeypatch, runid: int
+):
+    conv_id = f"resume-fast-{runid}"
+    conv_dir = _write_conversation(conv_id, content="fast")
+
+    def fail_get_user_conversations(*args, **kwargs):
+        raise AssertionError("named resume should not scan conversation metadata")
+
+    monkeypatch.setattr(cli, "get_user_conversations", fail_get_user_conversations)
+
+    assert cli.get_logdir_resume(conv_id) == conv_dir
+
+
 def test_missing_custom_tool_path_is_reported_as_usage_error(
     runner: CliRunner, tmp_path: Path
 ):
@@ -657,7 +671,6 @@ def test_comma_separated_choice_strips_short_option_equals_prefix():
 def test_comma_separated_choice_allows_excluding_unavailable_tools():
     """Allow `-tool` exclusions even when that tool is unavailable locally."""
     from gptme.cli.main import CommaSeparatedChoice
-
     csc = CommaSeparatedChoice(
         ["shell", "save", "read"],
         allow_prefixes=["+", "-"],
@@ -671,6 +684,8 @@ def test_comma_separated_choice_allows_excluding_unavailable_tools():
 
     with pytest.raises(click.exceptions.BadParameter):
         csc.convert("+browser", None, None)
+
+
 def test_tool_exclusion_mixed_bare_and_minus_raises():
     """Test that mixing bare tool names with '-' exclusion syntax raises UsageError."""
     from click.testing import CliRunner
