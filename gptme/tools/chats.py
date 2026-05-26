@@ -4,7 +4,6 @@ List, search, and summarize past conversation logs.
 
 import json as json_mod
 import logging
-import re
 import statistics
 import sys
 import textwrap
@@ -63,13 +62,16 @@ def list_chats(
     for i, conv in enumerate(conversations, 1):
         if metadata:
             print()  # Add a newline between conversations
-        print(f"{i:2}. {textwrap.indent(conv.format(metadata=True), '    ')[4:]}")
-
-        log_path = Path(conv.path)
-        log_manager = LogManager.load(log_path, lock=False)
+            first, *rest = conv.format(metadata=True).split("\n")
+            print(f"{i:2}. {first}")
+            for line in rest:
+                print(f"     {line}")
+        else:
+            print(f"{i:2}. {conv.name} ({conv.messages} msgs)")
 
         # Use the LLM to generate a summary if requested
         if include_summary:
+            log_manager = LogManager.load(Path(conv.path), lock=False)
             summary = summarize(log_manager.log.messages)
             print(
                 f"\n    Summary:\n{textwrap.indent(summary.content, '    > ', predicate=lambda _: True)}"
@@ -82,7 +84,7 @@ def search_chats(
     max_results: int = 5,
     system=False,
     sort: Literal["date", "count"] = "date",
-    context_size: int = 50,
+    context_lines: int = 1,
     max_matches: int = 1,
 ) -> None:
     """
@@ -92,7 +94,7 @@ def search_chats(
         query (str): The search query.
         max_results (int): Maximum number of conversations to display.
         system (bool): Whether to include system messages in the search.
-        context_size (int): Number of characters to show around each match.
+        context_lines (int): Number of lines to show around each match.
         max_matches (int): Maximum number of matches to show per conversation.
     """
     if not query.strip():
@@ -132,27 +134,26 @@ def search_chats(
     for i, result in enumerate(results[:max_results], 1):
         conversation = result["conversation"]
         matches = result["matching_messages"][:max_matches]
-        match_strs = [
-            _format_message_with_context(
-                msg.content, query, context_size=context_size, max_matches=max_matches
-            )
-            for _, msg in matches
-        ]
-        match_preview = f": {match_strs[0]}" if match_strs else ""
         print(
-            f"{i}. {conversation.name} ({len(result['matching_messages'])}){match_preview}"
+            f"\n{i}. {conversation.name} ({len(result['matching_messages'])} matches):"
         )
+        for j, (msg_idx, msg) in enumerate(matches, 1):
+            print(f"\n  Match {j} (message {msg_idx}, {msg.role}):")
+            match_str = _format_message_with_context(
+                msg.content, query, context_lines=context_lines, max_matches=max_matches
+            )
+            print(f"     {match_str}")
 
 
 def _format_message_with_context(
-    content: str | object, query: str, context_size: int = 50, max_matches: int = 1
+    content: str | object, query: str, context_lines: int = 1, max_matches: int = 1
 ) -> str:
     """Format a message with context around matching query parts.
 
     Args:
         content: The message content to search in
         query: The search query
-        context_size: Number of characters to show before and after match
+        context_lines: Number of lines to show before and after match
         max_matches: Maximum number of matches to show
 
     Returns:
@@ -160,55 +161,85 @@ def _format_message_with_context(
     """
     if not isinstance(content, str):
         return "[non-string content]"
-    content_lower = content.lower()
     query_lower = query.lower()
 
-    # Find all occurrences of the query
-    matches = []
-    start = 0
-    while True:
-        idx = content_lower.find(query_lower, start)
-        if idx == -1:
-            break
-        matches.append(idx)
-        start = idx + len(query_lower)
+    # Split content into lines for line-based context
+    lines = content.split("\n")
+    lines_lower = [line.lower() for line in lines]
 
-    if not matches:
+    # Find all lines containing the query
+    line_indices = []
+    for line_idx, line_lower in enumerate(lines_lower):
+        start = 0
+        while True:
+            idx = line_lower.find(query_lower, start)
+            if idx == -1:
+                break
+            line_indices.append((line_idx, idx, idx + len(query_lower)))
+            start = idx + len(query_lower)
+
+    if not line_indices:
         return content[:100] + "..." if len(content) > 100 else content
 
-    # Format matches with context
+    # Gather the matches to render (up to max_matches)
+    visible = line_indices[:max_matches]
+
+    # Merge overlapping context windows so nearby matches share a single block.
+    # Each window is [context_start, context_end) in line space.
+    windows: list[tuple[int, int, list[tuple[int, int, int]]]] = []
+    for match_idx, start_pos, end_pos in visible:
+        cs = max(0, match_idx - context_lines)
+        ce = min(len(lines), match_idx + context_lines + 1)
+        if windows and cs <= windows[-1][1]:
+            # Overlaps with the previous window — extend it
+            prev_cs, _, prev_matches = windows[-1]
+            windows[-1] = (
+                prev_cs,
+                max(ce, windows[-1][1]),
+                prev_matches + [(match_idx, start_pos, end_pos)],
+            )
+        else:
+            windows.append((cs, ce, [(match_idx, start_pos, end_pos)]))
+
+    # Build a highlight map: line_idx -> list of (start, end) char positions
+    def _highlight_line(line: str, highlights: list[tuple[int, int]]) -> str:
+        if not highlights:
+            return line
+        result_parts = []
+        prev = 0
+        for hs, he in sorted(highlights):
+            result_parts.append(line[prev:hs])
+            match_text = line[hs:he]
+            if sys.stdout.isatty():
+                result_parts.append(f"\033[1;31m{match_text}\033[0m")
+            else:
+                result_parts.append(f"**{match_text}**")
+            prev = he
+        result_parts.append(line[prev:])
+        return "".join(result_parts)
+
     formatted_matches = []
-    for match_idx in matches[:max_matches]:
-        # Extract context window
-        context_start = max(0, match_idx - context_size)
-        context_end = min(len(content), match_idx + len(query) + context_size)
-        context = content[context_start:context_end]
+    for cs, ce, block_matches in windows:
+        highlight_map: dict[int, list[tuple[int, int]]] = {}
+        for match_idx, start_pos, end_pos in block_matches:
+            highlight_map.setdefault(match_idx, []).append((start_pos, end_pos))
 
-        # Add ellipsis if truncated
-        prefix = "..." if context_start > 0 else ""
-        suffix = "..." if context_end < len(content) else ""
+        formatted_lines = []
+        for i in range(cs, ce):
+            line = lines[i]
+            formatted_line = _highlight_line(line, highlight_map.get(i, []))
+            formatted_lines.append(f"{i + 1:4d}| {formatted_line}")
 
-        # Highlight the match
-        match_start = match_idx - context_start
-        match_end = match_start + len(query)
+        context_text = "\n     ".join(formatted_lines)
+        if cs > 0:
+            context_text = "...\n     " + context_text
+        if ce < len(lines):
+            context_text = context_text + "\n     ..."
+        formatted_matches.append(context_text)
 
-        # Only show line context
-        context_prefix = context[:match_start].rsplit("\n", 1)[-1]
-        context_suffix = context[match_end:].split("\n", 1)[0]
-        context = f"{context_prefix}{context[match_start:match_end]}{context_suffix}"
-
-        highlighted = f"{prefix}{context}{suffix}"
-        highlighted = re.sub(
-            re.escape(query),
-            lambda m: "\033[1;31m" + str(m.group()) + "\033[0m",
-            highlighted,
-            flags=re.IGNORECASE,
-        )
-        formatted_matches.append(highlighted)
-
-    result = " ".join(formatted_matches)
-    if len(matches) > max_matches:
-        result += f" (+{len(matches) - max_matches})"
+    result = "\n".join(formatted_matches)
+    if len(line_indices) > max_matches:
+        result += f"\n(+{len(line_indices) - max_matches} more matches)"
 
     return result
 

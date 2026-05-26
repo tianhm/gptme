@@ -80,7 +80,10 @@ def chats():
     "--summarize", is_flag=True, help="Generate LLM-based summaries for chats"
 )
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON.")
-def chats_list(limit: int, summarize: bool, output_json: bool):
+@click.option(
+    "--metadata", is_flag=True, help="Show full metadata (ID, model, cost, tokens)."
+)
+def chats_list(limit: int, summarize: bool, output_json: bool, metadata: bool):
     """List conversation logs."""
     _ensure_tools()
 
@@ -101,7 +104,7 @@ def chats_list(limit: int, summarize: bool, output_json: bool):
             tool_allowlist=[],
             tool_format="markdown",
         )
-    list_chats(max_results=limit, include_summary=summarize)
+    list_chats(max_results=limit, metadata=metadata, include_summary=summarize)
 
 
 @chats.command("search")
@@ -118,7 +121,7 @@ def chats_list(limit: int, summarize: bool, output_json: bool):
 )
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON.")
 @click.option(
-    "-c", "--context", default=50, help="Characters of context around each match."
+    "-c", "--context", default=1, help="Lines of context to show around each match."
 )
 @click.option(
     "-m", "--matches", default=1, help="Maximum matches to show per conversation."
@@ -173,7 +176,7 @@ def chats_search(
             tool_allowlist=[],
             tool_format="markdown",
         )
-    search_chats(query, max_results=limit, context_size=context, max_matches=matches)
+    search_chats(query, max_results=limit, context_lines=context, max_matches=matches)
 
 
 @chats.command("read")

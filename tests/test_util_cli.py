@@ -123,10 +123,8 @@ def test_chats_list(tmp_path, mocker):
     assert result.exit_code == 0
     assert "Chat One" in result.output
     assert "Chat Two" in result.output
-    assert "2024-01-01-chat-one" in result.output
-    assert "2024-01-01-chat-two" in result.output
-    assert "Messages: 1" in result.output  # First chat has 1 message
-    assert "Messages: 2" in result.output  # Second chat has 2 messages
+    assert "(1 msgs)" in result.output  # First chat has 1 message
+    assert "(2 msgs)" in result.output  # Second chat has 2 messages
     assert "Using browser tool with" not in result.output
 
 
@@ -219,6 +217,60 @@ def test_chats_read_finds_conversation_beyond_recent_limit(tmp_path, monkeypatch
     assert result.exit_code == 0, result.output
     assert "not found" not in result.output
     assert target_id in result.output
+
+
+def test_chats_search_matches_and_context_options(tmp_path, monkeypatch, mocker):
+    """`chats search` should honor --matches and line-based --context."""
+    monkeypatch.setenv("GPTME_LOGS_HOME", str(tmp_path))
+    mocker.patch("gptme.cli.cmd_chats.get_tools", return_value=[SimpleNamespace()])
+    runner = CliRunner()
+
+    conv_dir = tmp_path / "2026-01-01-demo"
+    conv_dir.mkdir()
+    (conv_dir / "conversation.jsonl").write_text(
+        '{"role": "user", "content": "before\\nneedle first\\nafter", "timestamp": "2026-01-01T00:00:00+00:00"}\n'
+        '{"role": "assistant", "content": "one\\nneedle second\\ntwo", "timestamp": "2026-01-01T00:00:01+00:00"}\n'
+    )
+
+    result = runner.invoke(
+        main,
+        ["chats", "search", "needle", "--matches", "2", "--context", "1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Match 1 (message 0, user):" in result.output
+    assert "Match 2 (message 1, assistant):" in result.output
+    assert "1| before" in result.output
+    assert "2| **needle** first" in result.output
+    assert "1| one" in result.output
+    assert "2| **needle** second" in result.output
+
+
+def test_chats_read_start_and_context_options(tmp_path, monkeypatch, mocker):
+    """`chats read` should include prior messages when --context is requested."""
+    monkeypatch.setenv("GPTME_LOGS_HOME", str(tmp_path))
+    mocker.patch("gptme.cli.cmd_chats.get_tools", return_value=[SimpleNamespace()])
+    runner = CliRunner()
+
+    conv_id = "2026-01-01-demo"
+    conv_dir = tmp_path / conv_id
+    conv_dir.mkdir()
+    (conv_dir / "conversation.jsonl").write_text(
+        '{"role": "user", "content": "first line", "timestamp": "2026-01-01T00:00:00+00:00"}\n'
+        '{"role": "assistant", "content": "second line", "timestamp": "2026-01-01T00:00:01+00:00"}\n'
+        '{"role": "user", "content": "third line", "timestamp": "2026-01-01T00:00:02+00:00"}\n'
+    )
+
+    result = runner.invoke(
+        main,
+        ["chats", "read", conv_id, "--start", "2", "--context", "1", "--limit", "2"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"Reading conversation: {conv_id} ({conv_id})" in result.output
+    assert "1. User: first line..." in result.output
+    assert "2. Assistant: second line..." in result.output
+    assert "3. User: third line..." not in result.output
 
 
 def test_context_index_and_retrieve(tmp_path):
