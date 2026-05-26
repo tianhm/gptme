@@ -805,3 +805,68 @@ def test_llm_generate_unknown_model():
     assert result.exception is None or isinstance(result.exception, SystemExit)
     # Error mentions the unknown provider/model — exact message varies by code path
     assert "notareal" in result.output or "Unknown" in result.output
+
+
+def test_llm_generate_prepends_system_message(monkeypatch):
+    """llm generate must prepend a system message so Anthropic-compatible providers don't reject it."""
+    import unittest.mock as mock
+
+    captured: list = []
+
+    def fake_chat_complete(messages, model, tools):
+        captured.extend(messages)
+        return ("ok", None)
+
+    # Patch at source — _chat_complete is lazily imported inside llm_generate
+    monkeypatch.setattr("gptme.llm._chat_complete", fake_chat_complete)
+    monkeypatch.setattr("gptme.init.init", lambda *a, **kw: None)
+    monkeypatch.setattr("gptme.llm.get_provider_from_model", lambda m: mock.MagicMock())
+    monkeypatch.setattr("gptme.llm.init_llm", lambda *a, **kw: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["llm", "generate", "--model", "anthropic/claude-sonnet-4-6", "hello"]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "ok", (
+        f"Expected plain response text, got: {result.output!r}"
+    )
+    assert captured, "No messages were passed to _chat_complete"
+    assert captured[0].role == "system", (
+        f"First message must be system, got {captured[0].role!r}; "
+        f"Anthropic rejects conversations without a leading system message"
+    )
+
+
+def test_llm_generate_prepends_system_message_stream(monkeypatch):
+    """--stream path must also prepend a system message (same message list is used for both paths)."""
+    import unittest.mock as mock
+
+    captured: list = []
+
+    def fake_stream(messages, model, tools):
+        captured.extend(messages)
+        yield "ok"
+
+    monkeypatch.setattr("gptme.llm._stream", fake_stream)
+    monkeypatch.setattr("gptme.init.init", lambda *a, **kw: None)
+    monkeypatch.setattr("gptme.llm.get_provider_from_model", lambda m: mock.MagicMock())
+    monkeypatch.setattr("gptme.llm.init_llm", lambda *a, **kw: None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "llm",
+            "generate",
+            "--stream",
+            "--model",
+            "anthropic/claude-sonnet-4-6",
+            "hello",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured, "No messages were passed to _stream"
+    assert captured[0].role == "system", (
+        f"First message must be system, got {captured[0].role!r}"
+    )
