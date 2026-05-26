@@ -380,17 +380,18 @@ def llm_generate(prompt: str | None, model: str | None, stream: bool):
         console.quiet = True
 
         # Initialize with minimal setup - no tools needed for simple generation
-        init(model, interactive=False, tool_allowlist=[], tool_format="markdown")
+        try:
+            init(model, interactive=False, tool_allowlist=[], tool_format="markdown")
+        except ValueError as e:
+            raise click.UsageError(str(e)) from e
 
         # Get model or use default
         if not model:
             default_model = get_default_model()
             if not default_model:
-                print(
-                    "Error: No model specified and no default model available.",
-                    file=sys.stderr,
+                raise click.UsageError(
+                    "No model specified and no default model available."
                 )
-                sys.exit(1)
             model = default_model.full
 
         # Ensure provider is initialized
@@ -398,8 +399,7 @@ def llm_generate(prompt: str | None, model: str | None, stream: bool):
             provider = get_provider_from_model(model)
             init_llm(provider)
         except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            raise click.UsageError(str(e)) from e
 
     # Create message
     messages = [Message("user", prompt)]
