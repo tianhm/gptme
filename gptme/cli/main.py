@@ -151,6 +151,38 @@ class ConversationName(click.ParamType):
         return value
 
 
+def _extract_missing_explicit_local_path(prompt: str) -> str | None:
+    """Return an explicit local-path prompt that is missing on disk.
+
+    Only catches unambiguous local path forms so ordinary text prompts and
+    repo/host-style strings like ``github.com/org/repo`` keep working.
+    """
+    from ..util.content import is_message_command
+
+    stripped = prompt.strip()
+    if not stripped or any(ch.isspace() for ch in stripped):
+        return None
+    if is_message_command(stripped):
+        return None
+
+    candidate = stripped.removeprefix("@")
+    explicit_local = candidate.startswith(("/", "~/", "./", "../")) or (
+        len(candidate) >= 3
+        and candidate[1] == ":"
+        and candidate[2] in ("/", "\\")
+        and candidate[0].isalpha()
+    )
+    if not explicit_local:
+        return None
+
+    try:
+        if Path(candidate).expanduser().exists():
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 commands_help = "\n".join(_gen_help(incl_langtags=False))
 _builtin_tools = get_available_tools(include_mcp=False)
 _known_tool_names = sorted(tool.name for tool in _builtin_tools)
@@ -645,6 +677,15 @@ def main(
             print(f"\nGoodbye! (resume with: gptme --name {logdir.name})")
 
     atexit.register(goodbye_handler)
+
+    for prompt_msg in prompt_msgs:
+        missing_path = _extract_missing_explicit_local_path(prompt_msg.content)
+        if missing_path:
+            _cleanup_aborted_new_logdir(logdir, preexisting=logdir_preexisting)
+            raise click.UsageError(
+                "Prompt looks like an explicit local path, but it does not exist: "
+                f"{missing_path}"
+            )
 
     if workspace == "@log":
         workspace_path: Path | None = logdir / "workspace"
