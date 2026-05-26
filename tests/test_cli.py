@@ -941,3 +941,51 @@ def test_tools_short_option_equals_syntax_works(runner: CliRunner):
     result = runner.invoke(cli.main, ["-t=-browser", "--version"])
     assert result.exit_code == 0, result.output
     assert "gptme v" in result.output
+
+
+@pytest.mark.parametrize(
+    "tool_spec",
+    [
+        "./definitely-missing-custom-tool.py",
+        "+./definitely-missing-custom-tool.py",
+        "-./definitely-missing-custom-tool.py",
+    ],
+)
+def test_missing_custom_tool_path_fails_before_config_init(
+    runner: CliRunner, tool_spec: str
+):
+    result = runner.invoke(cli.main, ["-n", "--tools", tool_spec, "hi"])
+
+    assert result.exit_code != 0
+    assert (
+        "Tool file does not exist: ./definitely-missing-custom-tool.py" in result.output
+    )
+    assert "Skipping all confirmation prompts." not in result.output
+    assert "stdin is not a TTY and prompts provided" not in result.output
+    assert "Using project configuration" not in result.output
+    assert "Using local configuration" not in result.output
+
+
+@pytest.mark.parametrize(
+    "tool_spec",
+    [
+        "./definitely-missing-custom-tool.bash",
+        "+./definitely-missing-custom-tool.bash",
+        "-./definitely-missing-custom-tool.bash",
+    ],
+)
+def test_non_python_custom_tool_path_reports_suffix_before_existence(
+    runner: CliRunner, tool_spec: str
+):
+    result = runner.invoke(cli.main, ["-n", "--tools", tool_spec, "hi"])
+
+    assert result.exit_code != 0
+    assert (
+        "Tool file must be a .py file: ./definitely-missing-custom-tool.bash"
+        in result.output
+    )
+    assert "Tool file does not exist" not in result.output
+    assert "Skipping all confirmation prompts." not in result.output
+    assert "stdin is not a TTY and prompts provided" not in result.output
+    assert "Using project configuration" not in result.output
+    assert "Using local configuration" not in result.output
