@@ -22,6 +22,7 @@ from .llm.models import (
     get_recommended_model,
     set_default_model,
 )
+from .message import is_output_json
 from .tools import ToolFormat, init_tools, set_tool_format
 from .util import console
 
@@ -118,7 +119,7 @@ def init_model(
     if not model:  # pragma: no cover
         # auto-detect depending on if OPENAI_API_KEY or ANTHROPIC_API_KEY is set
         model = guess_provider_from_config()
-        if not model:
+        if not model and not is_output_json():
             console.print("[yellow]No API keys set, no provider available.[/yellow]")
 
     # ask user for API key
@@ -184,7 +185,8 @@ def init_model(
     if model_name is None:
         model_name = get_recommended_model(provider)
     model_full = f"{provider}/{model_name}"
-    console.log(f"Using model: [green]{model_full}[/green]")
+    if not is_output_json():
+        console.log(f"Using model: [green]{model_full}[/green]")
     init_llm(provider)
 
     model_meta = _resolved_meta or get_model(model_full)
