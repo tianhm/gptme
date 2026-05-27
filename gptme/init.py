@@ -10,9 +10,10 @@ from rich.logging import RichHandler
 
 from .cli.setup import ask_for_api_key
 from .commands import init_commands
-from .config import get_config
+from .config import Config, get_config
 from .hooks import init_hooks
 from .llm import guess_provider_from_config, init_llm, is_custom_provider
+from .llm.llm_gptme import GptmeAuthError
 from .llm.models import (
     PROVIDERS,
     CustomProvider,
@@ -187,7 +188,12 @@ def init_model(
     model_full = f"{provider}/{model_name}"
     if not is_output_json():
         console.log(f"Using model: [green]{model_full}[/green]")
-    init_llm(provider)
+    try:
+        init_llm(provider)
+    except GptmeAuthError:
+        if not _maybe_authenticate_gptme_interactively(provider, interactive, config):
+            raise
+        init_llm(provider)
 
     model_meta = _resolved_meta or get_model(model_full)
 
@@ -205,6 +211,29 @@ def init_model(
             logger.info(f"Context length overridden to {context_length} tokens")
 
     set_default_model(model_meta)
+
+
+def _maybe_authenticate_gptme_interactively(
+    provider: Provider,
+    interactive: bool,
+    config: Config,
+) -> bool:
+    """Offer inline gptme.ai device-flow auth and return True if it completed."""
+    if provider != "gptme" or not interactive or is_output_json():
+        return False
+
+    response = console.input(
+        "[yellow]No gptme.ai login found.[/yellow] Start device-flow login now? [Y/n] "
+    ).strip()
+    if response and response.lower() not in {"y", "yes"}:
+        return False
+
+    from .llm.llm_gptme import DEFAULT_SERVICE_URL, device_flow_authenticate
+
+    service_url = config.get_env("GPTME_CLOUD_BASE_URL") or DEFAULT_SERVICE_URL
+    service_url = service_url.rstrip("/").removesuffix("/v1")
+    device_flow_authenticate(server_url=service_url)
+    return True
 
 
 def init_logging(verbose, *, stderr: bool = True):
