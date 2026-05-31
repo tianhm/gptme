@@ -15,7 +15,7 @@ import { getApiBaseUrl } from '@/utils/connectionConfig';
 import { isLocalUrl, withLocalAddressSpace } from '@/utils/addressSpace';
 import { type Observable } from '@legendapp/state';
 import { observable } from '@legendapp/state';
-import { initConversation } from '@/stores/conversations';
+import { initConversation, setMaxTokens } from '@/stores/conversations';
 
 // Add DOM types
 type RequestInit = globalThis.RequestInit;
@@ -949,6 +949,7 @@ export class ApiClient {
       stream?: boolean;
       workspace?: string;
       pendingFiles?: File[];
+      maxTokens?: number;
     }
   ): Promise<string> {
     // Generate conversation ID immediately
@@ -977,6 +978,9 @@ export class ApiClient {
       },
       { needsInitialStep: true }
     );
+    if (options?.maxTokens !== undefined) {
+      setMaxTokens(conversationId, options.maxTokens);
+    }
 
     if (options?.pendingFiles?.length) {
       // When files are attached: create an empty conversation first (no message yet),
@@ -1129,7 +1133,8 @@ export class ApiClient {
     logfile: string,
     model?: string,
     stream: boolean = true,
-    branch: string = 'main'
+    branch: string = 'main',
+    maxTokens?: number
   ): Promise<void> {
     if (!this.isConnected) {
       throw new Error('Not connected to API');
@@ -1172,7 +1177,13 @@ export class ApiClient {
         {
           method: 'POST',
           headers,
-          body: JSON.stringify({ session_id: sessionId, model, branch, stream }),
+          body: JSON.stringify({
+            session_id: sessionId,
+            model,
+            branch,
+            stream,
+            ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+          }),
           signal: this.controller.signal,
         }
       );

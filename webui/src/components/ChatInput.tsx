@@ -33,7 +33,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { type Observable } from '@legendapp/state';
 import { Computed, use$ } from '@legendapp/state/react';
-import { conversations$ } from '@/stores/conversations';
+import { conversations$, setMaxTokens as setMaxTokensStore } from '@/stores/conversations';
 import {
   selectedAgent$,
   selectedWorkspace$,
@@ -64,6 +64,8 @@ export interface ChatOptions {
   files?: string[];
   /** Raw File objects to upload after conversation creation (for new chat view) */
   pendingFiles?: File[];
+  /** Max tokens for the model's response. Undefined = provider default. */
+  maxTokens?: number;
 }
 
 interface Props {
@@ -106,6 +108,8 @@ interface ChatOptionsProps {
   baseUrl: string;
   streamingEnabled: boolean;
   setStreamingEnabled: (enabled: boolean) => void;
+  maxTokens: number | undefined;
+  setMaxTokens: (tokens: number | undefined) => void;
   availableWorkspaces: WorkspaceProject[];
   isDisabled: boolean;
   showWorkspaceSelector: boolean;
@@ -122,6 +126,8 @@ const ChatOptionsPanel: FC<ChatOptionsProps> = ({
   baseUrl,
   streamingEnabled,
   setStreamingEnabled,
+  maxTokens,
+  setMaxTokens,
   availableWorkspaces,
   isDisabled,
   showWorkspaceSelector,
@@ -204,6 +210,24 @@ const ChatOptionsPanel: FC<ChatOptionsProps> = ({
       setStreamingEnabled={setStreamingEnabled}
       isDisabled={isDisabled}
     />
+
+    <div className="space-y-1">
+      <Label htmlFor="max-tokens-input">Max tokens</Label>
+      <input
+        id="max-tokens-input"
+        type="number"
+        min={1}
+        placeholder="Model default"
+        value={maxTokens ?? ''}
+        onChange={(e) => {
+          const val = e.target.value;
+          const n = Math.round(Number(val));
+          setMaxTokens(val === '' || isNaN(n) ? undefined : Math.max(1, n));
+        }}
+        disabled={isDisabled}
+        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+      />
+    </div>
 
     {onOpenChatSettings && (
       <button
@@ -485,6 +509,7 @@ export const ChatInput: FC<Props> = ({
     return '';
   });
   const [streamingEnabled, setStreamingEnabled] = useState(true);
+  const [maxTokens, setMaxTokens] = useState<number | undefined>(undefined);
 
   // When switching conversations, load the new conversation's draft.
   // Use a ref to track the previous key so we can save the outgoing draft first.
@@ -533,11 +558,21 @@ export const ChatInput: FC<Props> = ({
     }
   }, [conversationModel, defaultModel, apiDefaultModel, hasExplicitModelSelection]);
 
-  // Reset explicit selection when conversation changes
+  // Sync local state with store when conversation changes
   useEffect(() => {
     setHasExplicitModelSelection(false);
     setSelectedModel(conversationModel || defaultModel || apiDefaultModel || '');
+    setMaxTokens(
+      conversationId ? conversations$.get(conversationId)?.maxTokens?.peek() : undefined
+    );
   }, [conversationId, conversationModel, defaultModel, apiDefaultModel]);
+
+  // Keep store in sync with local maxTokens so regenerate/rerun see the current UI value
+  useEffect(() => {
+    if (conversationId) {
+      setMaxTokensStore(conversationId, maxTokens);
+    }
+  }, [maxTokens, conversationId]);
 
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>(
     // For new conversations, use the selected workspace from sidebar, otherwise default to '.'
@@ -785,6 +820,7 @@ export const ChatInput: FC<Props> = ({
               workspace: selectedWorkspace || undefined,
               files: uploadedPaths,
               pendingFiles,
+              maxTokens,
             },
           },
         ]);
@@ -815,6 +851,7 @@ export const ChatInput: FC<Props> = ({
         workspace: selectedWorkspace || undefined,
         files: uploadedPaths,
         pendingFiles,
+        maxTokens,
       });
       setMessage('');
       cleanupAndClearFiles();
@@ -1082,6 +1119,8 @@ export const ChatInput: FC<Props> = ({
                           baseUrl={connectionConfig.baseUrl.replace(/\/+$/, '')}
                           streamingEnabled={streamingEnabled}
                           setStreamingEnabled={setStreamingEnabled}
+                          maxTokens={maxTokens}
+                          setMaxTokens={setMaxTokens}
                           availableWorkspaces={availableWorkspaces}
                           isDisabled={isDisabled}
                           showWorkspaceSelector={!conversationId}
