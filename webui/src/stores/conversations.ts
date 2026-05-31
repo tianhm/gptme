@@ -11,6 +11,7 @@ export interface PendingTool {
 export interface ExecutingTool {
   id: string;
   tooluse: ToolUse;
+  startedAt: number;
 }
 
 export interface ConversationState {
@@ -24,6 +25,8 @@ export interface ConversationState {
   pendingTool: PendingTool | null;
   // Any executing tool
   executingTool: ExecutingTool | null;
+  // Duration of the most recently completed tool (cleared when next tool starts)
+  lastCompletedTool: { toolName: string; durationMs: number; completedAt: number; success: boolean } | null;
   // Last received message
   lastMessage?: Message;
   // Whether to show the initial system message
@@ -60,6 +63,7 @@ export function updateConversation(id: string, update: Partial<ConversationState
       isConnected: false,
       pendingTool: null,
       executingTool: null,
+      lastCompletedTool: null,
       showInitialSystem: false,
       chatConfig: null,
       needsInitialStep: false,
@@ -123,9 +127,32 @@ export function setPendingTool(id: string, toolId: string | null, tooluse: ToolU
   });
 }
 
-export function setExecutingTool(id: string, toolId: string | null, tooluse: ToolUse | null) {
+export function setExecutingTool(
+  id: string,
+  toolId: string | null,
+  tooluse: ToolUse | null,
+  startedAt?: number
+) {
+  const update: Partial<ConversationState> = {
+    executingTool:
+      toolId && tooluse ? { id: toolId, tooluse, startedAt: startedAt ?? Date.now() } : null,
+  };
+  if (toolId) {
+    // Clear the completion badge when a new tool starts executing
+    update.lastCompletedTool = null;
+  }
+  updateConversation(id, update);
+}
+
+export function setToolComplete(
+  id: string,
+  toolName: string,
+  durationMs: number,
+  success: boolean
+) {
   updateConversation(id, {
-    executingTool: toolId && tooluse ? { id: toolId, tooluse } : null,
+    executingTool: null,
+    lastCompletedTool: { toolName, durationMs, completedAt: Date.now(), success },
   });
 }
 
@@ -148,6 +175,7 @@ export function initConversation(
     isConnected: false,
     pendingTool: null,
     executingTool: null,
+    lastCompletedTool: null,
     showInitialSystem: false,
     chatConfig: null,
     needsInitialStep: options?.needsInitialStep ?? false,
