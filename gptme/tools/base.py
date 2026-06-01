@@ -454,6 +454,7 @@ class ToolUse:
         self,
         log: Log | None = None,
         workspace: Path | None = None,
+        on_result_message: Callable[[Message], None] | None = None,
     ) -> Generator[Message, None, None]:
         """Executes a tool-use tag and returns the output."""
         # noreorder
@@ -501,14 +502,23 @@ class ToolUse:
                             self.args,
                             self.kwargs,
                         )
-                        if isinstance(ex, Generator):
-                            # Convert generator to list to measure execution time properly
-                            result_msgs = list(ex)
-                            yield from result_msgs
-                        else:
-                            if ex is not None:
-                                result_msgs = [ex]
-                            yield from result_msgs
+                        generator_result = ex if isinstance(ex, Generator) else None
+                        single_result = (
+                            None
+                            if generator_result is not None
+                            else cast(Message | None, ex)
+                        )
+                        if generator_result is not None:
+                            for msg in generator_result:
+                                result_msgs.append(msg)
+                                if on_result_message:
+                                    on_result_message(msg)
+                                yield msg
+                        elif single_result is not None:
+                            result_msgs = [single_result]
+                            if on_result_message:
+                                on_result_message(single_result)
+                            yield single_result
                     finally:
                         _current_tool_use.reset(token)
 
@@ -531,7 +541,7 @@ class ToolUse:
                         workspace=workspace,
                         tool_use=self,
                         result_msgs=tuple(result_msgs)
-                        if isinstance(ex, Generator)
+                        if generator_result is not None
                         else None,
                     )
                     if post_hook_msgs := trigger_hook(
