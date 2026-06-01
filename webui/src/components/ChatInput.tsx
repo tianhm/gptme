@@ -19,9 +19,11 @@ import {
   useRef,
   useCallback,
   type FC,
+  type Dispatch,
   type FormEvent,
   type KeyboardEvent,
   type DragEvent,
+  type SetStateAction,
 } from 'react';
 import { useApi } from '@/contexts/ApiContext';
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +55,7 @@ import { useAgents } from '@/hooks/useAgents';
 import { useFileAutocomplete } from '@/hooks/useFileAutocomplete';
 import { FileAutocomplete } from '@/components/FileAutocomplete';
 import { VoiceButton } from '@/components/VoiceButton';
+import { SpeechInputButton } from '@/components/SpeechInputButton';
 import { useSettings } from '@/contexts/SettingsContext';
 import {
   Select,
@@ -85,7 +88,7 @@ interface Props {
   defaultModel?: string;
   autoFocus$: Observable<boolean>;
   value?: string;
-  onChange?: (value: string) => void;
+  onChange?: Dispatch<SetStateAction<string>>;
   // Edit mode: reuse ChatInput for inline message editing with attachment support
   editMode?: boolean;
   editFiles?: string[]; // Pre-existing file paths from the message being edited
@@ -991,6 +994,13 @@ export const ChatInput: FC<Props> = ({
     }
   };
 
+  const handleTranscript = useCallback(
+    (text: string) => {
+      setMessage((prev) => (prev ? prev + ' ' + text.trim() : text.trim()));
+    },
+    [setMessage]
+  );
+
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -1244,6 +1254,10 @@ export const ChatInput: FC<Props> = ({
                         )}
                     </div>
 
+                    <SpeechInputButton
+                      onTranscript={handleTranscript}
+                      disabled={isDisabled || isGenerating}
+                    />
                     {settings.voiceServerUrl && (
                       <VoiceButton voiceServerUrl={settings.voiceServerUrl} />
                     )}
