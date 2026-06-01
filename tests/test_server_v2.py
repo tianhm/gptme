@@ -1,7 +1,7 @@
 import random
 import time
 import unittest.mock
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -912,6 +912,114 @@ def test_external_session_gptme_directory_no_jsonl_skipped(tmp_path: Path):
     # Should return 0 items — the directory is skipped early, not propagated as an error
     items = provider.list_sessions(limit=10, days=7)
     assert items == [], f"Expected no sessions, got: {items}"
+
+
+def test_v2_server_health_empty(client: FlaskClient, monkeypatch):
+    """Server health endpoint returns green status with no active sessions."""
+    monkeypatch.setattr(
+        "gptme.server.api_v2.SessionManager.get_all_sessions",
+        lambda: [],
+    )
+
+    response = client.get("/api/v2/server/health")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data is not None
+    assert data["session_count"] == 0
+    assert data["generating_count"] == 0
+    assert data["idle_count"] == 0
+    assert data["health"] == "green"
+    assert data["slots"] == []
+
+
+def test_v2_server_health_with_session(v2_conv, client: FlaskClient, monkeypatch):
+    """Server health endpoint reports idle session after creation."""
+    from gptme.server.session_models import SessionManager
+
+    session_id = v2_conv["session_id"]
+    session = SessionManager.get_session(session_id)
+    assert session is not None
+
+    monkeypatch.setattr(
+        "gptme.server.api_v2.SessionManager.get_all_sessions",
+        lambda: [(session_id, session)],
+    )
+
+    response = client.get("/api/v2/server/health")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data is not None
+    assert data["session_count"] == 1
+    assert data["generating_count"] == 0
+    assert data["idle_count"] == 1
+    assert data["health"] == "green"
+    assert len(data["slots"]) == 1
+    slot = data["slots"][0]
+    assert not slot["generating"]
+    assert slot["elapsed_seconds"] is None
+
+
+def test_v2_server_health_yellow(client: FlaskClient, monkeypatch):
+    """Server health returns yellow when some sessions are generating."""
+    from gptme.server.session_models import ConversationSession
+
+    now = datetime.now(tz=timezone.utc)
+    idle_session = ConversationSession(id="idle-1234", conversation_id="conv-1")
+    gen_session = ConversationSession(
+        id="gen-5678",
+        conversation_id="conv-2",
+        generating=True,
+        generating_since=now - timedelta(seconds=30),
+    )
+    monkeypatch.setattr(
+        "gptme.server.api_v2.SessionManager.get_all_sessions",
+        lambda: [("idle-1234", idle_session), ("gen-5678", gen_session)],
+    )
+
+    response = client.get("/api/v2/server/health")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data is not None
+    assert data["session_count"] == 2
+    assert data["generating_count"] == 1
+    assert data["idle_count"] == 1
+    assert data["health"] == "yellow"
+    assert len(data["slots"]) == 2
+    # Verify generating slot has elapsed time
+    gen_slot = next(s for s in data["slots"] if s["generating"])
+    assert gen_slot["elapsed_seconds"] is not None
+    assert gen_slot["elapsed_seconds"] >= 0  # type: ignore[operator]
+
+
+def test_v2_server_health_red(client: FlaskClient, monkeypatch):
+    """Server health returns red when all sessions are generating."""
+    from gptme.server.session_models import ConversationSession
+
+    now = datetime.now(tz=timezone.utc)
+    sessions = [
+        ConversationSession(
+            id=f"gen-{i:04d}",
+            conversation_id=f"conv-{i}",
+            generating=True,
+            generating_since=now - timedelta(seconds=10 + i),
+        )
+        for i in range(3)
+    ]
+    monkeypatch.setattr(
+        "gptme.server.api_v2.SessionManager.get_all_sessions",
+        lambda: [(s.id, s) for s in sessions],
+    )
+
+    response = client.get("/api/v2/server/health")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data is not None
+    assert data["session_count"] == 3
+    assert data["generating_count"] == 3
+    assert data["idle_count"] == 0
+    assert data["health"] == "red"
+    assert len(data["slots"]) == 3
+    assert all(s["generating"] for s in data["slots"])
 
 
 def test_v2_conversations_list(client: FlaskClient):
