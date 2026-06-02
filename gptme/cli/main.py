@@ -53,6 +53,15 @@ from ..util.prompt import add_history
 logger = logging.getLogger(__name__)
 
 
+def _validate_model_param(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
+    """Reject empty --model early so the CLI exits before heavy setup work."""
+    if value is not None and not value.strip():
+        raise click.BadParameter("Model name cannot be empty.", ctx=ctx, param=param)
+    return value
+
+
 script_path = Path(os.path.realpath(__file__))
 _STDIN_PIPE_GRACE_PERIOD = 1.0
 
@@ -288,6 +297,7 @@ Run 'gptme-util --help' for all utility commands."""
     "-m",
     "--model",
     default=None,
+    callback=_validate_model_param,
     help=f"Model to use, e.g. openai/{get_recommended_model('openai')}, anthropic/{get_recommended_model('anthropic')}. If only provider given then a default is used.",
 )
 @click.option(
