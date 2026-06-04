@@ -157,6 +157,13 @@ class ConversationName(click.ParamType):
     def convert(self, value, param, ctx):
         if value == "random":
             return value
+        # Empty/whitespace-only names silently default to "random" instead of
+        # crashing with a validation error. This guards against Click version
+        # and shell edge cases where --name "" bypasses the ParamType's
+        # convert method and passes an empty string straight to main().
+        # Non-empty values still go through conversation_name_error() below.
+        if not value or not value.strip():
+            return "random"
         if error := conversation_name_error(value):
             self.fail(error, param, ctx)
         return value
@@ -491,6 +498,11 @@ def main(
     output_schema: str | None,
 ):
     """Main entrypoint for the CLI."""
+
+    # Defense-in-depth: handle empty/whitespace names in case Click bypasses convert()
+    # (observed to occur in some Click versions when --name "" is passed)
+    if not name or not name.strip():
+        name = "random"
 
     # Apply agent profile if specified
     selected_profile = None

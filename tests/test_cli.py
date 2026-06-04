@@ -155,13 +155,77 @@ def test_name_rejects_path_traversal(bad_name: str, runner: CliRunner):
 
 
 @pytest.mark.parametrize("bad_name", ["", " ", "   ", "\t"])
-def test_name_rejects_empty_or_whitespace_only_values(bad_name: str, runner: CliRunner):
+def test_name_defaults_to_random_for_empty_or_whitespace(
+    monkeypatch, tmp_path: Path, bad_name: str, runner: CliRunner
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    logdir = tmp_path / "existing-conversation"
+    logdir.mkdir()
+    (logdir / "conversation.jsonl").write_text('{"role":"user","content":"hello"}\n')
+
+    selected_names: list[str] = []
+    selected_logdirs: list[Path] = []
+
+    def fake_get_logdir(name: str) -> Path:
+        selected_names.append(name)
+        return logdir
+
+    def fake_chat(prompt_msgs, initial_msgs, chat_logdir, *args, **kwargs):
+        selected_logdirs.append(chat_logdir)
+
+    monkeypatch.setattr(cli, "get_logdir", fake_get_logdir)
+    monkeypatch.setattr(cli, "chat", fake_chat)
+
     result = runner.invoke(
         cli.main,
         ["--name", bad_name, "--non-interactive", "hello"],
+        catch_exceptions=False,
     )
-    assert result.exit_code == 2
-    assert "conversation name cannot be empty" in result.output
+
+    assert result.exit_code == 0
+    assert "Traceback" not in result.output
+    assert selected_names == ["random"]
+    assert selected_logdirs == [logdir]
+
+
+def test_name_empty_before_output_format(
+    monkeypatch, tmp_path: Path, runner: CliRunner
+):
+    """Regression: --name "" with later flags must still normalize to random."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    logdir = tmp_path / "existing-conversation"
+    logdir.mkdir()
+    (logdir / "conversation.jsonl").write_text('{"role":"user","content":"hello"}\n')
+
+    selected_names: list[str] = []
+    selected_logdirs: list[Path] = []
+
+    def fake_get_logdir(name: str) -> Path:
+        selected_names.append(name)
+        return logdir
+
+    def fake_chat(prompt_msgs, initial_msgs, chat_logdir, *args, **kwargs):
+        selected_logdirs.append(chat_logdir)
+
+    monkeypatch.setattr(cli, "get_logdir", fake_get_logdir)
+    monkeypatch.setattr(cli, "chat", fake_chat)
+
+    result = runner.invoke(
+        cli.main,
+        ["--name", "", "--output-format", "json", "--non-interactive", "hello"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Traceback" not in result.output
+    assert selected_names == ["random"]
+    assert selected_logdirs == [logdir]
 
 
 @pytest.mark.parametrize(
