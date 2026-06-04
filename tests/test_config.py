@@ -578,6 +578,21 @@ def test_chat_config_temperature_top_p_roundtrip():
     assert config_new.top_p == 0.9
 
 
+def test_chat_config_numeric_fields_reject_wrong_types():
+    """temperature, top_p, and max_tokens raise ValueError for non-numeric input."""
+    with pytest.raises(ValueError, match="temperature"):
+        ChatConfig.from_dict({"chat": {"temperature": "banana"}})
+    with pytest.raises(ValueError, match="top_p"):
+        ChatConfig.from_dict({"chat": {"top_p": "high"}})
+    with pytest.raises(ValueError, match="max_tokens"):
+        ChatConfig.from_dict({"chat": {"max_tokens": "a lot"}})
+    # booleans are a subtype of int but semantically wrong for max_tokens (0 or 1 token)
+    with pytest.raises(ValueError, match="max_tokens"):
+        ChatConfig.from_dict({"chat": {"max_tokens": True}})
+    with pytest.raises(ValueError, match="max_tokens"):
+        ChatConfig.from_dict({"chat": {"max_tokens": False}})
+
+
 def test_project_config_loaded_from_toml():
     config = ProjectConfig.from_dict(tomlkit.loads(project_config_toml).unwrap())
 
