@@ -611,8 +611,13 @@ def _reply_stream(
 
                 # Check for opening tag at the end of this line
                 if last_line == "<think>" or last_line == "<thinking>":
-                    # Print spaces to clear the line
+                    # Print spaces to clear the line (in case chars were
+                    # already flushed to the terminal at a chunk boundary).
                     print_clear(len(last_line))
+                    # Discard buffered tag chars so they aren't flushed again
+                    # at the newline below (mirrors think_display_buffer.clear()
+                    # done for the closing tag).
+                    normal_display_buffer.clear()
                     # Print styled version
                     if not json_mode:
                         rprint(f"[dim]{last_line}[/dim]", end="")
