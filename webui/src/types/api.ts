@@ -131,6 +131,7 @@ export interface ChatConfig {
     stream: boolean;
     interactive: boolean;
     workspace: string;
+    system_prompt?: string | null;
     // Sampling overrides. null/undefined = provider/model default.
     temperature?: number | null;
     top_p?: number | null;
