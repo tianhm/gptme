@@ -1,5 +1,7 @@
 import copy
 import random
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -308,6 +310,217 @@ def test_default_model_propagation():
         from gptme.llm.models import _default_model_var
 
         _default_model_var.set(None)
+
+
+def _reset_provider_health_cache(monkeypatch: pytest.MonkeyPatch):
+    import gptme.server.api_v2 as api_module
+
+    monkeypatch.setattr(api_module, "_provider_health_cache", {})
+    monkeypatch.setattr(api_module, "_provider_health_cache_time", 0.0)
+    monkeypatch.setattr(api_module, "_provider_health_refreshing", False)
+    return api_module
+
+
+def test_api_providers_health_structure(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Test that /api/v2/providers/health returns the expected response shape."""
+    api_module = _reset_provider_health_cache(monkeypatch)
+    monkeypatch.setattr(
+        api_module,
+        "list_available_providers",
+        lambda: [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY")],
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_probe_provider",
+        lambda provider_name: {
+            "status": "ok" if provider_name == "anthropic" else "error",
+            "latency_ms": 42 if provider_name == "anthropic" else 17,
+            "error": None if provider_name == "anthropic" else "bad key",
+        },
+    )
+
+    response = client.get("/api/v2/providers/health")
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "providers": {
+            "anthropic": {"status": "ok", "latency_ms": 42, "error": None},
+            "openai": {"status": "error", "latency_ms": 17, "error": "bad key"},
+        }
+    }
+
+
+def test_api_providers_health_cached(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Test that repeated calls use the cache instead of probing again."""
+    api_module = _reset_provider_health_cache(monkeypatch)
+    monkeypatch.setattr(
+        api_module,
+        "list_available_providers",
+        lambda: [("anthropic", "ANTHROPIC_API_KEY")],
+    )
+    calls: list[str] = []
+
+    def fake_probe(provider_name: str) -> dict[str, object]:
+        calls.append(provider_name)
+        return {"status": "ok", "latency_ms": 5, "error": None}
+
+    monkeypatch.setattr(api_module, "_probe_provider", fake_probe)
+
+    r1 = client.get("/api/v2/providers/health")
+    r2 = client.get("/api/v2/providers/health")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert calls == ["anthropic"]
+    assert r1.get_json() == r2.get_json()
+
+
+def test_api_providers_health_force(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Test that ?force=1 bypasses the cache."""
+    api_module = _reset_provider_health_cache(monkeypatch)
+    monkeypatch.setattr(
+        api_module,
+        "list_available_providers",
+        lambda: [("anthropic", "ANTHROPIC_API_KEY")],
+    )
+    calls: list[str] = []
+
+    def fake_probe(provider_name: str) -> dict[str, object]:
+        calls.append(provider_name)
+        return {"status": "ok", "latency_ms": 7, "error": None}
+
+    monkeypatch.setattr(api_module, "_probe_provider", fake_probe)
+
+    response = client.get("/api/v2/providers/health")
+    forced = client.get("/api/v2/providers/health?force=1")
+    assert response.status_code == 200
+    assert forced.status_code == 200
+    assert calls == ["anthropic", "anthropic"]
+
+
+def test_probe_provider_checks_openai_subscription_auth(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """openai-subscription should get a real auth check, not configured fallback."""
+    from gptme.llm import llm_openai_subscription
+    from gptme.server import api_v2 as api_module
+
+    calls: list[float] = []
+
+    def fake_get_auth(timeout: float) -> object:
+        calls.append(timeout)
+        return object()
+
+    monkeypatch.setattr(llm_openai_subscription, "get_auth", fake_get_auth)
+
+    result = api_module._probe_provider("openai-subscription")
+
+    assert result["status"] == "ok"
+    assert result["error"] is None
+    assert calls == [api_module._PROVIDER_HEALTH_TIMEOUT]
+
+
+def test_probe_provider_empty_dynamic_models_is_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """local/gptme/custom probes should not report ok when model listing is empty."""
+    from gptme import llm
+    from gptme.server import api_v2 as api_module
+
+    monkeypatch.setattr(llm, "get_available_models", lambda provider: [])
+
+    result = api_module._probe_provider("local")
+
+    assert result["status"] == "error"
+    assert result["error"] == "No models returned from local"
+
+
+def test_api_providers_health_force_shares_inflight_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Concurrent forced refreshes should share one probe instead of stampeding."""
+    api_module = _reset_provider_health_cache(monkeypatch)
+    monkeypatch.setattr(
+        api_module,
+        "list_available_providers",
+        lambda: [("anthropic", "ANTHROPIC_API_KEY")],
+    )
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    calls: list[str] = []
+
+    def fake_probe(provider_name: str) -> dict[str, object]:
+        calls.append(provider_name)
+        probe_started.set()
+        assert release_probe.wait(timeout=1)
+        return {"status": "ok", "latency_ms": 9, "error": None}
+
+    monkeypatch.setattr(api_module, "_probe_provider", fake_probe)
+
+    results: list[dict[str, object]] = []
+
+    def load_health() -> None:
+        results.append(api_module._get_provider_health_response(force=True))
+
+    first = threading.Thread(target=load_health)
+    second = threading.Thread(target=load_health)
+
+    first.start()
+    assert probe_started.wait(timeout=1)
+    second.start()
+    time.sleep(0.01)
+    assert calls == ["anthropic"]
+
+    release_probe.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert calls == ["anthropic"]
+    assert results == [
+        {"providers": {"anthropic": {"status": "ok", "latency_ms": 9, "error": None}}},
+        {"providers": {"anthropic": {"status": "ok", "latency_ms": 9, "error": None}}},
+    ]
+
+
+def test_api_providers_health_timeout_returns_quickly(
+    client: FlaskClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Slow probes should surface as timeouts without blocking the response."""
+    api_module = _reset_provider_health_cache(monkeypatch)
+    monkeypatch.setattr(
+        api_module,
+        "list_available_providers",
+        lambda: [("anthropic", "ANTHROPIC_API_KEY")],
+    )
+    monkeypatch.setattr(api_module, "_PROVIDER_HEALTH_TIMEOUT", 0.01)
+
+    def slow_probe(_provider_name: str) -> dict[str, object]:
+        time.sleep(0.2)
+        return {"status": "ok", "latency_ms": 200, "error": None}
+
+    monkeypatch.setattr(api_module, "_probe_provider", slow_probe)
+
+    start = time.monotonic()
+    response = client.get("/api/v2/providers/health?force=1")
+    elapsed = time.monotonic() - start
+
+    assert response.status_code == 200
+    assert elapsed < 0.12
+    assert response.get_json() == {
+        "providers": {
+            "anthropic": {
+                "status": "error",
+                "latency_ms": 10,
+                "error": "Timeout",
+            }
+        }
+    }
 
 
 def test_api_v2_commands(client: FlaskClient):
