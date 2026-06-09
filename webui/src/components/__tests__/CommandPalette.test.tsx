@@ -160,6 +160,41 @@ describe('CommandPalette', () => {
 
       expect(preventDefaultSpy).toHaveBeenCalled();
     });
+
+    it('navigates to home with Alt+N', () => {
+      renderCommandPalette();
+      fireEvent.keyDown(document, { key: 'n', code: 'KeyN', altKey: true });
+      expect(mockNavigate).toHaveBeenCalledWith('/');
+    });
+
+    it('prevents default browser behavior for Alt+N', () => {
+      renderCommandPalette();
+      const event = new KeyboardEvent('keydown', {
+        key: 'n',
+        code: 'KeyN',
+        altKey: true,
+        cancelable: true,
+      });
+      const preventDefaultSpy = jest.spyOn(event, 'preventDefault');
+
+      document.dispatchEvent(event);
+
+      expect(preventDefaultSpy).toHaveBeenCalled();
+    });
+
+    it('does not navigate with Alt+N when typing in an input', () => {
+      render(
+        <BrowserRouter>
+          <>
+            <input data-testid="text-field" />
+            <CommandPalette />
+          </>
+        </BrowserRouter>
+      );
+      const input = screen.getByTestId('text-field');
+      fireEvent.keyDown(input, { key: 'n', code: 'KeyN', altKey: true });
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
   });
 
   describe('Search Functionality', () => {
