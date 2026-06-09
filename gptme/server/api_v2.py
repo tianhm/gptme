@@ -56,6 +56,7 @@ from gptme.prompts import get_prompt
 from ..commands import handle_cmd
 from ..config import get_project_config
 from ..config.user import (
+    get_default_model_source,
     get_user_config_env_source,
     get_user_config_paths,
     get_user_config_runtime_info,
@@ -98,6 +99,8 @@ from .openapi_docs import (
     UserConfigFileSaveResponse,
     UserDefaultModelSaveRequest,
     UserDefaultModelSaveResponse,
+    UserFavoritesSaveRequest,
+    UserFavoritesSaveResponse,
     UserSettingsResponse,
     api_doc,
     api_doc_simple,
@@ -327,11 +330,11 @@ def _validate_message_file_references(
 
 
 def _persist_default_model(model: str) -> bool:
-    """Persist env.MODEL and try to apply it in-process.
+    """Persist the default model to [models].default and try to apply in-process.
 
     Returns True if a restart is still required to guarantee the change takes effect.
     """
-    set_config_value("env.MODEL", model, reload=False)
+    set_config_value("models.default", model, reload=False)
 
     model_meta = get_model(model)
     try:
@@ -1651,11 +1654,16 @@ def api_models():
         except ValueError:
             pass
 
+    # User-curated favorites (only those still available in the model list)
+    available_ids = {m["id"] for m in models_data}
+    favorites = [m for m in config.user.models.favorites if m in available_ids]
+
     return flask.jsonify(
         {
             "models": models_data,
             "default": default_model.full if default_model else None,
             "recommended": recommended,
+            "favorites": favorites,
         }
     )
 
@@ -2296,6 +2304,53 @@ def api_user_default_model():
     )
 
 
+@v2_api.route("/api/v2/user/favorites", methods=["POST"])
+@require_auth
+@api_doc(
+    summary="Save favorite models",
+    description="Persist the user's favorite models into the global gptme config.",
+    request_body=UserFavoritesSaveRequest,
+    responses={200: UserFavoritesSaveResponse, 400: ErrorResponse},
+    tags=["user"],
+)
+def api_user_favorites():
+    """Persist favorite models into user config."""
+    req_json = request.get_json(silent=True)
+    if req_json is None:
+        return flask.jsonify({"error": "No JSON data provided"}), 400
+    if not isinstance(req_json, dict):
+        return flask.jsonify({"error": "JSON body must be an object"}), 400
+
+    favorites = req_json.get("favorites")
+    if not isinstance(favorites, list) or not all(
+        isinstance(m, str) for m in favorites
+    ):
+        return flask.jsonify({"error": "favorites must be a list of strings"}), 400
+
+    # Validate, de-duplicate (preserving order), and drop malformed entries so
+    # junk doesn't accumulate in config.toml. Favorites may reference custom
+    # providers, so we don't require a known built-in provider — just a
+    # plausible "provider/model" shape within a sane length.
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for m in favorites:
+        trimmed = m.strip()
+        if not trimmed or trimmed in seen:
+            continue
+        if "/" not in trimmed or len(trimmed) > 256:
+            logger.warning("Dropping invalid favorite model id: %r", m)
+            continue
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in trimmed):
+            logger.warning("Dropping favorite model id with control chars: %r", m)
+            continue
+        seen.add(trimmed)
+        cleaned.append(trimmed)
+
+    set_config_value("models.favorites", cleaned, reload=True)
+    logger.info("Saved %d favorite model(s) via /api/v2/user/favorites", len(cleaned))
+    return flask.jsonify({"status": "ok", "favorites": cleaned})
+
+
 @v2_api.route("/api/v2/user/avatar", methods=["GET"])
 @require_auth
 @api_doc(
@@ -2575,7 +2630,7 @@ def api_user_settings():
             "providers_configured": providers,
             "provider_sources": provider_sources,
             "default_model": default_model.full if default_model else None,
-            "default_model_source": get_user_config_env_source("MODEL"),
+            "default_model_source": get_default_model_source(),
             "config_files": get_user_config_runtime_info(),
         }
     )
