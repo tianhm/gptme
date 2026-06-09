@@ -1989,6 +1989,68 @@ def test_v2_edit_message_rejects_invalid_files_payload(
 
 
 @pytest.mark.parametrize(
+    ("files_payload", "expected_error"),
+    [
+        (["/etc/passwd"], "Absolute file paths are not supported"),
+        (["../outside.txt"], "File path escapes workspace"),
+    ],
+)
+def test_v2_edit_message_rejects_files_outside_workspace(
+    client: FlaskClient, files_payload: list[str], expected_error: str
+):
+    """Editing message files must reject local paths outside the workspace."""
+    conversation_id = create_conversation(client)["conversation_id"]
+    response = client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json={"role": "user", "content": "Original message"},
+    )
+    assert response.status_code == 200
+
+    conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert conversation is not None
+    user_index = len(conversation["log"]) - 1
+
+    response = client.patch(
+        f"/api/v2/conversations/{conversation_id}/messages/{user_index}",
+        json={"files": files_payload},
+    )
+
+    assert response.status_code == 400
+    assert expected_error in response.get_json()["error"]
+
+    conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert conversation is not None
+    assert "files" not in conversation["log"][user_index]
+
+
+def test_v2_edit_message_resolves_relative_files_against_workspace(
+    client: FlaskClient,
+):
+    """Relative edited files are stored under the conversation workspace."""
+    conversation_id = create_conversation(client)["conversation_id"]
+    response = client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json={"role": "user", "content": "Original message"},
+    )
+    assert response.status_code == 200
+
+    conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert conversation is not None
+    user_index = len(conversation["log"]) - 1
+
+    response = client.patch(
+        f"/api/v2/conversations/{conversation_id}/messages/{user_index}",
+        json={"files": ["attachments/ok.txt"]},
+    )
+
+    assert response.status_code == 200
+
+    conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert conversation is not None
+    assert conversation["log"][user_index]["files"] == ["attachments/ok.txt"]
+
+
+@pytest.mark.parametrize(
     "files_payload",
     [
         "attachments/image.png",
@@ -2088,6 +2150,53 @@ def test_v2_edit_message_preserves_uri_files(client: FlaskClient):
     conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
     assert conversation is not None
     assert conversation["log"][user_index]["files"] == [uri]
+
+
+@pytest.mark.parametrize(
+    "endpoint_builder",
+    [
+        lambda conversation_id, user_index: (
+            f"/api/v2/conversations/{conversation_id}",
+            {
+                "role": "user",
+                "content": "Test message",
+                "files": ["file:///etc/passwd"],
+            },
+            None,
+        ),
+        lambda conversation_id, user_index: (
+            f"/api/v2/conversations/{conversation_id}/messages/{user_index}",
+            {"files": ["file:///etc/passwd"]},
+            user_index,
+        ),
+    ],
+)
+def test_v2_message_file_uris_reject_file_scheme(client: FlaskClient, endpoint_builder):
+    """POST and PATCH message files must reject local file:// URIs."""
+    conversation_id = create_conversation(client)["conversation_id"]
+    response = client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json={"role": "user", "content": "Original message"},
+    )
+    assert response.status_code == 200
+
+    conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert conversation is not None
+    user_index = len(conversation["log"]) - 1
+
+    endpoint, payload, patched_index = endpoint_builder(conversation_id, user_index)
+    response = client.open(
+        endpoint, method="PATCH" if patched_index is not None else "POST", json=payload
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": "file:// URIs are not supported for message attachments"
+    }
+
+    conversation = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert conversation is not None
+    assert conversation["log"][user_index].get("files") is None
 
 
 def test_v2_edit_message_rejects_non_string_content(client: FlaskClient):
