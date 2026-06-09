@@ -1,19 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useApi } from '@/contexts/ApiContext';
-
-type ProviderHealthStatus = 'ok' | 'configured' | 'error';
-
-type ProviderHealthEntry = {
-  status: ProviderHealthStatus;
-  latency_ms: number | null;
-  error: string | null;
-};
-
-type ProviderHealthResponse = {
-  providers: Record<string, ProviderHealthEntry>;
-};
+import { useProviderHealth } from '@/hooks/useProviderHealth';
+import type { ProviderHealthStatus } from '@/stores/providerHealth';
 
 const STATUS_STYLES: Record<
   ProviderHealthStatus,
@@ -37,57 +25,7 @@ const STATUS_STYLES: Record<
 };
 
 export function ServerProviderHealthSettings() {
-  const { api } = useApi();
-  const [health, setHealth] = useState<ProviderHealthResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const latestRequestId = useRef(0);
-
-  const loadHealth = useCallback(
-    async (force = false) => {
-      const requestId = latestRequestId.current + 1;
-      latestRequestId.current = requestId;
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const headers: Record<string, string> = {};
-        if (api.authHeader) {
-          headers.Authorization = api.authHeader;
-        }
-
-        const suffix = force ? '?force=1' : '';
-        const response = await fetch(`${api.baseUrl}/api/v2/providers/health${suffix}`, {
-          headers,
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch provider health: ${response.statusText}`);
-        }
-
-        const data = (await response.json()) as ProviderHealthResponse;
-        if (requestId !== latestRequestId.current) {
-          return;
-        }
-        setHealth(data);
-      } catch (err) {
-        if (requestId !== latestRequestId.current) {
-          return;
-        }
-        setError(err instanceof Error ? err.message : 'Failed to fetch provider health');
-      } finally {
-        if (requestId === latestRequestId.current) {
-          setIsLoading(false);
-        }
-      }
-    },
-    [api.authHeader, api.baseUrl]
-  );
-
-  useEffect(() => {
-    void loadHealth();
-  }, [loadHealth]);
+  const { data: health, isLoading, error, refresh } = useProviderHealth(true);
 
   const providerEntries = Object.entries(health?.providers ?? {});
 
@@ -101,13 +39,7 @@ export function ServerProviderHealthSettings() {
           </p>
         </div>
 
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void loadHealth(true)}
-          disabled={isLoading}
-        >
+        <Button type="button" variant="outline" size="sm" onClick={() => void refresh(true)}>
           <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
           {isLoading ? 'Refreshing…' : 'Refresh'}
         </Button>
@@ -119,7 +51,7 @@ export function ServerProviderHealthSettings() {
         <p className="text-sm text-muted-foreground">Loading provider health…</p>
       ) : null}
 
-      {!error && !isLoading && providerEntries.length === 0 ? (
+      {!error && !isLoading && providerEntries.length == 0 ? (
         <p className="text-sm text-muted-foreground">No configured providers detected.</p>
       ) : null}
 
@@ -150,7 +82,7 @@ export function ServerProviderHealthSettings() {
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  {info.latency_ms === null ? 'No latency' : `${info.latency_ms} ms`}
+                  {info.latency_ms == null ? 'No latency' : `${info.latency_ms} ms`}
                 </div>
               </div>
             );
