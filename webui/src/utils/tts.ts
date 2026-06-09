@@ -1,15 +1,18 @@
 /**
- * Text-to-speech via the browser's Web Speech API or a gptme-tts server.
+ * Text-to-speech via the browser's Web Speech API, the gptme server's
+ * built-in /api/v2/audio/speech endpoint, or an external gptme-tts server.
  *
  * Priority:
- *   1. If `ttsServerUrl` is configured, GET {url}/tts?text=... and play the WAV.
- *   2. Otherwise fall back to the browser's built-in speechSynthesis API.
+ *   1. POST /api/v2/audio/speech (same-origin, uses OpenRouter via gptme server config).
+ *   2. If `ttsServerUrl` is configured, GET {url}/tts?text=... and play the WAV.
+ *   3. Fall back to the browser's built-in speechSynthesis API.
  *
- * Both paths strip markdown before speaking so output sounds natural.
+ * All paths strip markdown before speaking so output sounds natural.
  */
 
 let currentAudio: HTMLAudioElement | null = null;
 let currentFetchController: AbortController | null = null;
+const LOCAL_TTS_NOT_CONFIGURED = 'tts-local-not-configured';
 
 function getSettings(): { ttsEnabled: boolean; ttsServerUrl: string } {
   try {
@@ -54,7 +57,62 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-async function speakViaServer(text: string, serverUrl: string): Promise<void> {
+async function isLocalTtsNotConfigured(response: Response): Promise<boolean> {
+  if (response.status !== 400) return false;
+  try {
+    const data = await response.clone().json();
+    return (
+      typeof data?.error === 'string' && data.error.includes('OPENROUTER_API_KEY not configured')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** POST text to the gptme server's built-in /api/v2/audio/speech endpoint. */
+async function speakViaLocalEndpoint(text: string): Promise<void> {
+  const controller = new AbortController();
+  currentFetchController = controller;
+  try {
+    const response = await fetch('/api/v2/audio/speech', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      if (await isLocalTtsNotConfigured(response)) {
+        throw new Error(LOCAL_TTS_NOT_CONFIGURED);
+      }
+      throw new Error(`TTS endpoint error: ${response.status}`);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+
+    if (controller.signal.aborted) {
+      URL.revokeObjectURL(objectUrl);
+      return;
+    }
+
+    if (currentAudio) {
+      currentAudio.pause();
+      URL.revokeObjectURL(currentAudio.src);
+    }
+    const audio = new Audio(objectUrl);
+    currentAudio = audio;
+    audio.onended = () => {
+      URL.revokeObjectURL(objectUrl);
+      if (currentAudio === audio) currentAudio = null;
+    };
+    await audio.play();
+  } finally {
+    if (currentFetchController === controller) {
+      currentFetchController = null;
+    }
+  }
+}
+
+async function speakViaExternalServer(text: string, serverUrl: string): Promise<void> {
   const url = `${serverUrl.replace(/\/$/, '')}/tts?${new URLSearchParams({ text })}`;
   const controller = new AbortController();
   currentFetchController = controller;
@@ -93,17 +151,30 @@ async function speak(rawText: string): Promise<void> {
 
   stopSpeaking();
 
-  const { ttsServerUrl } = getSettings();
-  if (ttsServerUrl) {
-    try {
-      await speakViaServer(spoken, ttsServerUrl);
-      return;
-    } catch (err) {
-      if (isAbortError(err)) return;
-      console.warn('gptme-tts server unavailable, falling back to Web Speech API:', err);
+  // 1. Try the same-origin /api/v2/audio/speech endpoint first.
+  try {
+    await speakViaLocalEndpoint(spoken);
+    return;
+  } catch (err) {
+    if (isAbortError(err)) return;
+    if ((err as Error)?.message !== LOCAL_TTS_NOT_CONFIGURED) {
+      console.warn('Local /api/v2/audio/speech unavailable, trying alternatives:', err);
     }
   }
 
+  // 2. Try an external gptme-tts server if configured.
+  const { ttsServerUrl } = getSettings();
+  if (ttsServerUrl) {
+    try {
+      await speakViaExternalServer(spoken, ttsServerUrl);
+      return;
+    } catch (err) {
+      if (isAbortError(err)) return;
+      console.warn('External TTS server unavailable, falling back to Web Speech API:', err);
+    }
+  }
+
+  // 3. Fall back to the browser's built-in speechSynthesis.
   if (!window.speechSynthesis) return;
   const utterance = new SpeechSynthesisUtterance(spoken);
   utterance.rate = 1.1;
