@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApi } from '@/contexts/ApiContext';
 import { useToast } from '@/components/ui/use-toast';
 import type { Message, StreamingMessage } from '@/types/conversation';
@@ -50,6 +50,8 @@ export function useConversation(conversationId: string, serverId?: string) {
   const topP = use$(() => conversation$?.topP.get());
 
   const messageJustCompleted = useRef(false);
+  // Bumped by retryLoad() to re-run the load+connect effect after a failure.
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // Initialize conversation in store if needed
   useEffect(() => {
@@ -99,7 +101,7 @@ export function useConversation(conversationId: string, serverId?: string) {
             // Also load the chat config
             try {
               const chatConfig = await api.getChatConfig(conversationId);
-              updateConversation(conversationId, { data, chatConfig });
+              updateConversation(conversationId, { data, chatConfig, loadError: null });
               console.log(`[useConversation] Loaded conversation and config for ${conversationId}`);
             } catch (error) {
               console.warn(
@@ -107,14 +109,23 @@ export function useConversation(conversationId: string, serverId?: string) {
                 error
               );
               // Still update with conversation data even if config fails
-              updateConversation(conversationId, { data });
+              updateConversation(conversationId, { data, loadError: null });
             }
           } catch (error) {
             console.warn(
               `[useConversation] Failed to load conversation ${conversationId} from API:`,
               error
             );
-            // Don't overwrite existing placeholder data if API call fails
+            // Don't overwrite existing placeholder data if API call fails, but
+            // surface the failure so the user isn't left staring at a blank chat.
+            const message = error instanceof Error ? error.message : 'Failed to load conversation';
+            updateConversation(conversationId, { loadError: message });
+            toast({
+              variant: 'destructive',
+              title: 'Failed to load conversation',
+              description: message,
+            });
+            return;
           }
         }
 
@@ -467,7 +478,7 @@ export function useConversation(conversationId: string, serverId?: string) {
         setConnected(conversationId, false);
       }
     };
-  }, [conversationId, isConnected, api, conversation$, toast]);
+  }, [conversationId, isConnected, api, conversation$, toast, retryNonce]);
 
   const sendMessage = async ({ message, options }: { message: string; options?: ChatOptions }) => {
     if (!conversation$) {
@@ -738,8 +749,18 @@ export function useConversation(conversationId: string, serverId?: string) {
     setCurrentBranch(conversationId, branchName);
   };
 
+  // Re-attempt loading the conversation after a load failure. Bumping the nonce
+  // re-runs the load+connect effect, which both re-fetches data AND re-subscribes
+  // to the SSE event stream (the data-only retry left the conversation
+  // permanently disconnected).
+  const retryLoad = useCallback(() => {
+    updateConversation(conversationId, { loadError: null });
+    setRetryNonce((n) => n + 1);
+  }, [conversationId]);
+
   return {
     conversation$,
+    retryLoad,
     sendMessage,
     retryMessage,
     editMessage,

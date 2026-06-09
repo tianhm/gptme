@@ -34,6 +34,8 @@ export interface ConversationState {
   reconnectRetryInMs: number | null;
   reconnectRetryStartedAt: number | null;
   connectionError: string | null;
+  // Error message if loading the conversation from the API failed
+  loadError: string | null;
   // Any pending tool
   pendingTool: PendingTool | null;
   // Any executing tool
@@ -76,7 +78,9 @@ export const selectedConversation$ = observable<string>(demoConversations[0].id)
 
 // Helper functions
 export function updateConversation(id: string, update: Partial<ConversationState>) {
-  if (!conversations$.get(id)) {
+  // Note: conversations$.get(id) returns a truthy lazy node even for missing
+  // keys, so check the actual value via peek() to detect non-existent entries.
+  if (!conversations$.get(id)?.peek()) {
     // Initialize with defaults if conversation doesn't exist
     conversations$.set(id, {
       data: { id, name: '', log: [], logfile: id, branches: {}, workspace: '/default/workspace' },
@@ -88,6 +92,7 @@ export function updateConversation(id: string, update: Partial<ConversationState
       reconnectRetryInMs: null,
       connectionError: null,
       reconnectRetryStartedAt: null,
+      loadError: null,
       pendingTool: null,
       executingTool: null,
       lastCompletedTool: null,
@@ -98,7 +103,16 @@ export function updateConversation(id: string, update: Partial<ConversationState
       currentBranch: 'main',
     });
   }
-  mergeIntoObservable(conversations$.get(id), update);
+  // mergeIntoObservable treats an undefined value as "delete this key". `data`
+  // is required, so a stray `{ data: undefined }` (e.g. an API call resolving
+  // to undefined) would wipe it and leave a dataless entry that crashes every
+  // reader. Drop it from the merge so existing/default data is preserved.
+  if ('data' in update && update.data === undefined) {
+    const { data: _ignored, ...rest } = update;
+    mergeIntoObservable(conversations$.get(id), rest);
+  } else {
+    mergeIntoObservable(conversations$.get(id), update);
+  }
 }
 
 export function addMessage(id: string, message: Message | StreamingMessage) {
@@ -248,6 +262,7 @@ export function initConversation(
     reconnectRetryInMs: null,
     connectionError: null,
     reconnectRetryStartedAt: null,
+    loadError: null,
     pendingTool: null,
     executingTool: null,
     lastCompletedTool: null,
