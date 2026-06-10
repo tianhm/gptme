@@ -450,6 +450,18 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
     await confirmTool('auto', { count });
   };
 
+  // When no-confirm mode is on, silently auto-confirm any pending tool without showing the dialog.
+  const AUTO_CONFIRM_ALL = 999999;
+  const pendingToolId = use$(() => conversation$?.pendingTool.get()?.id ?? null);
+  useEffect(() => {
+    if (pendingToolId && settings.noConfirmMode) {
+      void handleAutoConfirmTool(AUTO_CONFIRM_ALL);
+    }
+    // Safe to omit handleAutoConfirmTool: confirmTool reads pendingTool fresh from the
+    // observable store on each call, so a stale closure does not cause incorrect behaviour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingToolId, settings.noConfirmMode]);
+
   const handleScrollToBottom = () => {
     const container = scrollContainerRef.current;
     if (container) {
@@ -685,14 +697,16 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
           }}
         </For>
 
-        {/* Inline Tool Confirmation */}
-        <InlineToolConfirmation
-          pendingTool$={conversation$?.pendingTool}
-          onConfirm={handleConfirmTool}
-          onEdit={handleEditTool}
-          onSkip={handleSkipTool}
-          onAuto={handleAutoConfirmTool}
-        />
+        {/* Inline Tool Confirmation — hidden when no-confirm mode is active */}
+        {!settings.noConfirmMode && (
+          <InlineToolConfirmation
+            pendingTool$={conversation$?.pendingTool}
+            onConfirm={handleConfirmTool}
+            onEdit={handleEditTool}
+            onSkip={handleSkipTool}
+            onAuto={handleAutoConfirmTool}
+          />
+        )}
 
         {/* Inline Tool Execution */}
         <InlineToolExecution executingTool$={conversation$?.executingTool} />
