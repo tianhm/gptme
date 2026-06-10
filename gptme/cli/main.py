@@ -380,7 +380,11 @@ Run 'gptme-util --help' for all utility commands."""
     default=None,
     multiple=True,
     type=CommaSeparatedChoice(
-        _available_tools + ["none"],
+        # Accept all *known* tools, not just currently-available ones, so a tool
+        # that exists but is temporarily unavailable (e.g. 'tts' when its server
+        # isn't running) is reported as unavailable at load time rather than as a
+        # misleading "invalid choice" here.
+        _known_tool_names + ["none"],
         allow_prefixes=["+", "-"],
         extra_choices_for_prefix={"-": _known_tool_names},
         # Only '+' is lenient: plugin tools (added via '+tool') aren't known at
@@ -854,7 +858,10 @@ def main(
     # We pass the tool_allowlist CLI argument. If it's not provided, init_tools
     # will load it from the environment variable TOOL_ALLOWLIST or the chat config.
     logger.debug(f"Using tools: {config.chat.tools}")
-    tools = init_tools(config.chat.tools)
+    try:
+        tools = init_tools(config.chat.tools)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
 
     # Check if we're opening an existing conversation (via --resume, --name, or pick)
     # If so, skip generating initial messages (including expensive context_cmd)
