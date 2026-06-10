@@ -3,7 +3,7 @@
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -153,17 +153,24 @@ def test_get_base_url_from_token():
         assert get_base_url(config) == "https://custom.gptme.ai/v1"
 
 
-def test_get_base_url_from_env():
-    """Should use GPTME_CLOUD_BASE_URL env var (with /v1 normalization)."""
+def test_get_base_url_from_token_explicit():
+    """Should prefer explicit base_url field over server_url fallback."""
     from gptme.llm.llm_gptme import get_base_url
 
-    config = _mock_config(env={"GPTME_CLOUD_BASE_URL": "https://my-server.example.com"})
-    with patch("gptme.llm.llm_gptme._load_token", return_value=None):
-        assert get_base_url(config) == "https://my-server.example.com/v1"
+    token_data = {
+        "access_token": "test",
+        "server_url": "https://fleet.gptme.ai",
+        "base_url": "https://kpkxgnfpyntahyhckhgm.supabase.co/functions/v1/messages",
+    }
+    config = _mock_config()
+    with patch("gptme.llm.llm_gptme._load_token", return_value=token_data):
+        assert get_base_url(config) == (
+            "https://kpkxgnfpyntahyhckhgm.supabase.co/functions/v1/messages"
+        )
 
 
-def test_get_base_url_from_env_with_v1():
-    """Should preserve /v1 suffix in env var."""
+def test_get_base_url_from_env():
+    """Should return GPTME_CLOUD_BASE_URL env var as-is (no /v1 normalization)."""
     from gptme.llm.llm_gptme import get_base_url
 
     config = _mock_config(
@@ -171,6 +178,16 @@ def test_get_base_url_from_env_with_v1():
     )
     with patch("gptme.llm.llm_gptme._load_token", return_value=None):
         assert get_base_url(config) == "https://my-server.example.com/v1"
+
+
+def test_get_base_url_from_env_supabase():
+    """Should return Supabase function URL as-is from env var."""
+    from gptme.llm.llm_gptme import _SUPABASE_FUNCTIONS_V1, get_base_url
+
+    supabase_url = f"{_SUPABASE_FUNCTIONS_V1}/messages"
+    config = _mock_config(env={"GPTME_CLOUD_BASE_URL": supabase_url})
+    with patch("gptme.llm.llm_gptme._load_token", return_value=None):
+        assert get_base_url(config) == supabase_url
 
 
 def test_save_token(tmp_path: Path):
@@ -207,6 +224,225 @@ def test_token_path_uses_url_hash():
     assert path1 != path2
     assert "gptme-cloud-" in path1.name
     assert "gptme-cloud-" in path2.name
+
+
+def test_load_token_legacy_fleet_migration(tmp_path: Path):
+    """Should find old fleet.gptme.ai token when no new Supabase token exists.
+
+    Covers the upgrade path: user authenticated before the Supabase URL migration.
+    Their token is stored at the fleet.gptme.ai hash path; _load_token() must
+    find it so get_base_url() can reconstruct the old-style URL via server_url.
+    """
+    import hashlib
+
+    from gptme.llm.llm_gptme import _load_token
+
+    legacy_url = "https://fleet.gptme.ai"
+    url_hash = hashlib.sha256(legacy_url.encode()).hexdigest()[:12]
+    legacy_token_path = tmp_path / f"gptme-cloud-{url_hash}.json"
+    token_data = {
+        "access_token": "legacy-token",
+        "expires_at": time.time() + 3600,
+        "server_url": legacy_url,
+    }
+    legacy_token_path.write_text(json.dumps(token_data))
+
+    # Patch _TOKEN_DIR so _get_token_path resolves into tmp_path
+    with patch("gptme.llm.llm_gptme._TOKEN_DIR", tmp_path):
+        result = _load_token()  # no service_url → default path (Supabase) won't exist
+
+    assert result is not None, (
+        "Legacy fleet token should be found via migration fallback"
+    )
+    assert result["access_token"] == "legacy-token"
+    assert result["server_url"] == legacy_url
+
+
+def test_auth_status_shows_logged_in_for_legacy_fleet_token(tmp_path: Path):
+    """auth_status should show 'Logged in' even for legacy fleet.gptme.ai tokens.
+
+    Regression guard: auth_status was passing explicit Supabase URL to
+    _load_token(), bypassing the migration fallback that finds old fleet.gptme.ai
+    tokens during the URL-migration upgrade window.
+    """
+    import hashlib
+
+    from click.testing import CliRunner
+
+    from gptme.cli.auth import main as auth_main
+
+    legacy_url = "https://fleet.gptme.ai"
+    url_hash = hashlib.sha256(legacy_url.encode()).hexdigest()[:12]
+    legacy_token_path = tmp_path / f"gptme-cloud-{url_hash}.json"
+    legacy_token_path.write_text(
+        json.dumps(
+            {
+                "access_token": "legacy-token",
+                "expires_at": time.time() + 3600,
+                "server_url": legacy_url,
+                "sub": "user-legacy",
+            }
+        )
+    )
+
+    runner = CliRunner()
+    with patch("gptme.llm.llm_gptme._TOKEN_DIR", tmp_path):
+        result = runner.invoke(auth_main, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "Logged in" in result.output, (
+        "auth_status must find legacy fleet token via migration fallback; "
+        f"got: {result.output!r}"
+    )
+    assert "Not logged in" not in result.output
+
+
+def test_auth_logout_removes_legacy_fleet_token(tmp_path: Path):
+    """auth_logout should remove legacy fleet.gptme.ai token when run against default URL.
+
+    Regression guard: auth_logout was looking up the Supabase-URL-hashed path
+    and reporting "No credentials stored" even though the legacy fleet token was
+    still valid on disk (and still found by get_api_key via _load_token fallback).
+    """
+    import hashlib
+
+    from click.testing import CliRunner
+
+    from gptme.cli.auth import main as auth_main
+
+    legacy_url = "https://fleet.gptme.ai"
+    url_hash = hashlib.sha256(legacy_url.encode()).hexdigest()[:12]
+    legacy_token_path = tmp_path / f"gptme-cloud-{url_hash}.json"
+    legacy_token_path.write_text(
+        json.dumps(
+            {
+                "access_token": "legacy-token",
+                "expires_at": time.time() + 3600,
+                "server_url": legacy_url,
+                "sub": "user-legacy",
+            }
+        )
+    )
+
+    runner = CliRunner()
+    with patch("gptme.llm.llm_gptme._TOKEN_DIR", tmp_path):
+        result = runner.invoke(auth_main, ["logout"])
+
+    assert result.exit_code == 0, result.output
+    assert "Logged out" in result.output, (
+        "auth_logout must remove legacy fleet token via migration fallback; "
+        f"got: {result.output!r}"
+    )
+    assert not legacy_token_path.exists(), (
+        "Legacy token file should be deleted after logout"
+    )
+
+
+def _mock_device_flow_responses(auth_uri: str = "https://gptme.ai/activate"):
+    """Return (authorize_resp, token_resp) mocks for device_flow_authenticate."""
+    auth_resp = MagicMock()
+    auth_resp.status_code = 200
+    auth_resp.json.return_value = {
+        "device_code": "dc123",
+        "user_code": "UC-123",
+        "verification_uri": auth_uri,
+        "interval": 1,
+        "expires_in": 300,
+    }
+    tok_resp = MagicMock()
+    tok_resp.status_code = 200
+    tok_resp.json.return_value = {"access_token": "test-token", "expires_in": 3600}
+    return auth_resp, tok_resp
+
+
+def test_device_flow_authenticate_custom_server_no_base_url():
+    """Custom server tokens must NOT store base_url; routing relies on server_url+/v1."""
+    from gptme.llm.llm_gptme import device_flow_authenticate
+
+    auth_resp, tok_resp = _mock_device_flow_responses()
+    custom_url = "https://custom.example.com"
+
+    with (
+        patch("requests.post", side_effect=[auth_resp, tok_resp]),
+        patch("gptme.llm.llm_gptme._save_token"),
+    ):
+        result = device_flow_authenticate(server_url=custom_url)
+
+    assert "base_url" not in result, (
+        "Custom server token must not hardcode Supabase base_url"
+    )
+    assert result["server_url"] == custom_url
+
+
+def test_device_flow_authenticate_default_server_has_base_url():
+    """Default Supabase tokens SHOULD store explicit base_url for edge fn routing."""
+    from gptme.llm.llm_gptme import (
+        DEFAULT_BASE_URL,
+        DEFAULT_SERVICE_URL,
+        device_flow_authenticate,
+    )
+
+    auth_resp, tok_resp = _mock_device_flow_responses()
+
+    with (
+        patch("requests.post", side_effect=[auth_resp, tok_resp]),
+        patch("gptme.llm.llm_gptme._save_token"),
+    ):
+        result = device_flow_authenticate()  # uses DEFAULT_SERVICE_URL
+
+    assert result.get("base_url") == DEFAULT_BASE_URL
+    assert result["server_url"] == DEFAULT_SERVICE_URL
+
+
+def test_get_models_url_custom_token():
+    """Custom-server tokens (no base_url) should use server_url + /v1 for model listing."""
+    from gptme.llm.llm_gptme import get_models_url
+
+    token_data = {
+        "access_token": "test",
+        "server_url": "https://custom.example.com",
+        "expires_at": 9999999999,
+    }
+    config = _mock_config()
+    with patch("gptme.llm.llm_gptme._load_token", return_value=token_data):
+        assert get_models_url(config) == "https://custom.example.com/v1"
+
+
+def test_get_models_url_env_models_url():
+    """GPTME_CLOUD_MODELS_URL should take precedence over GPTME_CLOUD_BASE_URL."""
+    from gptme.llm.llm_gptme import get_models_url
+
+    config = _mock_config(
+        env={
+            "GPTME_CLOUD_MODELS_URL": "https://custom.example.com/v1",
+            "GPTME_CLOUD_BASE_URL": "https://other.example.com/v1",
+        }
+    )
+    with patch("gptme.llm.llm_gptme._load_token", return_value=None):
+        assert get_models_url(config) == "https://custom.example.com/v1"
+
+
+def test_get_models_url_env_base_url_custom_server():
+    """GPTME_CLOUD_BASE_URL for a custom (non-Supabase) server should be used for models."""
+    from gptme.llm.llm_gptme import get_models_url
+
+    config = _mock_config(env={"GPTME_CLOUD_BASE_URL": "https://custom.example.com/v1"})
+    with patch("gptme.llm.llm_gptme._load_token", return_value=None):
+        assert get_models_url(config) == "https://custom.example.com/v1"
+
+
+def test_get_models_url_env_base_url_supabase_uses_default():
+    """GPTME_CLOUD_BASE_URL pointing at Supabase should NOT be used for models (wrong path)."""
+    from gptme.llm.llm_gptme import (
+        _SUPABASE_FUNCTIONS_V1,
+        DEFAULT_MODELS_BASE_URL,
+        get_models_url,
+    )
+
+    supabase_url = f"{_SUPABASE_FUNCTIONS_V1}/messages"
+    config = _mock_config(env={"GPTME_CLOUD_BASE_URL": supabase_url})
+    with patch("gptme.llm.llm_gptme._load_token", return_value=None):
+        assert get_models_url(config) == DEFAULT_MODELS_BASE_URL
 
 
 # --- Helpers ---
