@@ -1,9 +1,17 @@
 import React, { createContext, useContext, useState } from 'react';
-import { stopSpeaking } from '../utils/tts';
+import { stopSpeaking, type TtsProvider } from '../utils/tts';
 
 export interface Settings {
   chimeEnabled: boolean;
   ttsEnabled: boolean;
+  /**
+   * Which TTS engine to use:
+   * - 'auto': try the gptme-server endpoint, then an external gptme-tts server, then browser
+   * - 'browser': the browser's built-in speechSynthesis
+   * - 'server': the connected gptme-server's /api/v2/audio/speech (provider-backed, e.g. OpenRouter)
+   * - 'external': a standalone gptme-tts server at `ttsServerUrl`
+   */
+  ttsProvider: TtsProvider;
   blocksDefaultOpen: boolean;
   showHiddenMessages: boolean;
   showInitialSystem: boolean;
@@ -32,6 +40,7 @@ interface SettingsContextType {
 const defaultSettings: Settings = {
   chimeEnabled: true,
   ttsEnabled: false,
+  ttsProvider: 'auto',
   blocksDefaultOpen: true,
   showHiddenMessages: false,
   showInitialSystem: false,
