@@ -51,6 +51,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   const shouldFocus$ = useObservable(false);
   // Store the previous conversation ID to detect changes
   const prevConversationIdRef = useRef<string | null>(null);
+  const paneRef = useRef<HTMLElement>(null);
 
   const { api, connectionConfig } = useApi();
   const hasSession$ = useObservable<boolean>(false);
@@ -61,6 +62,34 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   const searchQuery$ = useObservable('');
   const searchMatchIndices$ = useObservable<number[]>([]);
   const searchCurrentMatch$ = useObservable(0);
+
+  const activatePane = useCallback(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+
+    document
+      .querySelectorAll<HTMLElement>('[data-conversation-pane-active="true"]')
+      .forEach((activePane) => {
+        if (activePane !== pane) {
+          activePane.removeAttribute('data-conversation-pane-active');
+        }
+      });
+    pane.dataset.conversationPaneActive = 'true';
+  }, []);
+
+  const isActivePane = useCallback(() => {
+    const pane = paneRef.current;
+    if (!pane) return false;
+
+    const activePane = document.querySelector<HTMLElement>(
+      '[data-conversation-pane-active="true"]'
+    );
+    if (activePane) {
+      return activePane === pane;
+    }
+
+    return document.querySelectorAll('[data-conversation-pane]').length <= 1;
+  }, []);
 
   // Fetch user info once (cached in ApiClient)
   useEffect(() => {
@@ -88,6 +117,10 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   // Add keyboard shortcut for focusing the input
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isActivePane()) {
+        return;
+      }
+
       // Only handle 'i' key when:
       // - Not in an input/textarea
       // - Not in read-only mode
@@ -105,15 +138,19 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isReadOnly, hasSession$, shouldFocus$]);
+  }, [isReadOnly, hasSession$, isActivePane, shouldFocus$]);
 
   // Ctrl+F / Cmd+F to open message search (or re-focus if already open)
   useEffect(() => {
     const handleSearchKeyDown = (e: KeyboardEvent) => {
+      if (!isActivePane()) {
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
         if (searchVisible$.get()) {
-          document.querySelector<HTMLInputElement>('[data-search-input]')?.focus();
+          paneRef.current?.querySelector<HTMLInputElement>('[data-search-input]')?.focus();
         } else {
           searchVisible$.set(true);
         }
@@ -121,16 +158,31 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
     };
     window.addEventListener('keydown', handleSearchKeyDown);
     return () => window.removeEventListener('keydown', handleSearchKeyDown);
-  }, [searchVisible$]);
+  }, [isActivePane, searchVisible$]);
+
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+
+    if (!document.querySelector('[data-conversation-pane-active="true"]')) {
+      activatePane();
+    }
+
+    return () => {
+      if (pane.dataset.conversationPaneActive === 'true') {
+        pane.removeAttribute('data-conversation-pane-active');
+      }
+    };
+  }, [activatePane]);
 
   const firstNonSystemIndex$ = useObservable(() => {
-    return conversation$.get()?.data.log.findIndex((msg) => msg.role !== 'system') || 0;
+    return conversation$?.get()?.data?.log?.findIndex((msg) => msg.role !== 'system') ?? 0;
   });
 
   // Update the firstNonSystemIndex$ when the conversationId changes
   useEffect(() => {
     firstNonSystemIndex$.set(
-      conversation$.get()?.data.log.findIndex((msg) => msg.role !== 'system') || 0
+      conversation$?.get()?.data?.log?.findIndex((msg) => msg.role !== 'system') ?? 0
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
@@ -177,7 +229,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   // All .get() calls inside are auto-tracked, so this re-runs when any of
   // conversation log, showHiddenMessages, showInitialSystem, or firstNonSystemIndex changes.
   useObserveEffect(() => {
-    const messages = conversation$.data.log.get();
+    const messages = conversation$?.data.log.get();
     if (!messages?.length) {
       stepRoles$.set(new Map());
       return;
@@ -214,8 +266,8 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
 
   // Compute fork points once (reactive: recomputes when branches/currentBranch change)
   const forkPoints$ = useObservable(() => {
-    const branches = conversation$.data.branches?.get();
-    const currentBranch = conversation$.currentBranch?.get() || 'main';
+    const branches = conversation$?.data.branches?.get();
+    const currentBranch = conversation$?.currentBranch?.get() || 'main';
     if (!branches || Object.keys(branches).length <= 1) return new Map();
     return computeForkPoints(currentBranch, branches);
   });
@@ -236,7 +288,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   }, [isAutoScrolling$]);
 
   // Auto-scroll when the conversation is updated (e.g., streaming response)
-  useObserveEffect(conversation$.data.log, () => {
+  useObserveEffect(conversation$?.data.log, () => {
     if (!autoScrollAborted$.get()) {
       requestAnimationFrame(scrollToBottom);
     }
@@ -469,7 +521,13 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   }
 
   return (
-    <main className="relative flex h-full flex-col">
+    <main
+      ref={paneRef}
+      data-conversation-pane
+      className="relative flex h-full flex-col"
+      onFocus={activatePane}
+      onPointerDown={activatePane}
+    >
       <Memo>
         {() =>
           searchVisible$.get() ? (
@@ -513,7 +571,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
           )}
         </Memo>
 
-        <For each={conversation$.data.log}>
+        <For each={conversation$?.data.log ?? []}>
           {(msg$) => {
             const index = getObservableIndex(msg$);
             // Hide all system messages before the first non-system message by default
