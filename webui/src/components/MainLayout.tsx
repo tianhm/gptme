@@ -430,6 +430,76 @@ const MainLayout: FC<Props> = ({ conversationId, taskId }) => {
     }
   }, [isMobile]);
 
+  // Handle navigating a split pane to a different conversation
+  const handleNavigatePane = useCallback(
+    (paneIndex: 0 | 1, newId: string, _newServerId?: string) => {
+      if (!splitIds) return;
+      const ids = [...splitIds];
+      ids[paneIndex] = newId;
+      const params = new URLSearchParams(searchParams);
+      params.set('split', `${ids[0]},${ids[1]}`);
+      // NOTE: We intentionally do not update the shared server= param here.
+      // Both panes share one server= URL param; updating it for one pane silently
+      // breaks the other. Per-pane server tracking is tracked for a future slice.
+      navigate(`?${params.toString()}`);
+    },
+    [splitIds, searchParams, navigate]
+  );
+
+  // Handle "Open in split view" from a conversation list context menu
+  const handleOpenInSplitView = useCallback(
+    (conversationId: string) => {
+      const params = new URLSearchParams(searchParams);
+      if (splitIds) {
+        // Already in split view: put clicked conversation in right pane, keep left
+        params.set('split', `${splitIds[0]},${conversationId}`);
+      } else {
+        const currentId = selectedConversation$.get();
+        if (currentId) {
+          params.set('split', `${currentId},${conversationId}`);
+        } else {
+          params.set('split', `${conversationId},${conversationId}`);
+        }
+      }
+      navigate(`?${params.toString()}`);
+    },
+    [splitIds, searchParams, navigate]
+  );
+
+  // Keyboard shortcut: Ctrl+Shift+\ (Cmd+Shift+\ on Mac) to toggle split view
+  useEffect(() => {
+    const toggleSplit = (e: KeyboardEvent) => {
+      if (e.code !== 'Backslash' || !e.shiftKey || !(e.ctrlKey || e.metaKey)) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+
+      if (splitIds) {
+        // Close split view
+        const params = new URLSearchParams(searchParams);
+        params.delete('split');
+        const qs = params.toString();
+        navigate(chatRoute(splitIds[0], qs));
+      } else {
+        // Open split view
+        const conversation = conversation$.get();
+        if (!conversation) return;
+        const params = new URLSearchParams(searchParams);
+        params.set('split', `${conversation.id},${conversation.id}`);
+        navigate(`?${params.toString()}`);
+      }
+    };
+
+    document.addEventListener('keydown', toggleSplit);
+    return () => document.removeEventListener('keydown', toggleSplit);
+  }, [splitIds, navigate, searchParams, conversation$]);
+
   // Render main content based on current section
   const renderMainContent = () => {
     if (currentSection === 'agents') {
@@ -474,10 +544,13 @@ const MainLayout: FC<Props> = ({ conversationId, taskId }) => {
         <SplitConversationView
           leftId={splitIds[0]}
           rightId={splitIds[1]}
+          allConversations={allConversations}
           serverId={serverParam || undefined}
           leftIsReadOnly={leftConversation.readonly}
           rightIsReadOnly={rightConversation.readonly}
           vertical={isMobile}
+          onNavigateLeft={(id, serverId) => handleNavigatePane(0, id, serverId)}
+          onNavigateRight={(id, serverId) => handleNavigatePane(1, id, serverId)}
           onClose={() => {
             const params = new URLSearchParams(searchParams);
             params.delete('split');
@@ -573,6 +646,7 @@ const MainLayout: FC<Props> = ({ conversationId, taskId }) => {
                 tasksLoading={tasksLoading}
                 tasksError={!!tasksError}
                 onTasksRetry={() => refetchTasks()}
+                onOpenInSplitView={handleOpenInSplitView}
               />
             </div>
           </SheetContent>
@@ -683,6 +757,7 @@ const MainLayout: FC<Props> = ({ conversationId, taskId }) => {
             tasksLoading={tasksLoading}
             tasksError={!!tasksError}
             onTasksRetry={() => refetchTasks()}
+            onOpenInSplitView={handleOpenInSplitView}
           />
         </ResizablePanel>
 
