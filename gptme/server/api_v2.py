@@ -19,7 +19,6 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
 
@@ -62,7 +61,7 @@ from ..config.user import (
     get_user_config_runtime_info,
 )
 from ..dirs import get_logs_dir
-from ..logmanager import Log, LogManager, get_user_conversations
+from ..logmanager import ConversationMeta, Log, LogManager, get_user_conversations
 from ..message import Message
 from ..tools import get_toolchain, get_tools, init_tools
 from ..util.content import is_message_command
@@ -880,6 +879,19 @@ def api_conversations():
     detail_val = request.args.get("detail")
     detail = detail_val is not None and detail_val.lower() in ("", "1", "true", "yes")
 
+    # Use cached list for the common case (no search, no detail).
+    # Cache is invalidated on conversation create/update/delete.
+    global _conversations_cache, _conversations_cache_time
+    if not search and not detail and _conversations_cache is not None:
+        elapsed = time.monotonic() - _conversations_cache_time
+        if elapsed < _CONVERSATIONS_CACHE_TTL:
+            cached = _conversations_cache
+            response_items = [asdict(c) for c in cached[:limit]]
+            for item in response_items:
+                item["message_count"] = item.pop("messages")
+                item["last_updated"] = item["modified"]
+            return flask.jsonify(response_items)
+
     # Use fast tail-only scan for list/search by default — reads last 8KB for
     # preview/model, skips json.loads() on every metadata line.
     # Pass detail=true to opt in to full cost/token stats (slower).
@@ -895,7 +907,8 @@ def api_conversations():
                 if len(conversations) >= limit:
                     break
     else:
-        conversations = list(islice(get_user_conversations(detail=detail), limit))
+        all_conversations = list(get_user_conversations(detail=detail))
+        conversations = all_conversations[:limit] if limit > 0 else all_conversations
     response_items = []
     for conv in conversations:
         item = asdict(conv)
@@ -906,6 +919,14 @@ def api_conversations():
         item["message_count"] = conv.messages
         item["last_updated"] = conv.modified
         response_items.append(item)
+
+    # Update cache for the common case (no search, no detail).
+    # Cache stores the full, unlimited list so that subsequent requests with
+    # a higher limit return the correct number of items (not truncated).
+    if not search and not detail:
+        _conversations_cache = all_conversations
+        _conversations_cache_time = time.monotonic()
+
     return flask.jsonify(response_items)
 
 
@@ -1154,6 +1175,7 @@ def api_conversation_put(conversation_id: str):
     elif auto_confirm > 0:
         session.auto_confirm_count = auto_confirm
 
+    _invalidate_conversations_cache()
     return flask.jsonify(
         {"status": "ok", "conversation_id": conversation_id, "session_id": session.id}
     )
@@ -1305,6 +1327,7 @@ def api_conversation_post(conversation_id: str):
         },
     )
 
+    _invalidate_conversations_cache()
     return flask.jsonify({"status": "ok"})
 
 
@@ -1443,6 +1466,7 @@ def api_conversation_edit_message(conversation_id: str, index: int):
         },
     )
 
+    _invalidate_conversations_cache()
     return flask.jsonify(log_dict)
 
 
@@ -1546,6 +1570,7 @@ def api_conversation_delete_message(conversation_id: str, index: int):
         },
     )
 
+    _invalidate_conversations_cache()
     return flask.jsonify(log_dict)
 
 
@@ -1598,6 +1623,7 @@ def api_conversation_delete(conversation_id: str):
 
     SessionManager.remove_all_sessions_for_conversation(conversation_id)
 
+    _invalidate_conversations_cache()
     return flask.jsonify({"status": "ok"})
 
 
@@ -2005,6 +2031,7 @@ def api_conversation_config_patch(conversation_id: str):
         manager.log = Log(new_system_msgs + remaining_msgs)
     manager.write()
 
+    _invalidate_conversations_cache()
     return flask.jsonify(
         {
             "status": "ok",
@@ -2645,3 +2672,20 @@ def api_user_settings():
             "config_files": get_user_config_runtime_info(),
         }
     )
+
+
+# In-memory conversations list cache.
+# Caches the full list (no search, no detail) for _CONVERSATIONS_CACHE_TTL seconds.
+# Invalidated on conversation create/update/delete via _invalidate_conversations_cache().
+_CONVERSATIONS_CACHE_TTL = (
+    30.0  # seconds — covers page navigation refresh within a session
+)
+_conversations_cache: list[ConversationMeta] | None = None
+_conversations_cache_time: float = 0.0
+
+
+def _invalidate_conversations_cache() -> None:
+    """Invalidate the conversations list cache."""
+    global _conversations_cache, _conversations_cache_time
+    _conversations_cache = None
+    _conversations_cache_time = 0.0
