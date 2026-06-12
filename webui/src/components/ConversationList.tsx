@@ -13,6 +13,7 @@ import {
   BookOpen,
   Columns2,
   X,
+  Star,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -38,8 +39,10 @@ import {
 } from '@/utils/exportConversation';
 import { DeleteConversationConfirmationDialog } from './DeleteConversationConfirmationDialog';
 
+import { useConversationMetadata } from '@/hooks/useConversationMetadata';
 import type { MessageRole, ConversationSummary } from '@/types/conversation';
 import { type FC, useRef, useEffect, useState, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Computed, use$ } from '@legendapp/state/react';
 import { type Observable } from '@legendapp/state';
@@ -79,6 +82,23 @@ export const ConversationList: FC<Props> = ({
 }) => {
   const { api, isConnected$ } = useApi();
   const isConnected = use$(isConnected$);
+
+  const { toggleStar } = useConversationMetadata();
+  const queryClient = useQueryClient();
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
+
+  // Separately track local star state for optimistic UI updates.
+  // Keyed by conversation ID, value is the optimistic starred value.
+  const [optimisticStars, setOptimisticStars] = useState<Record<string, boolean>>({});
+
+  // Determine effective starred state: optimistic (if set) > server state
+  const getIsStarred = useCallback(
+    (conv: ConversationSummary) => {
+      if (conv.id in optimisticStars) return optimisticStars[conv.id];
+      return conv.starred ?? false;
+    },
+    [optimisticStars]
+  );
 
   // Context menu state
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
@@ -387,7 +407,7 @@ export const ConversationList: FC<Props> = ({
               role="button"
               tabIndex={0}
               aria-pressed={isSelected}
-              className={`cursor-pointer rounded-lg py-2 pl-2 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+              className={`group cursor-pointer rounded-lg py-2 pl-2 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                 isSelected ? 'bg-accent' : ''
               }`}
               onClick={() => onSelect(conv.id, conv.serverId)}
@@ -421,6 +441,39 @@ export const ConversationList: FC<Props> = ({
                   />
                 ) : (
                   <div className="mb-1 flex items-center gap-2">
+                    {!demoIds.has(conv.id) && (
+                      <button
+                        className={`shrink-0 rounded p-0.5 transition-colors hover:text-yellow-500 focus:outline-none focus-visible:text-yellow-500 focus-visible:opacity-100 ${
+                          getIsStarred(conv)
+                            ? 'text-yellow-500 opacity-100'
+                            : 'text-muted-foreground opacity-0 focus-visible:opacity-100 group-hover:opacity-100'
+                        }`}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const newVal = !getIsStarred(conv);
+                          // Optimistic update
+                          setOptimisticStars((prev) => ({ ...prev, [conv.id]: newVal }));
+                          await toggleStar(conv.id, getIsStarred(conv));
+                          // Invalidate cache so server state reflects the toggle before
+                          // the optimistic entry is cleared.
+                          await queryClient.invalidateQueries({ queryKey: ['conversations'] });
+                          setOptimisticStars((prev) => {
+                            const next = { ...prev };
+                            delete next[conv.id];
+                            return next;
+                          });
+                        }}
+                        title={getIsStarred(conv) ? 'Unstar conversation' : 'Star conversation'}
+                        aria-label={
+                          getIsStarred(conv) ? 'Unstar conversation' : 'Star conversation'
+                        }
+                      >
+                        <Star
+                          className="h-3 w-3"
+                          fill={getIsStarred(conv) ? 'currentColor' : 'none'}
+                        />
+                      </button>
+                    )}
                     <div
                       data-testid="conversation-title"
                       className="font-small min-w-0 flex-1 whitespace-nowrap"
@@ -695,6 +748,35 @@ export const ConversationList: FC<Props> = ({
               Open in split view
             </ContextMenuItem>
           )}
+          {!demoIds.has(conv.id) && (
+            <ContextMenuItem
+              onClick={(e) => {
+                e.stopPropagation();
+                const newVal = !getIsStarred(conv);
+                setOptimisticStars((prev) => ({ ...prev, [conv.id]: newVal }));
+                toggleStar(conv.id, getIsStarred(conv))
+                  .then(async () => {
+                    await queryClient.invalidateQueries({ queryKey: ['conversations'] });
+                    setOptimisticStars((prev) => {
+                      const next = { ...prev };
+                      delete next[conv.id];
+                      return next;
+                    });
+                  })
+                  .catch((err) => {
+                    console.error('Failed to toggle star from context menu:', err);
+                    setOptimisticStars((prev) => {
+                      const next = { ...prev };
+                      delete next[conv.id];
+                      return next;
+                    });
+                  });
+              }}
+            >
+              <Star className="mr-2 h-4 w-4" fill={getIsStarred(conv) ? 'currentColor' : 'none'} />
+              {getIsStarred(conv) ? 'Unstar' : 'Star'}
+            </ContextMenuItem>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
@@ -713,11 +795,16 @@ export const ConversationList: FC<Props> = ({
     );
   };
 
-  const filteredRealConversations = realConversations.filter(matchesFilter);
+  // Filter by search query AND star state (when showStarredOnly is active)
+  const filteredRealConversations = realConversations.filter(
+    (c) => matchesFilter(c) && (!showStarredOnly || getIsStarred(c))
+  );
   const filteredDemos = demos.filter(matchesFilter);
   const hasFilter = normalizedFilter.length > 0;
   const hasNoFilteredMatches =
-    hasFilter && filteredRealConversations.length === 0 && filteredDemos.length === 0;
+    (hasFilter || showStarredOnly) &&
+    filteredRealConversations.length === 0 &&
+    filteredDemos.length === 0;
 
   return (
     <div
@@ -753,6 +840,24 @@ export const ConversationList: FC<Props> = ({
               </Button>
             )}
           </div>
+          {/* Star filter toggle */}
+          {realConversations.length > 0 && (
+            <div className="flex px-1 pt-1">
+              <button
+                aria-label={showStarredOnly ? 'Show all conversations' : 'Show starred only'}
+                aria-pressed={showStarredOnly}
+                className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
+                  showStarredOnly
+                    ? 'bg-yellow-500/20 text-yellow-600 dark:text-yellow-400'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+                onClick={() => setShowStarredOnly((v) => !v)}
+              >
+                <Star className="h-3 w-3" fill={showStarredOnly ? 'currentColor' : 'none'} />
+                {showStarredOnly ? 'Starred' : 'All'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {isLoading && (
@@ -785,7 +890,9 @@ export const ConversationList: FC<Props> = ({
       )}
       {!isLoading && !isError && hasNoFilteredMatches && (
         <div className="px-2 py-4 text-sm text-muted-foreground">
-          No conversations match your search.
+          {showStarredOnly && !hasFilter
+            ? 'No starred conversations.'
+            : 'No conversations match your search.'}
         </div>
       )}
 
