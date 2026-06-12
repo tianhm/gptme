@@ -119,6 +119,27 @@ _ALLOWED_AVATAR_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico"}
 # - delete (without --force): calls input() waiting for stdin that never arrives
 _SERVER_BLOCKED_COMMANDS = {"exit", "restart", "edit", "delete"}
 
+
+def _parse_conversation_cursor(raw: str) -> tuple[float, str | None]:
+    """Parse a conversation pagination cursor.
+
+    Supports both the legacy numeric timestamp cursor and the opaque composite
+    cursor returned by the paginated API: ``<modified>|<quoted-conversation-id>``.
+    """
+    if "|" not in raw:
+        return float(raw), None
+
+    modified_raw, quoted_conv_id = raw.split("|", 1)
+    if not quoted_conv_id:
+        raise ValueError("missing conversation id")
+    return float(modified_raw), urllib.parse.unquote(quoted_conv_id)
+
+
+def _encode_conversation_cursor(conv: ConversationMeta) -> str:
+    """Encode a stable pagination cursor for a conversation."""
+    return f"{conv.modified:.17g}|{urllib.parse.quote(conv.id, safe='')}"
+
+
 _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 _DEFAULT_OPENROUTER_STT_MODEL = "openai/whisper-1"
 _MAX_TRANSCRIPTION_AUDIO_BYTES = 25 * 1024 * 1024
@@ -856,6 +877,18 @@ def api_external_session(external_session_id: str):
             "schema": {"type": "boolean", "default": False},
             "description": "If true, perform a full scan to populate cost and token stats. Slower but returns accurate total_cost, total_input_tokens, and total_output_tokens fields. Suitable for paginated views; avoid on large collections. When combined with search, every conversation is fully scanned before the limit is applied — avoid on large deployments.",
         },
+        {
+            "name": "cursor",
+            "in": "query",
+            "schema": {"type": "string"},
+            "description": "Opaque pagination cursor returned by the previous paginated response. New clients should pass it through unchanged; legacy numeric Unix timestamp cursors are still accepted.",
+        },
+        {
+            "name": "paginated",
+            "in": "query",
+            "schema": {"type": "boolean", "default": False},
+            "description": "If true, return a paginated response object {conversations: [...], next_cursor: string|null} instead of a bare list. Use cursor param for page 2+.",
+        },
     ],
 )
 def api_conversations():
@@ -871,6 +904,10 @@ def api_conversations():
     user/assistant turn. ``message_count`` and ``last_updated`` are always
     populated (cheap fast-tail scan), so list-level UIs can render a stats
     badge without per-row detail fetches.
+
+    Pass ``paginated=1`` to opt into cursor pagination: the response becomes
+    ``{conversations: [...], next_cursor: string|null}``. Pass the returned
+    cursor back unchanged on page 2+.
     """
     try:
         limit = int(request.args.get("limit", 100))
@@ -880,15 +917,103 @@ def api_conversations():
     search = request.args.get("search", "").strip().lower()
     detail_val = request.args.get("detail")
     detail = detail_val is not None and detail_val.lower() in ("", "1", "true", "yes")
+    paginated_val = request.args.get("paginated")
+    paginated = paginated_val is not None and paginated_val.lower() in (
+        "",
+        "1",
+        "true",
+        "yes",
+    )
+    cursor_raw = request.args.get("cursor")
+    cursor_ts: float | None = None
+    cursor_id: str | None = None
+    if cursor_raw:
+        try:
+            cursor_ts, cursor_id = _parse_conversation_cursor(cursor_raw)
+        except (ValueError, TypeError):
+            return flask.jsonify(
+                {
+                    "error": "cursor must be a numeric Unix timestamp or opaque cursor token"
+                }
+            ), 400
 
-    # Use cached list for the common case (no search, no detail).
-    # Cache is invalidated on conversation create/update/delete and scoped to
-    # the current logs dir so test/workspace swaps do not reuse stale results.
     global \
         _conversations_cache, \
         _conversations_cache_logs_dir, \
         _conversations_cache_time
     logs_dir = conversations_module.get_logs_dir()
+
+    # Cursor pagination path — returns {conversations: [...], next_cursor: string|null}
+    if paginated:
+        # Load full list (use cache when possible for the common non-search, non-detail case)
+        full_list: list[ConversationMeta]
+        if not search and not detail:
+            _cached = _conversations_cache
+            if (
+                _cached is not None
+                and _conversations_cache_logs_dir == logs_dir
+                and (time.monotonic() - _conversations_cache_time)
+                < _CONVERSATIONS_CACHE_TTL
+            ):
+                full_list = _cached
+            else:
+                full_list = list(get_user_conversations(detail=False))
+                _conversations_cache = full_list
+                _conversations_cache_logs_dir = logs_dir
+                _conversations_cache_time = time.monotonic()
+        elif search:
+            full_list = [
+                conv
+                for conv in get_user_conversations(detail=detail)
+                if (
+                    search in conv.name.lower()
+                    or search in conv.id.lower()
+                    or search in (conv.last_message_preview or "").lower()
+                )
+            ]
+        else:
+            full_list = list(get_user_conversations(detail=detail))
+
+        # Keep pagination deterministic even when multiple conversations share
+        # the same modified timestamp.
+        full_list = sorted(
+            full_list, key=lambda conv: (conv.modified, conv.id), reverse=True
+        )
+
+        # Apply cursor filter: composite cursors paginate on (modified, id),
+        # legacy numeric cursors fall back to timestamp-only filtering.
+        if cursor_ts is not None:
+            if cursor_id is None:
+                paged = [c for c in full_list if c.modified < cursor_ts]
+            else:
+                paged = [
+                    c for c in full_list if (c.modified, c.id) < (cursor_ts, cursor_id)
+                ]
+        else:
+            paged = full_list
+
+        # Fetch limit+1 to detect whether a next page exists
+        probe = paged[: limit + 1]
+        has_more = len(probe) > limit
+        page = probe[:limit]
+
+        page_items = []
+        for conv in page:
+            item = asdict(conv)
+            item["message_count"] = conv.messages
+            item["last_updated"] = conv.modified
+            page_items.append(item)
+
+        next_cursor: str | None = (
+            _encode_conversation_cursor(page[-1]) if has_more and page else None
+        )
+
+        return flask.jsonify({"conversations": page_items, "next_cursor": next_cursor})
+
+    # Legacy path — returns bare list (backward compatible)
+    # Use cached list for the common case (no search, no detail).
+    # Cache is invalidated on conversation create/update/delete and scoped to
+    # the current logs dir so test/workspace swaps do not reuse stale results.
     if (
         not search
         and not detail

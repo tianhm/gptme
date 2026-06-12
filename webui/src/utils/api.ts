@@ -979,35 +979,29 @@ export class ApiClient {
   }
 
   async getConversationsPaginated(
-    pageParam: number = 0,
-    pageSize: number = 20,
+    cursor: string | undefined = undefined,
+    pageSize: number = 50,
     detail: boolean = false
   ): Promise<{
     conversations: ConversationSummary[];
-    nextCursor: number | undefined;
+    nextCursor: string | undefined;
   }> {
     if (!this.isConnected) {
       throw new ApiClientError('Not connected to API');
     }
     try {
-      // Fetch one more than needed to detect if there are more conversations
-      const fetchLimit = pageParam + pageSize + 1;
-      const allConversations = await this.fetchJson<ConversationSummary[]>(
-        `${this.baseUrl}/api/v2/conversations?limit=${fetchLimit}&detail=${detail}`
-      );
+      let url = `${this.baseUrl}/api/v2/conversations?limit=${pageSize}&paginated=1&detail=${detail}`;
+      if (cursor !== undefined) {
+        url += `&cursor=${encodeURIComponent(cursor)}`;
+      }
+      const response = await this.fetchJson<{
+        conversations: ConversationSummary[];
+        next_cursor: string | null;
+      }>(url);
 
-      // Slice to get only the requested page
-      const conversations = allConversations.slice(pageParam, pageParam + pageSize);
+      const nextCursor = response.next_cursor ?? undefined;
 
-      // Check if there are more conversations by seeing if we got the extra one
-      const hasMore = allConversations.length > pageParam + pageSize;
-      const nextCursor = hasMore ? pageParam + pageSize : undefined;
-
-      console.log(
-        `[API] Pagination: pageParam=${pageParam}, pageSize=${pageSize}, fetched=${allConversations.length}, returning=${conversations.length}, hasMore=${hasMore}`
-      );
-
-      return { conversations, nextCursor };
+      return { conversations: response.conversations, nextCursor };
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new ApiClientError('Request aborted', 499);
