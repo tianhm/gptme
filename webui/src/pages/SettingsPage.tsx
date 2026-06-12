@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type FC } from 'react';
+import { useState, useEffect, useCallback, useRef, type FC } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Settings } from 'lucide-react';
 import { MenuBar } from '@/components/MenuBar';
@@ -21,9 +21,16 @@ const SettingsPage: FC = () => {
   const { category } = useParams<{ category?: string }>();
   const navigate = useNavigate();
   const { data: tasks = [] } = useTasksQuery();
+  const containerRef = useRef<HTMLDivElement>(null);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(
     toCategoryOrDefault(category)
   );
+
+  // Auto-focus the container so the Escape key handler works immediately on mount,
+  // without requiring the user to click inside the page first.
+  useEffect(() => {
+    containerRef.current?.focus();
+  }, []);
 
   // Keep state in sync when URL param changes (e.g. browser back/forward)
   useEffect(() => {
@@ -48,7 +55,29 @@ const SettingsPage: FC = () => {
   }, [externalRequest.open, externalRequest.category, handleCategoryChange]);
 
   return (
-    <div className="flex h-screen flex-col">
+    <div
+      ref={containerRef}
+      className="flex h-screen flex-col"
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          // A fresh tab always has at least one `about:blank` entry in
+          // its history, so a direct URL load on /settings leaves
+          // window.history.length at 2 (about:blank + /settings). Using
+          // `> 2` as the threshold excludes that case: navigate(-1) on a
+          // 2-entry history would land on about:blank, so we fall back
+          // to /chat instead. Any value >= 3 means the user reached
+          // /settings from at least one in-app page and going back is
+          // safe.
+          if (window.history.length > 2) {
+            navigate(-1);
+          } else {
+            navigate('/chat');
+          }
+        }
+      }}
+    >
       <MenuBar />
       <div className="flex min-h-0 flex-1">
         <SidebarIcons tasks={tasks} />
