@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
 
@@ -918,8 +919,10 @@ def api_conversations():
                 if len(conversations) >= limit:
                     break
     else:
-        all_conversations = list(get_user_conversations(detail=detail))
-        conversations = all_conversations[:limit] if limit > 0 else all_conversations
+        # The API limit is capped at 1000, so a cold-cache fill does not need
+        # to scan beyond that bound.
+        all_conversations = list(islice(get_user_conversations(detail=detail), 1000))
+        conversations = all_conversations[:limit]
     response_items = []
     for conv in conversations:
         item = asdict(conv)
@@ -931,9 +934,6 @@ def api_conversations():
         item["last_updated"] = conv.modified
         response_items.append(item)
 
-    # Update cache for the common case (no search, no detail).
-    # Cache stores the full, unlimited list so that subsequent requests with
-    # a higher limit return the correct number of items (not truncated).
     if not search and not detail:
         _conversations_cache = all_conversations
         _conversations_cache_logs_dir = logs_dir
