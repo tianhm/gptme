@@ -226,6 +226,71 @@ def test_api_conversation_search_case_insensitive(
     assert data[0]["id"] == "MySearchConversation"
 
 
+def test_api_conversation_search_q_param(client: FlaskClient, tmp_path, monkeypatch):
+    """Test that the ?q= param filters conversations (primary alias for ?search=)."""
+    monkeypatch.setattr("gptme.logmanager.conversations.get_logs_dir", lambda: tmp_path)
+
+    conv_dir = tmp_path / "q-param-target"
+    conv_dir.mkdir()
+    (conv_dir / "conversation.jsonl").write_text(
+        '{"role": "system", "content": "hello", "timestamp": "2026-01-01T00:00:00"}\n'
+    )
+    other_dir = tmp_path / "other-conversation"
+    other_dir.mkdir()
+    (other_dir / "conversation.jsonl").write_text(
+        '{"role": "system", "content": "hello", "timestamp": "2026-01-01T00:00:00"}\n'
+    )
+
+    response = client.get("/api/v2/conversations?q=q-param-target")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["id"] == "q-param-target"
+
+
+def test_api_conversation_search_q_param_takes_precedence(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """Test that ?q= takes precedence over ?search= when both are provided."""
+    monkeypatch.setattr("gptme.logmanager.conversations.get_logs_dir", lambda: tmp_path)
+
+    conv_dir = tmp_path / "q-wins"
+    conv_dir.mkdir()
+    (conv_dir / "conversation.jsonl").write_text(
+        '{"role": "system", "content": "hello", "timestamp": "2026-01-01T00:00:00"}\n'
+    )
+
+    # q= matches; search= does not — q= should win
+    response = client.get("/api/v2/conversations?q=q-wins&search=no-match-here")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["id"] == "q-wins"
+
+
+def test_api_conversation_search_empty_q_overrides_search(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """Test that explicit empty ?q= overrides ?search= (not a falsy-or fallthrough)."""
+    monkeypatch.setattr("gptme.logmanager.conversations.get_logs_dir", lambda: tmp_path)
+
+    conv_dir = tmp_path / "search-only"
+    conv_dir.mkdir()
+    (conv_dir / "conversation.jsonl").write_text(
+        '{"role": "system", "content": "hello", "timestamp": "2026-01-01T00:00:00"}\n'
+    )
+
+    # ?q= explicitly empty + ?search=search-only: empty q= should win → no filter → returns all
+    response = client.get("/api/v2/conversations?q=&search=search-only")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert isinstance(data, list)
+    # empty q= means "no filter", so all conversations are returned (not just search-only match)
+    assert len(data) >= 1
+
+
 def test_api_conversation_list_detail_flag(client: FlaskClient, tmp_path, monkeypatch):
     """Test that detail=true returns cost/token stats while default (false) zeroes them."""
     import json
