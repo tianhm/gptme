@@ -829,8 +829,12 @@ def api_external_sessions():
     except (ValueError, TypeError):
         return flask.jsonify({"error": "limit and days must be integers"}), 400
 
-    limit = max(1, min(limit, 1000))
-    days = max(1, min(days, 3650))
+    if limit <= 0:
+        return flask.jsonify({"error": "limit must be a positive integer"}), 400
+    limit = min(limit, 1000)
+    if days <= 0:
+        return flask.jsonify({"error": "days must be a positive integer"}), 400
+    days = min(days, 3650)
 
     sessions = [
         item.to_dict() for item in provider.list_sessions(limit=limit, days=days)
@@ -861,15 +865,17 @@ def api_external_sessions():
 )
 def api_external_session(external_session_id: str):
     """Get a normalized read-only external session transcript."""
-    provider = get_external_session_provider()
-    if provider is None:
-        return flask.jsonify({"error": "external session provider unavailable"}), 503
-
     try:
         days = int(request.args.get("days", 30))
     except (ValueError, TypeError):
         return flask.jsonify({"error": "days must be an integer"}), 400
-    days = max(1, min(days, 3650))
+    if days <= 0:
+        return flask.jsonify({"error": "days must be a positive integer"}), 400
+    days = min(days, 3650)
+
+    provider = get_external_session_provider()
+    if provider is None:
+        return flask.jsonify({"error": "external session provider unavailable"}), 503
 
     session = provider.get_session(external_session_id, days=days)
     if session is None:
@@ -939,7 +945,9 @@ def api_conversations():
         limit = int(request.args.get("limit", 100))
     except (ValueError, TypeError):
         return flask.jsonify({"error": "limit must be an integer"}), 400
-    limit = max(1, min(limit, 1000))
+    if limit <= 0:
+        return flask.jsonify({"error": "limit must be a positive integer"}), 400
+    limit = min(limit, 1000)
     # ?q= is the primary filter param; ?search= is accepted as a backward-compat alias
     # Use None-check so explicit ?q= (even empty) takes precedence over ?search=
     q = request.args.get("q")
