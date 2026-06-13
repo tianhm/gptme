@@ -426,6 +426,196 @@ def test_api_conversation_get(conv, client: FlaskClient):
     assert response.status_code == 200
 
 
+def test_api_conversation_get_limit(conv, client: FlaskClient):
+    # Populate with some messages
+    for i in range(5):
+        client.post(
+            f"/api/v2/conversations/{conv}",
+            json={"role": "user", "content": f"msg {i}"},
+        )
+    # Get full count first (no limit)
+    full = client.get(f"/api/v2/conversations/{conv}").get_json()
+    total = len(full["log"])
+    assert total >= 5  # at least our 5 messages
+
+    # Fetch last 2
+    response = client.get(f"/api/v2/conversations/{conv}?limit=2")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data["log"]) == 2
+    assert data["total_messages"] == total
+    assert data["has_more"] is True
+    assert data["before"] == total - 2  # cursor for next older page
+    # Last message must be the last one we posted
+    assert data["log"][-1]["content"] == "msg 4"
+
+
+def test_api_conversation_get_limit_no_more(conv, client: FlaskClient):
+    # Fetch with limit larger than total — gets everything
+    full = client.get(f"/api/v2/conversations/{conv}").get_json()
+    total = len(full["log"])
+
+    response = client.get(f"/api/v2/conversations/{conv}?limit=10000")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data["log"]) == total
+    assert data["total_messages"] == total
+    assert data["has_more"] is False
+    assert "before" not in data
+
+
+def test_api_conversation_get_before_cursor(conv, client: FlaskClient):
+    # Populate with enough messages that we need at least 3 pages of 2
+    for i in range(10):
+        client.post(
+            f"/api/v2/conversations/{conv}",
+            json={"role": "user", "content": f"msg {i}"},
+        )
+    # First page: last 2
+    r1 = client.get(f"/api/v2/conversations/{conv}?limit=2")
+    data1 = r1.get_json()
+    assert data1["has_more"] is True
+    cursor = data1["before"]
+    assert cursor > 0
+
+    # Second page: 2 older messages
+    r2 = client.get(f"/api/v2/conversations/{conv}?limit=2&before={cursor}")
+    data2 = r2.get_json()
+    assert len(data2["log"]) == 2
+    # Page-2 messages must be entirely before page-1 messages (non-overlapping).
+    # Content is deterministic (we posted "msg 0"…"msg 9"), so compare by content.
+    page1_contents = {m["content"] for m in data1["log"]}
+    page2_contents = {m["content"] for m in data2["log"]}
+    assert page1_contents.isdisjoint(page2_contents)
+
+
+def test_api_conversation_get_limit_invalid(conv, client: FlaskClient):
+    for bad in ["notanumber", "0", "-5", "-1"]:
+        response = client.get(f"/api/v2/conversations/{conv}?limit={bad}")
+        assert response.status_code == 400, f"expected 400 for limit={bad}"
+
+
+def test_api_conversation_get_before_invalid(conv, client: FlaskClient):
+    # negative before
+    response = client.get(f"/api/v2/conversations/{conv}?limit=5&before=-1")
+    assert response.status_code == 400
+    # before without limit is not allowed
+    response = client.get(f"/api/v2/conversations/{conv}?before=5")
+    assert response.status_code == 400
+
+
+def test_api_conversation_get_no_pagination_fields_without_limit(
+    conv, client: FlaskClient
+):
+    # Without limit, response must not include pagination fields (backwards compat)
+    client.post(
+        f"/api/v2/conversations/{conv}",
+        json={"role": "user", "content": "hello"},
+    )
+    response = client.get(f"/api/v2/conversations/{conv}")
+    data = response.get_json()
+    assert "has_more" not in data
+    assert "total_messages" not in data
+    assert "before" not in data
+
+
+def test_api_conversation_get_etag_pagination_isolation(conv, client: FlaskClient):
+    # Populate messages
+    for i in range(5):
+        client.post(
+            f"/api/v2/conversations/{conv}",
+            json={"role": "user", "content": f"msg {i}"},
+        )
+
+    full_r = client.get(f"/api/v2/conversations/{conv}")
+    full_etag = full_r.headers["ETag"]
+
+    page1_r = client.get(f"/api/v2/conversations/{conv}?limit=2")
+    page1_etag = page1_r.headers["ETag"]
+
+    cursor = page1_r.get_json()["before"]
+    page2_r = client.get(f"/api/v2/conversations/{conv}?limit=2&before={cursor}")
+    page2_etag = page2_r.headers["ETag"]
+
+    # All three ETags must be distinct — different slices, different validators.
+    assert full_etag != page1_etag
+    assert page1_etag != page2_etag
+
+    # Repeating the same paginated request with its own ETag must return 304.
+    r304 = client.get(
+        f"/api/v2/conversations/{conv}?limit=2",
+        headers={"If-None-Match": page1_etag},
+    )
+    assert r304.status_code == 304
+
+    # Using the full-response ETag for a paginated request must NOT return 304.
+    r200 = client.get(
+        f"/api/v2/conversations/{conv}?limit=2",
+        headers={"If-None-Match": full_etag},
+    )
+    assert r200.status_code == 200
+
+    # Using the full-response ETag for a paginated request must NOT return 304.
+    r200 = client.get(
+        f"/api/v2/conversations/{conv}?limit=2",
+        headers={"If-None-Match": full_etag},
+    )
+    assert r200.status_code == 200
+
+
+def test_api_conversation_get_limit_capped(conv, client: FlaskClient):
+    """limit > 10000 is silently capped to 10000."""
+    for i in range(5):
+        client.post(
+            f"/api/v2/conversations/{conv}",
+            json={"role": "user", "content": f"msg {i}"},
+        )
+    full = client.get(f"/api/v2/conversations/{conv}").get_json()
+    total = len(full["log"])
+
+    # Request limit=99999 — must be capped to 10000 (effectively unlimited for this test)
+    response = client.get(f"/api/v2/conversations/{conv}?limit=99999")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data["log"]) == total  # all messages returned (limit >> total)
+    assert data["total_messages"] == total
+    assert data["has_more"] is False
+
+
+def test_api_conversation_get_before_larger_than_total(conv, client: FlaskClient):
+    """before > total is clamped to total, returning messages before cursor."""
+    for i in range(5):
+        client.post(
+            f"/api/v2/conversations/{conv}",
+            json={"role": "user", "content": f"msg {i}"},
+        )
+    full = client.get(f"/api/v2/conversations/{conv}").get_json()
+    total = len(full["log"])
+
+    # Request limit=2, before=99999 (way past the end)
+    response = client.get(f"/api/v2/conversations/{conv}?limit=2&before=99999")
+    assert response.status_code == 200
+    data = response.get_json()
+    # Should return 2 messages (the last 2, since before clamped to total)
+    assert len(data["log"]) == 2
+    assert data["total_messages"] == total
+    assert data["has_more"] is True  # there ARE older messages
+    cursor = data["before"]
+    assert cursor == total - 2  # total - limit
+
+    # Page back from that cursor — should get 2 more
+    r2 = client.get(f"/api/v2/conversations/{conv}?limit=2&before={cursor}")
+    data2 = r2.get_json()
+    assert len(data2["log"]) == 2
+
+
+def test_api_conversation_get_before_invalid_non_integer(conv, client: FlaskClient):
+    """Non-integer before returns 400."""
+    for bad in ["notanumber", "1.5", ""]:
+        response = client.get(f"/api/v2/conversations/{conv}?limit=5&before={bad}")
+        assert response.status_code == 400, f"expected 400 for before={bad}"
+
+
 def test_api_conversation_post(conv, client: FlaskClient):
     response = client.post(
         f"/api/v2/conversations/{conv}",
