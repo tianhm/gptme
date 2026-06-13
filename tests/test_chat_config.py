@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from gptme.config import ChatConfig
+from gptme.config import ChatConfig, ensure_workspace_dir, require_workspace_exists
 
 
 def test_chat_config_from_logdir(tmp_path: Path):
@@ -13,6 +13,57 @@ def test_chat_config_from_logdir(tmp_path: Path):
     config.save()
     loaded = ChatConfig.from_logdir(tmp_path)
     assert loaded.model == "test-model"
+
+
+def test_chat_config_from_logdir_workspace_symlink(tmp_path: Path):
+    """from_logdir must not crash when 'workspace' is a pre-existing symlink.
+
+    Some older conversations have a manually-created 'workspace' symlink
+    instead of a directory. mkdir(exist_ok=True) raises FileExistsError on a
+    symlink/non-dir, which previously 500'd the conversations list endpoint.
+    """
+    logdir = tmp_path / "conv"
+    logdir.mkdir()
+    target = tmp_path / "linked-workspace"
+    (logdir / "workspace").symlink_to(target)  # broken symlink (target absent)
+
+    loaded = ChatConfig.from_logdir(logdir)
+    assert loaded.workspace == target
+
+
+def test_ensure_workspace_dir(tmp_path: Path):
+    """ensure_workspace_dir creates a missing dir but tolerates symlinks."""
+    # Missing → created
+    ws = tmp_path / "ws"
+    ensure_workspace_dir(ws)
+    assert ws.is_dir()
+
+    # Pre-existing dir → no-op, no error
+    ensure_workspace_dir(ws)
+
+    # Broken symlink → left as-is, no FileExistsError
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "absent")
+    ensure_workspace_dir(link)
+    assert link.is_symlink()
+    assert not link.exists()  # target still absent — not created
+
+
+def test_require_workspace_exists(tmp_path: Path):
+    """require_workspace_exists raises an actionable error only when missing."""
+    existing = tmp_path / "here"
+    existing.mkdir()
+    require_workspace_exists(existing)  # no raise
+
+    missing = tmp_path / "gone"
+    with pytest.raises(FileNotFoundError, match="workspace does not exist"):
+        require_workspace_exists(missing)
+
+    # Broken symlink counts as missing (target absent)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "absent")
+    with pytest.raises(FileNotFoundError, match="workspace does not exist"):
+        require_workspace_exists(link)
 
 
 def test_chat_config_load_or_create(tmp_path: Path):
