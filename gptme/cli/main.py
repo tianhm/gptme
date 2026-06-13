@@ -10,6 +10,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime, timezone
 from itertools import islice
@@ -82,6 +83,12 @@ def _validate_model_param(
 
 script_path = Path(os.path.realpath(__file__))
 _STDIN_PIPE_GRACE_PERIOD = 1.0
+
+# Sub-timeout used by the inner read loop in `_read_stdin` to disambiguate
+# "data ready" from "pipe fd is readable but write end is open and idle".
+# Tuned to 100ms — generous enough to bridge small producer gaps without
+# being so long that an idle pipe stalls the prompt for a noticeable beat.
+_STDIN_PIPE_INTER_CHUNK_TIMEOUT = 0.1
 
 
 class CommaSeparatedChoice(click.ParamType):
@@ -1330,13 +1337,32 @@ def _read_stdin() -> str:
     if not readable:
         return ""
 
-    chunk_size = 1024  # 1 KB
-    all_data = ""
+    # stdin is readable (data available or pipe open but idle).
+    # Use os.read + select with sub-timeouts rather than sys.stdin.read() which
+    # blocks until EOF on a pipe — "readable" from select on a pipe fd can
+    # fire even when the write end is open but idle (e.g. under uv run).
+    try:
+        fd = sys.stdin.fileno()
+    except (OSError, ValueError, AttributeError):
+        # No real fd (e.g. StringIO in tests or piped stdin where fileno fails).
+        # Use blocking read — safe because non-pipe fds return immediately.
+        return sys.stdin.read()
 
-    while True:
-        chunk = sys.stdin.read(chunk_size)
-        if not chunk:
-            break
-        all_data += chunk
+    all_data = ""
+    deadline = time.monotonic() + _STDIN_PIPE_GRACE_PERIOD
+
+    try:
+        while time.monotonic() < deadline:
+            r, _, _ = select.select([fd], [], [], _STDIN_PIPE_INTER_CHUNK_TIMEOUT)
+            if not r:
+                # No data arrived within the sub-timeout — pipe is open but idle.
+                # Don't block on read; return what we have.
+                break
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break  # EOF
+            all_data += chunk.decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        pass
 
     return all_data
