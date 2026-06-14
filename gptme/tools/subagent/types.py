@@ -114,6 +114,15 @@ _subagent_results_lock = threading.Lock()
 _completion_queue: queue.Queue[tuple[str, Status, str]] = queue.Queue()
 
 
+def set_subagent_result_if_absent(agent_id: str, result: "ReturnType") -> bool:
+    """Cache a subagent result unless another terminal result already exists."""
+    with _subagent_results_lock:
+        if agent_id in _subagent_results:
+            return False
+        _subagent_results[agent_id] = result
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -179,13 +188,20 @@ class Subagent:
         return False
 
     def status(self) -> ReturnType:
-        # Return cached result if available (subprocess mode)
+        if self.is_running():
+            return ReturnType("running")
+        return self._read_log()
+
+    def _read_log(self) -> ReturnType:
+        """Read result from cache or conversation log, bypassing thread-liveness check.
+
+        Safe to call from within a completion handler (e.g. the run_subagent thread),
+        where status() would incorrectly return "running" because the thread is alive.
+        """
+        # Return cached result if available (set by cancel or subprocess completion)
         with _subagent_results_lock:
             if self.agent_id in _subagent_results:
                 return _subagent_results[self.agent_id]
-
-        if self.is_running():
-            return ReturnType("running")
 
         # Check if executor used the complete tool
         try:
