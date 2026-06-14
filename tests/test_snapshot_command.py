@@ -15,6 +15,7 @@ import gptme.commands  # noqa: F401 – ensures all commands are registered
 from gptme.commands.base import handle_cmd
 from gptme.workspace_snapshot import (
     Shadow,
+    get_snapshot_n_msgs,
     init_shadow,
     list_snapshots,
     restore,
@@ -49,9 +50,15 @@ def initialized_shadow(workspace):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_manager(workspace: Path) -> MagicMock:
+def _make_manager(workspace: Path, n_msgs: int | None = None) -> MagicMock:
     manager = MagicMock()
     manager.workspace = str(workspace)
+    if n_msgs is not None:
+        manager.log = [MagicMock(role="user")] * n_msgs
+    else:
+        manager.log = MagicMock()
+        manager.log.__len__ = MagicMock(return_value=0)
+        manager.log.__iter__ = MagicMock(return_value=iter([]))
     return manager
 
 
@@ -277,3 +284,169 @@ class TestSnapshotCommand:
 
         # Mutation should be gone
         assert not (workspace / "bad_change.txt").exists()
+
+
+# ── conversation-summary tests ────────────────────────────────────────────────
+
+
+class TestSnapshotConversationSummary:
+    """Tests for the conversation-message summary embedded in snapshots."""
+
+    def test_get_snapshot_n_msgs_absent(self, workspace, isolated_state_dir):
+        """Old snapshots without n_msgs metadata return None."""
+        shadow = init_shadow(workspace)
+        sha = snapshot(shadow, label="no-meta")
+        assert sha is not None
+        assert get_snapshot_n_msgs(shadow, sha) is None
+
+    def test_get_snapshot_n_msgs_present(self, workspace, isolated_state_dir):
+        """Snapshots created with n_msgs embed and return the count."""
+        shadow = init_shadow(workspace)
+        sha = snapshot(shadow, label="with-meta", n_msgs=7)
+        assert sha is not None
+        assert get_snapshot_n_msgs(shadow, sha) == 7
+
+    def test_diff_shows_conversation_summary(
+        self, workspace, isolated_state_dir, capsys
+    ):
+        """diff output includes message count when n_msgs was stored at create time."""
+        shadow = init_shadow(workspace)
+        # Snapshot at 2 messages.
+        sha = snapshot(shadow, label="checkpoint", n_msgs=2)
+        assert sha is not None
+
+        # Manager now has 5 messages; 3 added since snapshot (user, assistant, user).
+        manager = MagicMock()
+        manager.workspace = str(workspace)
+        manager.log = [
+            MagicMock(role="user"),
+            MagicMock(role="assistant"),
+            # --- snapshot boundary ---
+            MagicMock(role="user"),
+            MagicMock(role="assistant"),
+            MagicMock(role="user"),
+        ]
+
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, f"diff {sha}")
+        out = capsys.readouterr().out
+        assert "+3 messages" in out
+        assert "assistant" in out
+        assert "user" in out
+
+    def test_diff_no_new_messages(self, workspace, isolated_state_dir, capsys):
+        """diff with same message count shows no-new-messages line."""
+        shadow = init_shadow(workspace)
+        sha = snapshot(shadow, label="checkpoint", n_msgs=4)
+        assert sha is not None
+
+        manager = _make_manager(workspace, n_msgs=4)
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, f"diff {sha}")
+        out = capsys.readouterr().out
+        assert "no new messages" in out.lower()
+
+    def test_diff_with_meta_and_clean_workspace_prints_no_changes(
+        self, workspace, isolated_state_dir, capsys
+    ):
+        """diff should still say the workspace is clean when metadata is present."""
+        shadow = init_shadow(workspace)
+        sha = snapshot(shadow, label="checkpoint", n_msgs=4)
+        assert sha is not None
+
+        manager = _make_manager(workspace, n_msgs=4)
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, f"diff {sha}")
+        out = capsys.readouterr().out
+        assert "no changes between current workspace and snapshot" in out.lower()
+
+    def test_diff_without_meta_skips_summary(
+        self, workspace, isolated_state_dir, capsys
+    ):
+        """diff against a legacy snapshot (no n_msgs) shows no summary line."""
+        shadow = init_shadow(workspace)
+        sha = snapshot(shadow, label="legacy-no-meta")  # no n_msgs
+        assert sha is not None
+
+        manager = _make_manager(workspace, n_msgs=4)
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, f"diff {sha}")
+        out = capsys.readouterr().out
+        assert "messages" not in out.lower() or "no changes" in out.lower()
+
+    def test_create_embeds_n_msgs(self, workspace, isolated_state_dir, capsys):
+        """create command stores the current message count in the snapshot."""
+        shadow = init_shadow(workspace)
+        manager = _make_manager(workspace, n_msgs=6)
+
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, "create after-setup")
+        out = capsys.readouterr().out
+        match = re.search(r"Snapshot recorded:\s+(\S+)", out)
+        assert match, f"No SHA in output: {out!r}"
+        sha = match.group(1)
+
+        # The embedded count should be recoverable.
+        assert get_snapshot_n_msgs(shadow, sha) == 6
+
+
+# ── prune tests ───────────────────────────────────────────────────────────────
+
+
+class TestSnapshotPrune:
+    """Tests that prune() preserves conversation metadata (n_msgs) after
+    the retain-and-replay pass so /snapshot diff still shows the summary."""
+
+    def test_prune_includes_n_msgs_in_commit_body(self, workspace, isolated_state_dir):
+        """After pruning, metadata-bearing commits keep their n_msgs body line."""
+        from gptme.workspace_snapshot import prune
+
+        shadow = init_shadow(workspace)
+
+        # Create a few snapshots, each with a distinct n_msgs.
+        shas: list[str] = []
+        for i in range(3):
+            sha = snapshot(shadow, label=f"gen-{i}", n_msgs=10 + i)
+            assert sha is not None
+            shas.append(sha)
+
+        # Prune to keep=2 and confirm each kept commit still carries its body.
+        pruned = prune(shadow, keep=2)
+        assert pruned > 0
+
+        # The oldest (gen-0, n_msgs=10) should be gone; gen-1 and gen-2 survive.
+        survivors = [sha for sha, _ in list_snapshots(shadow, limit=10)]
+        # At least one snapshot should still have recoverable n_msgs metadata.
+        preserved = any(
+            get_snapshot_n_msgs(shadow, sha) is not None for sha in survivors
+        )
+        assert preserved, (
+            "After prune, no surviving snapshot has n_msgs metadata — "
+            "prune() dropped the commit body"
+        )
+
+    def test_prune_keep_entire_body_recovery(self, workspace, isolated_state_dir):
+        """Full round-trip: create metadata snapshots, prune, recover n_msgs
+        for the survivors via get_snapshot_n_msgs."""
+        from gptme.workspace_snapshot import prune
+
+        shadow = init_shadow(workspace)
+
+        sha_before = snapshot(shadow, label="before-prune", n_msgs=42)
+        assert sha_before is not None
+
+        # Create enough additional snapshots to trigger pruning.
+        for i in range(5):
+            snapshot(shadow, label=f"filler-{i}", n_msgs=99)
+
+        pruned = prune(shadow, keep=3)
+        assert pruned > 0, "Expected some snapshots to be pruned"
+
+        # The before-prune commit may or may not have survived,
+        # but at least one survivor should still report n_msgs=42 or 99.
+        survivors = [sha for sha, _ in list_snapshots(shadow, limit=10)]
+        recovered = {sha: get_snapshot_n_msgs(shadow, sha) for sha in survivors}
+        assert any(v in {42, 99} for v in recovered.values()), (
+            f"After prune, no surviving snapshot recovered its original "
+            f"n_msgs value. Recovered: {recovered!r}"
+        )

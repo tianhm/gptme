@@ -20,9 +20,17 @@ then ``/snapshot restore <sha>`` to roll back a failed branch.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
-from ..workspace_snapshot import Shadow, init_shadow, list_snapshots, restore, snapshot
+from ..workspace_snapshot import (
+    Shadow,
+    get_snapshot_n_msgs,
+    init_shadow,
+    list_snapshots,
+    restore,
+    snapshot,
+)
 from .base import CommandContext, command
 
 
@@ -87,7 +95,8 @@ def cmd_snapshot(ctx: CommandContext) -> None:
         shadow = Shadow.for_workspace(workspace)
         if not shadow.initialized():
             shadow = init_shadow(workspace)
-        sha = snapshot(shadow, label=label)
+        n_msgs = len(ctx.manager.log) if ctx.manager is not None else None
+        sha = snapshot(shadow, label=label, n_msgs=n_msgs)
         if sha is not None:
             print(f"Snapshot recorded: {sha}  ({label})")
         else:
@@ -161,6 +170,30 @@ def cmd_snapshot(ctx: CommandContext) -> None:
             return
 
         sha = args[0]
+
+        # Conversation summary: show messages added since the snapshot was taken.
+        snap_n_msgs = get_snapshot_n_msgs(workspace_shadow, sha)
+        if snap_n_msgs is not None and ctx.manager is not None:
+            current_msgs = list(ctx.manager.log)
+            delta = len(current_msgs) - snap_n_msgs
+            if delta > 0:
+                role_counts = Counter(m.role for m in current_msgs[snap_n_msgs:])
+                role_str = ", ".join(
+                    f"{count} {role}" for role, count in sorted(role_counts.items())
+                )
+                print(
+                    f"+{delta} message{'s' if delta != 1 else ''} since snapshot {sha} ({role_str})"
+                )
+            elif delta == 0:
+                print(f"No new messages since snapshot {sha}.")
+            else:
+                print(
+                    f"Conversation is shorter than at snapshot time "
+                    f"({len(current_msgs)} vs {snap_n_msgs} messages)."
+                )
+            print()
+
+        # Workspace diff.
         result = workspace_shadow.run("diff", sha, check=False)
         if result.returncode != 0:
             print(f"snapshot: diff failed: {result.stderr.strip() or 'unknown error'}")

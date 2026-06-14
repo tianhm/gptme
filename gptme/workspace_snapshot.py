@@ -147,12 +147,23 @@ def init_shadow(workspace: Path) -> Shadow:
     return shadow
 
 
-def snapshot(shadow: Shadow, label: str = "snapshot", stage: bool = True) -> str | None:
-    """Create a snapshot. Returns short SHA, or ``None`` on failure."""
+def snapshot(
+    shadow: Shadow,
+    label: str = "snapshot",
+    stage: bool = True,
+    n_msgs: int | None = None,
+) -> str | None:
+    """Create a snapshot. Returns short SHA, or ``None`` on failure.
+
+    When *n_msgs* is provided it is embedded in the commit message so that
+    :func:`get_snapshot_n_msgs` can later reconstruct the conversation size at
+    snapshot time for the ``/snapshot diff`` conversation-summary feature.
+    """
     if not shadow.initialized():
         return None
     if stage:
         shadow.run("add", "-A")
+    commit_msg = label if n_msgs is None else f"{label}\nn_msgs={n_msgs}"
     # Allow empty so consecutive identical snapshots still record a ref.
     # Bypass user hooks: internal bookkeeping, not a social commit.
     result = shadow.run(
@@ -161,7 +172,7 @@ def snapshot(shadow: Shadow, label: str = "snapshot", stage: bool = True) -> str
         "--no-verify",
         "--no-gpg-sign",
         "-m",
-        label,
+        commit_msg,
         check=False,
     )
     if result.returncode != 0:
@@ -169,6 +180,20 @@ def snapshot(shadow: Shadow, label: str = "snapshot", stage: bool = True) -> str
         return None
     sha = shadow.run("rev-parse", "--short", "HEAD").stdout.strip()
     return sha
+
+
+def get_snapshot_n_msgs(shadow: Shadow, sha: str) -> int | None:
+    """Return the conversation message count embedded in a snapshot, or ``None``."""
+    result = shadow.run("log", "--format=%B", "-1", sha, check=False)
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines()[1:]:
+        if line.startswith("n_msgs="):
+            try:
+                return int(line.split("=", 1)[1].strip())
+            except ValueError:
+                pass
+    return None
 
 
 def list_snapshots(shadow: Shadow, limit: int = 20) -> list[tuple[str, str]]:
@@ -239,17 +264,31 @@ def prune(shadow: Shadow, keep: int = DEFAULT_MAX_SNAPSHOTS) -> int:
     if total <= keep:
         return 0
     to_drop = total - keep
-    # Collect (tree, subject) for the ``keep`` newest commits, newest-first.
-    log = shadow.run(
-        "log", "--pretty=format:%T\t%s", f"-{keep}", SNAPSHOT_REF, check=False
+    # Collect (tree, full body) for the ``keep`` newest commits in one pass.
+    # Use ASCII control characters as record/field separators so commit bodies
+    # can still contain ordinary newlines.
+    log_output = shadow.run(
+        "log",
+        "--format=%H%x1f%T%x1f%B%x1e",
+        f"-{keep}",
+        SNAPSHOT_REF,
+        check=False,
     )
-    if log.returncode != 0 or not log.stdout.strip():
+    if log_output.returncode != 0 or not log_output.stdout.strip():
         return 0
-    entries = []
-    for line in log.stdout.splitlines():
-        if "\t" in line:
-            tree, msg = line.split("\t", 1)
-            entries.append((tree.strip(), msg.strip()))
+    entries: list[tuple[str, str]] = []
+    for record in log_output.stdout.split("\x1e"):
+        record = record.strip()
+        if not record:
+            continue
+        parts = record.split("\x1f", 2)
+        if len(parts) != 3:
+            continue
+        _, tree, body = parts
+        tree = tree.strip()
+        body = body.strip()
+        if tree and body:
+            entries.append((tree, body))
     if not entries:
         return 0
     # Reverse so we build oldest-of-kept → newest (oldest is entries[-1]).
