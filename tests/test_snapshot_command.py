@@ -450,3 +450,134 @@ class TestSnapshotPrune:
             f"After prune, no surviving snapshot recovered its original "
             f"n_msgs value. Recovered: {recovered!r}"
         )
+
+
+class TestSnapshotPruneCommand:
+    def test_prune_no_args_defaults_to_30_days(
+        self, workspace, isolated_state_dir, capsys
+    ):
+        """Bare prune should apply the documented 30-day age window."""
+        import time
+
+        shadow = init_shadow(workspace)
+        for i in range(4):
+            (workspace / f"f{i}.txt").write_text(str(i))
+            snapshot(shadow, label=f"snap-{i}")
+
+        future = time.time() + 31 * 86400
+        manager = _make_manager(workspace)
+        with (
+            patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow),
+            patch("gptme.workspace_snapshot.time.time", return_value=future),
+        ):
+            _run_cmd(manager, "prune")
+        out = capsys.readouterr().out
+        assert "pruned" in out.lower()
+        remaining = list_snapshots(shadow, limit=50)
+        assert len(remaining) == 1
+
+    def test_prune_no_op_when_all_recent(self, workspace, isolated_state_dir, capsys):
+        """All snapshots are fresh — nothing pruned, reports 0."""
+        shadow = init_shadow(workspace)
+        snapshot(shadow, label="fresh")
+        manager = _make_manager(workspace)
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, "prune --days 30")
+        out = capsys.readouterr().out
+        assert "no snapshots to prune" in out.lower()
+
+    def test_prune_drops_old_snapshots(self, workspace, isolated_state_dir, capsys):
+        """With mocked future time, old snapshots are removed."""
+        import time
+
+        shadow = init_shadow(workspace)
+        for i in range(4):
+            (workspace / f"f{i}.txt").write_text(str(i))
+            snapshot(shadow, label=f"snap-{i}")
+
+        future = time.time() + 31 * 86400
+        manager = _make_manager(workspace)
+        with (
+            patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow),
+            patch("gptme.workspace_snapshot.time.time", return_value=future),
+        ):
+            _run_cmd(manager, "prune --days 30")
+        out = capsys.readouterr().out
+        assert "pruned" in out.lower()
+        remaining = list_snapshots(shadow, limit=50)
+        assert len(remaining) == 1
+
+    def test_prune_max_entries_flag(self, workspace, isolated_state_dir, capsys):
+        """--max-entries keeps only K newest snapshots."""
+        shadow = init_shadow(workspace)
+        for i in range(8):
+            (workspace / f"f{i}.txt").write_text(str(i))
+            snapshot(shadow, label=f"snap-{i}")
+
+        manager = _make_manager(workspace)
+        with patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow):
+            _run_cmd(manager, "prune --days 3650 --max-entries 3")
+        out = capsys.readouterr().out
+        assert "pruned" in out.lower()
+        remaining = list_snapshots(shadow, limit=50)
+        assert len(remaining) == 3
+
+    def test_prune_max_entries_without_days_skips_age_prune(
+        self, workspace, isolated_state_dir, capsys
+    ):
+        """--max-entries alone should not implicitly trigger age pruning."""
+        import time
+
+        shadow = init_shadow(workspace)
+        for i in range(8):
+            (workspace / f"f{i}.txt").write_text(str(i))
+            snapshot(shadow, label=f"snap-{i}")
+
+        future = time.time() + 31 * 86400
+        manager = _make_manager(workspace)
+        with (
+            patch("gptme.commands.snapshot.Shadow.for_workspace", return_value=shadow),
+            patch("gptme.workspace_snapshot.time.time", return_value=future),
+        ):
+            _run_cmd(manager, "prune --max-entries 3")
+        out = capsys.readouterr().out
+        assert "pruned" in out.lower()
+        remaining = list_snapshots(shadow, limit=50)
+        assert len(remaining) == 3
+        assert [label for _, label in remaining] == ["snap-7", "snap-6", "snap-5"]
+
+    def test_prune_unknown_arg(self, workspace, isolated_state_dir, capsys):
+        manager = _make_manager(workspace)
+        _run_cmd(manager, "prune --invalid-flag")
+        out = capsys.readouterr().out
+        assert "unknown argument" in out.lower()
+
+    def test_prune_days_missing_value(self, workspace, isolated_state_dir, capsys):
+        manager = _make_manager(workspace)
+        _run_cmd(manager, "prune --days")
+        out = capsys.readouterr().out
+        assert "--days requires a value" in out.lower()
+
+    def test_prune_days_non_integer(self, workspace, isolated_state_dir, capsys):
+        manager = _make_manager(workspace)
+        _run_cmd(manager, "prune --days abc")
+        out = capsys.readouterr().out
+        assert "--days must be an integer" in out.lower()
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_prune_days_requires_positive_integer(
+        self, workspace, isolated_state_dir, capsys, value
+    ):
+        manager = _make_manager(workspace)
+        _run_cmd(manager, f"prune --days {value}")
+        out = capsys.readouterr().out
+        assert "--days must be a positive integer" in out.lower()
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_prune_max_entries_requires_positive_integer(
+        self, workspace, isolated_state_dir, capsys, value
+    ):
+        manager = _make_manager(workspace)
+        _run_cmd(manager, f"prune --max-entries {value}")
+        out = capsys.readouterr().out
+        assert "--max-entries must be a positive integer" in out.lower()
