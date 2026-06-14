@@ -292,6 +292,70 @@ class TestToolFunction:
         desc = spec.get_functions_description()
         assert "Custom description" in desc
 
+    def test_from_callable_extracts_parameters(self):
+        def greet(name: str, repeat: int) -> str:
+            """Say hello."""
+            return f"hello {name}" * repeat
+
+        tf = ToolFunction.from_callable(greet)
+        assert len(tf.parameters) == 2
+        assert tf.parameters[0].name == "name"
+        assert tf.parameters[0].type == "str"
+        assert tf.parameters[0].required is True
+        assert tf.parameters[1].name == "repeat"
+        assert tf.parameters[1].type == "int"
+
+    def test_from_callable_optional_parameter(self):
+        def fn(path: str, encoding: str = "utf-8") -> str:
+            return ""
+
+        tf = ToolFunction.from_callable(fn)
+        assert tf.parameters[0].required is True
+        assert tf.parameters[1].required is False
+
+    def test_from_callable_unannotated_parameter(self):
+        def fn(x) -> None:
+            pass
+
+        tf = ToolFunction.from_callable(fn)
+        assert tf.parameters[0].type == "any"
+
+    def test_from_callable_description_first_paragraph_only(self):
+        def fn() -> None:
+            """First paragraph.
+
+            Second paragraph with details.
+            """
+
+        tf = ToolFunction.from_callable(fn)
+        assert tf.description == "First paragraph."
+        assert "Second paragraph" not in tf.description
+
+    def test_from_callable_no_params(self):
+        def fn() -> str:
+            return "ok"
+
+        tf = ToolFunction.from_callable(fn)
+        assert tf.parameters == []
+
+    def test_from_callable_skips_variadic(self):
+        def fn(*args: str, **kwargs: str) -> None:
+            pass
+
+        tf = ToolFunction.from_callable(fn)
+        assert tf.parameters == []
+
+    def test_from_callable_skips_variadic_mixed(self):
+        def fn(name: str, *args: str, flag: bool = False, **kwargs: str) -> None:
+            pass
+
+        tf = ToolFunction.from_callable(fn)
+        names = [p.name for p in tf.parameters]
+        assert "name" in names
+        assert "flag" in names
+        assert "args" not in names
+        assert "kwargs" not in names
+
 
 # ── ToolSpec ───────────────────────────────────────────────────────
 
@@ -445,6 +509,104 @@ class TestToolSpec:
         tool = ToolSpec(name="t", desc="", hints=frozenset({"read-only", "idempotent"}))
         assert "read-only" in tool.hints
         assert "idempotent" in tool.hints
+
+
+# ── ToolSpec.from_function ─────────────────────────────────────────
+
+
+class TestToolSpecFromFunction:
+    def test_basic_metadata(self):
+        def greet(name: str) -> str:
+            """Greet someone by name."""
+            return f"Hello, {name}!"
+
+        spec = ToolSpec.from_function(greet)
+        assert spec.name == "greet"
+        assert spec.desc == "Greet someone by name."
+
+    def test_parameters_extracted(self):
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        spec = ToolSpec.from_function(add)
+        assert len(spec.parameters) == 2
+        assert spec.parameters[0].name == "a"
+        assert spec.parameters[0].type == "int"
+        assert spec.parameters[0].required is True
+        assert spec.parameters[1].name == "b"
+
+    def test_execute_via_kwargs(self):
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return int(a) + int(b)
+
+        spec = ToolSpec.from_function(add)
+        assert spec.execute is not None
+        msgs = list(spec.execute(None, None, {"a": "3", "b": "4"}))  # type: ignore[arg-type]
+        assert any("7" in m.content for m in msgs)
+
+    def test_execute_via_positional_args(self):
+        def echo(text: str) -> str:
+            """Echo text back."""
+            return text
+
+        spec = ToolSpec.from_function(echo)
+        assert spec.execute is not None
+        msgs = list(spec.execute(None, ["hello"], None))  # type: ignore[arg-type]
+        assert any("hello" in m.content for m in msgs)
+
+    def test_execute_returns_none_produces_no_message(self):
+        def noop() -> None:
+            pass
+
+        spec = ToolSpec.from_function(noop)
+        assert spec.execute is not None
+        msgs = list(spec.execute(None, None, None))  # type: ignore[arg-type]
+        assert msgs == []
+
+    def test_no_ipython_import(self):
+        """from_function path must not trigger an IPython import."""
+        import sys
+
+        def fn(x: str) -> str:
+            """Returns x."""
+            return x
+
+        before = "IPython" in sys.modules
+        ToolSpec.from_function(fn)
+        after = "IPython" in sys.modules
+        # IPython should not have been newly imported by from_function
+        assert before == after
+
+    def test_is_runnable(self):
+        def fn(x: str) -> str:
+            return x
+
+        spec = ToolSpec.from_function(fn)
+        assert spec.is_runnable
+
+    def test_execute_positional_only_via_kwargs(self):
+        """Positional-only params must not cause TypeError when called via kwargs."""
+
+        def fn(x: str, /) -> str:
+            return f"got:{x}"
+
+        spec = ToolSpec.from_function(fn)
+        assert spec.execute is not None
+        msgs = list(spec.execute(None, None, {"x": "hello"}))  # type: ignore[arg-type]
+        assert any("got:hello" in m.content for m in msgs)
+
+    def test_execute_positional_only_via_args(self):
+        """Positional-only params work via the positional-args path too."""
+
+        def fn(x: str, /) -> str:
+            return f"got:{x}"
+
+        spec = ToolSpec.from_function(fn)
+        assert spec.execute is not None
+        msgs = list(spec.execute(None, ["world"], None))  # type: ignore[arg-type]
+        assert any("got:world" in m.content for m in msgs)
 
 
 # ── Hint-based allowlist ───────────────────────────────────────────
