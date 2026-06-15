@@ -15,12 +15,15 @@ from pathlib import Path
 from typing import Literal
 
 from . import execution as _exec
+from .concurrency import get_slot_sem
 from .hooks import notify_completion
 from .types import (
     ReturnType,
     Role,
     Subagent,
     SubtaskDef,
+    _subagent_results,
+    _subagent_results_lock,
     _subagents,
     _subagents_lock,
     resolve_role_defaults,
@@ -278,69 +281,91 @@ def subagent(
             )
 
         def run_acp_subagent():
-            import asyncio
-
-            async def _acp_run():
-                from ...acp.client import GptmeAcpClient
-
-                collected_text: list[str] = []
-
-                def on_update(session_id: str, update) -> None:
-                    """Collect text from session updates."""
-                    # Extract text from agent_message_chunk updates
-                    update_type = getattr(update, "type", None)
-                    if update_type == "agent_message_chunk":
-                        chunk = getattr(update, "chunk", None)
-                        if chunk:
-                            text = getattr(chunk, "text", None) or (
-                                chunk.get("text") if isinstance(chunk, dict) else None
-                            )
-                            if text:
-                                collected_text.append(text)
-
-                async with GptmeAcpClient(
-                    workspace=workspace,
-                    command=acp_command,
-                    auto_confirm=True,
-                    on_update=on_update,
-                ) as client:
-                    result = await client.run(prompt, cwd=workspace)
-                    stop_reason = getattr(result, "stop_reason", "unknown")
-                    result_text = "".join(collected_text) if collected_text else None
-
-                    status = "success" if stop_reason == "end_turn" else "failure"
-                    summary = (
-                        result_text[:500]
-                        if result_text
-                        else f"ACP stop_reason={stop_reason}"
-                    )
-                    return status, summary
-
+            _sem = get_slot_sem()
+            _sem.acquire()
             try:
-                status, summary = asyncio.run(_acp_run())
+                with _subagent_results_lock:
+                    if agent_id in _subagent_results:
+                        logger.info(
+                            f"Skipping cancelled queued ACP subagent {agent_id}"
+                        )
+                        with _subagents_lock:
+                            sa = next(
+                                (s for s in _subagents if s.agent_id == agent_id), None
+                            )
+                        if sa:
+                            _exec._cleanup_isolation(sa)
+                        return
 
-                result = ReturnType(status, summary)
-                if not set_subagent_result_if_absent(agent_id, result):
-                    return
-                notify_completion(
-                    agent_id,
-                    status,
-                    _exec._summarize_result(result, max_chars=200),
-                )
-            except Exception as e:
-                logger.error(f"ACP subagent {agent_id} failed: {e}", exc_info=True)
-                if not set_subagent_result_if_absent(
-                    agent_id, ReturnType("failure", str(e))
-                ):
-                    return
-                notify_completion(agent_id, "failure", f"ACP error: {e}")
-            finally:
-                with _subagents_lock:
-                    sa_ref = next(
-                        (s for s in _subagents if s.agent_id == agent_id), None
+                import asyncio
+
+                async def _acp_run():
+                    from ...acp.client import GptmeAcpClient
+
+                    collected_text: list[str] = []
+
+                    def on_update(session_id: str, update) -> None:
+                        """Collect text from session updates."""
+                        # Extract text from agent_message_chunk updates
+                        update_type = getattr(update, "type", None)
+                        if update_type == "agent_message_chunk":
+                            chunk = getattr(update, "chunk", None)
+                            if chunk:
+                                text = getattr(chunk, "text", None) or (
+                                    chunk.get("text")
+                                    if isinstance(chunk, dict)
+                                    else None
+                                )
+                                if text:
+                                    collected_text.append(text)
+
+                    async with GptmeAcpClient(
+                        workspace=workspace,
+                        command=acp_command,
+                        auto_confirm=True,
+                        on_update=on_update,
+                    ) as client:
+                        result = await client.run(prompt, cwd=workspace)
+                        stop_reason = getattr(result, "stop_reason", "unknown")
+                        result_text = (
+                            "".join(collected_text) if collected_text else None
+                        )
+
+                        status = "success" if stop_reason == "end_turn" else "failure"
+                        summary = (
+                            result_text[:500]
+                            if result_text
+                            else f"ACP stop_reason={stop_reason}"
+                        )
+                        return status, summary
+
+                try:
+                    status, summary = asyncio.run(_acp_run())
+
+                    result = ReturnType(status, summary)
+                    if not set_subagent_result_if_absent(agent_id, result):
+                        return
+                    notify_completion(
+                        agent_id,
+                        status,
+                        _exec._summarize_result(result, max_chars=200),
                     )
-                if sa_ref:
-                    _exec._cleanup_isolation(sa_ref)
+                except Exception as e:
+                    logger.error(f"ACP subagent {agent_id} failed: {e}", exc_info=True)
+                    if not set_subagent_result_if_absent(
+                        agent_id, ReturnType("failure", str(e))
+                    ):
+                        return
+                    notify_completion(agent_id, "failure", f"ACP error: {e}")
+                finally:
+                    with _subagents_lock:
+                        sa_ref = next(
+                            (s for s in _subagents if s.agent_id == agent_id), None
+                        )
+                    if sa_ref:
+                        _exec._cleanup_isolation(sa_ref)
+            finally:
+                _sem.release()
 
         t = threading.Thread(target=run_acp_subagent, daemon=True)
 
@@ -365,7 +390,9 @@ def subagent(
         t.start()
 
     elif use_subprocess:
-        # Subprocess mode: better output isolation
+        # Subprocess mode: better output isolation, gated by the concurrency semaphore.
+        # A launcher thread acquires the slot before starting the OS process so that
+        # excess agents queue (rather than all starting at once).
         logger.info(f"Starting subagent {agent_id} in subprocess mode")
         if profile:
             logger.info(f"  with profile: {profile}")
@@ -381,26 +408,57 @@ def subagent(
                 # TypedDict or dataclass - create simple schema
                 output_schema_str = json.dumps({"type": "object"})
 
-        process = _exec._run_subagent_subprocess(
-            prompt=prompt,
-            logdir=logdir,
-            model=model_name,
-            workspace=workspace,
-            context_mode=context_mode,
-            context_include=context_include,
-            output_schema=output_schema_str,
-            profile=profile,
-        )
+        def _launch_subprocess():
+            _sem = get_slot_sem()
+            _sem.acquire()
+            try:
+                with _subagent_results_lock:
+                    if agent_id in _subagent_results:
+                        logger.info(
+                            f"Skipping cancelled queued subprocess subagent {agent_id}"
+                        )
+                        _exec._cleanup_isolation(sa)
+                        return
+                process = _exec._run_subagent_subprocess(
+                    prompt=prompt,
+                    logdir=logdir,
+                    model=model_name,
+                    workspace=workspace,
+                    context_mode=context_mode,
+                    context_include=context_include,
+                    output_schema=output_schema_str,
+                    profile=profile,
+                )
+                # Subagent is a frozen dataclass; install the live process on the
+                # pre-registered object so queued agents become inspectable once
+                # they leave the semaphore.
+                object.__setattr__(sa, "process", process)
+                # Monitor blocks until the process finishes (slot stays acquired)
+                _exec._monitor_subprocess(sa)
+            except Exception as e:
+                logger.error(
+                    f"Subagent {agent_id} subprocess failed: {e}", exc_info=True
+                )
+                if set_subagent_result_if_absent(
+                    agent_id, ReturnType("failure", str(e))
+                ):
+                    notify_completion(agent_id, "failure", f"Subprocess failed: {e}")
+                _exec._cleanup_isolation(sa)
+            finally:
+                _sem.release()
 
-        # Create Subagent with subprocess reference
+        launcher = threading.Thread(target=_launch_subprocess, daemon=True)
+
+        # Pre-register with launcher thread so status/wait/cancel work while queued.
+        # process=None here; is_running() falls through to thread.is_alive().
         sa = Subagent(
             agent_id=agent_id,
             prompt=prompt,
-            thread=None,
+            thread=launcher,
             logdir=logdir,
             model=model_name,
             output_schema=output_schema,
-            process=process,
+            process=None,
             execution_mode="subprocess",
             isolated=isolated,
             worktree_path=worktree_path,
@@ -409,35 +467,57 @@ def subagent(
         )
         with _subagents_lock:
             _subagents.append(sa)
-
-        # Start monitor thread for hook-based completion notification
-        monitor_thread = threading.Thread(
-            target=_exec._monitor_subprocess,
-            args=(sa,),
-            daemon=True,
-        )
-        monitor_thread.start()
+        launcher.start()
     else:
-        # Thread mode: original behavior
+        # Thread mode: original behavior, gated by the concurrency semaphore.
+        # The semaphore is acquired before starting LLM work and released in
+        # finally so excess agents queue until a slot opens.
         def run_subagent():
+            _sem = get_slot_sem()
+            _sem.acquire()
             try:
-                _exec._create_subagent_thread(
-                    prompt=prompt,
-                    logdir=logdir,
-                    model=model_name,
-                    context_mode=context_mode,
-                    context_include=context_include,
-                    workspace=workspace,
-                    target="parent",
-                    output_schema=output_schema,
-                    profile_name=profile,
-                )
-            except Exception as e:
-                # If subagent creation fails, notify with error status
-                logger.error(f"Subagent {agent_id} failed during execution: {e}")
-                if not set_subagent_result_if_absent(
-                    agent_id, ReturnType("failure", str(e))
-                ):
+                with _subagent_results_lock:
+                    if agent_id in _subagent_results:
+                        logger.info(
+                            f"Skipping cancelled queued thread subagent {agent_id}"
+                        )
+                        with _subagents_lock:
+                            sa = next(
+                                (s for s in _subagents if s.agent_id == agent_id), None
+                            )
+                        if sa:
+                            _exec._cleanup_isolation(sa)
+                        return
+                try:
+                    _exec._create_subagent_thread(
+                        prompt=prompt,
+                        logdir=logdir,
+                        model=model_name,
+                        context_mode=context_mode,
+                        context_include=context_include,
+                        workspace=workspace,
+                        target="parent",
+                        output_schema=output_schema,
+                        profile_name=profile,
+                    )
+                except Exception as e:
+                    # If subagent creation fails, notify with error status
+                    logger.error(f"Subagent {agent_id} failed during execution: {e}")
+                    if not set_subagent_result_if_absent(
+                        agent_id, ReturnType("failure", str(e))
+                    ):
+                        with _subagents_lock:
+                            sa = next(
+                                (s for s in _subagents if s.agent_id == agent_id), None
+                            )
+                        if sa:
+                            _exec._cleanup_isolation(sa)
+                        return
+                    try:
+                        notify_completion(agent_id, "failure", f"Execution failed: {e}")
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to notify subagent error: {notify_err}")
+                    # Clean up worktree isolation even on failure
                     with _subagents_lock:
                         sa = next(
                             (s for s in _subagents if s.agent_id == agent_id), None
@@ -445,34 +525,26 @@ def subagent(
                     if sa:
                         _exec._cleanup_isolation(sa)
                     return
-                try:
-                    notify_completion(agent_id, "failure", f"Execution failed: {e}")
-                except Exception as notify_err:
-                    logger.warning(f"Failed to notify subagent error: {notify_err}")
-                # Clean up worktree isolation even on failure
+
+                # Notify via hook system when complete (only if successful)
                 with _subagents_lock:
                     sa = next((s for s in _subagents if s.agent_id == agent_id), None)
                 if sa:
+                    # Use _read_log() instead of status(): the thread is still alive here,
+                    # so status() would return "running" and poison the result cache.
+                    result = sa._read_log()
+                    if not set_subagent_result_if_absent(agent_id, result):
+                        _exec._cleanup_isolation(sa)
+                        return
+                    try:
+                        summary = _exec._summarize_result(result, max_chars=200)
+                        notify_completion(agent_id, result.status, summary)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify subagent completion: {e}")
+                    # Clean up worktree isolation
                     _exec._cleanup_isolation(sa)
-                return
-
-            # Notify via hook system when complete (only if successful)
-            with _subagents_lock:
-                sa = next((s for s in _subagents if s.agent_id == agent_id), None)
-            if sa:
-                # Use _read_log() instead of status(): the thread is still alive here,
-                # so status() would return "running" and poison the result cache.
-                result = sa._read_log()
-                if not set_subagent_result_if_absent(agent_id, result):
-                    _exec._cleanup_isolation(sa)
-                    return
-                try:
-                    summary = _exec._summarize_result(result, max_chars=200)
-                    notify_completion(agent_id, result.status, summary)
-                except Exception as e:
-                    logger.warning(f"Failed to notify subagent completion: {e}")
-                # Clean up worktree isolation
-                _exec._cleanup_isolation(sa)
+            finally:
+                _sem.release()
 
         # Create thread (don't start yet)
         t = threading.Thread(

@@ -8,7 +8,7 @@ from gptme.tools.subagent import SubtaskDef, _subagents, subagent
 
 
 def _wait_for_new_subagent_threads(initial_count: int, timeout: float = 1.0) -> None:
-    """Join threads started by this test before asserting on mock call metadata."""
+    """Join spawned threads before a thread-mocking patch context can unwind."""
     for sa in _subagents[initial_count:]:
         if sa.thread is not None:
             sa.thread.join(timeout=timeout)
@@ -37,6 +37,7 @@ def test_planner_mode_spawns_executors(mock_create_thread: MagicMock):
         mode="planner",
         subtasks=subtasks,
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should have spawned 2 executor subagents
     assert len(_subagents) == initial_count + 2
@@ -50,6 +51,7 @@ def test_planner_mode_spawns_executors(mock_create_thread: MagicMock):
 @patch("gptme.tools.subagent.execution._create_subagent_thread")
 def test_planner_mode_executor_prompts(mock_create_thread: MagicMock):
     """Test that executor prompts include context and subtask description."""
+    initial_count = len(_subagents)
     subtasks: list[SubtaskDef] = [
         {"id": "task1", "description": "Do something specific"}
     ]
@@ -60,6 +62,7 @@ def test_planner_mode_executor_prompts(mock_create_thread: MagicMock):
         mode="planner",
         subtasks=subtasks,
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Check the spawned executor has correct prompt
     executor = _subagents[-1]
@@ -73,6 +76,7 @@ def test_executor_mode_still_works(mock_create_thread: MagicMock):
     initial_count = len(_subagents)
 
     subagent(agent_id="test-executor", prompt="Simple task")
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor
     assert len(_subagents) == initial_count + 1
@@ -101,6 +105,7 @@ def test_planner_parallel_mode(mock_create_thread: MagicMock):
         subtasks=subtasks,
         execution_mode="parallel",
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # All 3 executors should be spawned
     assert len(_subagents) == initial_count + 3
@@ -129,6 +134,7 @@ def test_planner_sequential_mode():
             subtasks=subtasks,
             execution_mode="sequential",
         )
+        _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 2 executors
     assert len(_subagents) == initial_count + 2
@@ -155,6 +161,7 @@ def test_planner_default_is_parallel(mock_create_thread: MagicMock):
         mode="planner",
         subtasks=subtasks,
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor (parallel is default)
     assert len(_subagents) == initial_count + 1
@@ -166,6 +173,7 @@ def test_context_mode_default_is_full(mock_create_thread: MagicMock):
     initial_count = len(_subagents)
 
     subagent(agent_id="test-full", prompt="Test with full context")
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor with full context
     assert len(_subagents) == initial_count + 1
@@ -192,6 +200,7 @@ def test_context_mode_selective_with_tools(mock_create_thread: MagicMock):
         context_mode="selective",
         context_include=["tools"],
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor
     assert len(_subagents) == initial_count + 1
@@ -211,6 +220,7 @@ def test_context_mode_selective_with_agent(mock_create_thread: MagicMock):
         context_mode="selective",
         context_include=["agent"],
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor
     assert len(_subagents) == initial_count + 1
@@ -227,6 +237,7 @@ def test_context_mode_selective_with_workspace(mock_create_thread: MagicMock):
         context_mode="selective",
         context_include=["workspace"],
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor
     assert len(_subagents) == initial_count + 1
@@ -243,6 +254,7 @@ def test_context_mode_selective_multiple_components(mock_create_thread: MagicMoc
         context_mode="selective",
         context_include=["agent", "tools", "workspace"],
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 1 executor
     assert len(_subagents) == initial_count + 1
@@ -265,6 +277,7 @@ def test_planner_mode_with_context_modes(mock_create_thread: MagicMock):
         mode="planner",
         subtasks=subtasks,
     )
+    _wait_for_new_subagent_threads(initial_count)
 
     # Should spawn 2 executors
     assert len(_subagents) == initial_count + 2
@@ -493,20 +506,24 @@ def test_subprocess_mode_creates_process():
     mock_process.poll.return_value = None  # Process still running
 
     with patch(
-        "gptme.tools.subagent.execution.subprocess.Popen", return_value=mock_process
+        "gptme.tools.subagent.execution._run_subagent_subprocess",
+        return_value=mock_process,
     ):
         subagent(
             agent_id="test-subprocess",
             prompt="Simple test task",
             use_subprocess=True,
         )
+        # Wait while the patch is still active; otherwise the launcher thread can
+        # race past the context manager and call the real Popen.
+        _wait_for_new_subagent_threads(0)
 
-        # Verify subprocess was created
-        assert len(_subagents) >= 1
-        sa = next((s for s in _subagents if s.agent_id == "test-subprocess"), None)
-        assert sa is not None
-        assert sa.execution_mode == "subprocess"
-        assert sa.process is mock_process
+    # Verify subprocess was created
+    assert len(_subagents) >= 1
+    sa = next((s for s in _subagents if s.agent_id == "test-subprocess"), None)
+    assert sa is not None
+    assert sa.execution_mode == "subprocess"
+    assert sa.process is mock_process
 
 
 def test_subprocess_mode_command_construction():
@@ -527,22 +544,23 @@ def test_subprocess_mode_command_construction():
     _subagents.clear()
 
     with patch(
-        "gptme.tools.subagent.execution.subprocess.Popen", side_effect=capture_popen
+        "gptme.tools.subagent.execution._run_subagent_subprocess",
+        return_value=MagicMock(),
     ):
         subagent(
             agent_id="test-cmd",
             prompt="Test prompt for command",
             use_subprocess=True,
         )
+        # Keep the patch active until the launcher thread has built the command.
+        _wait_for_new_subagent_threads(0)
 
-    # Verify command structure
-    assert "-m" in captured_cmd
-    assert "gptme" in captured_cmd
-    assert "-n" in captured_cmd  # Non-interactive
-    assert "--no-confirm" in captured_cmd
-    assert (
-        "Test prompt for command" not in captured_cmd
-    )  # Prompt passed via stdin, not argv
+    # Command construction is now tested at the unit level; the async subprocess
+    # path delegates to _run_subagent_subprocess which is tested separately.
+    # Here we verify the subagent was created with correct mode.
+    sa = next((s for s in _subagents if s.agent_id == "test-cmd"), None)
+    assert sa is not None
+    assert sa.execution_mode == "subprocess"
 
 
 def test_subprocess_mode_completion_stored():
@@ -565,18 +583,16 @@ def test_subprocess_mode_completion_stored():
     mock_process.communicate.return_value = ("Success output", "")
 
     with patch(
-        "gptme.tools.subagent.execution.subprocess.Popen", return_value=mock_process
+        "gptme.tools.subagent.execution._run_subagent_subprocess",
+        return_value=mock_process,
     ):
         subagent(
             agent_id="test-complete",
             prompt="Task to complete",
             use_subprocess=True,
         )
-
-    # Give monitor thread time to process (it runs in daemon thread)
-    import time
-
-    time.sleep(0.5)
+        # Wait for launcher thread to complete while patch is active
+        _wait_for_new_subagent_threads(0)
 
     # Verify status can be retrieved
     status = subagent_status("test-complete")
@@ -715,6 +731,7 @@ def test_subprocess_working_directory():
 def test_subprocess_full_flow_with_subagent_function():
     """Test the full subprocess flow using the subagent() function."""
     import tempfile
+    import time
     from pathlib import Path
     from unittest.mock import patch
 
@@ -744,6 +761,12 @@ def test_subprocess_full_flow_with_subagent_function():
             sa = next((s for s in _subagents if s.agent_id == "subprocess-test"), None)
             assert sa is not None
             assert sa.execution_mode == "subprocess"
+
+            # The monitor thread stays alive while the subprocess runs; wait only
+            # for the process reference to appear on the pre-registered Subagent.
+            deadline = time.time() + 2.0
+            while sa.process is None and time.time() < deadline:
+                time.sleep(0.05)
             assert sa.process is not None
 
             # The process should have started
@@ -918,7 +941,9 @@ def test_subprocess_mode_execution_basic():
     sa = next((s for s in _subagents if s.agent_id == "test-subprocess-exec"), None)
     assert sa is not None
     assert sa.execution_mode == "subprocess"
-    assert sa.process is not None
+    # Launch now happens asynchronously behind the semaphore, so queued
+    # subprocess agents are visible before the child process exists.
+    assert sa.thread is not None
 
     # Wait for completion with a reasonable timeout
     result = subagent_wait("test-subprocess-exec", timeout=60)
@@ -1282,19 +1307,22 @@ def test_subprocess_mode_with_profile():
     _subagents.clear()
 
     with patch(
-        "gptme.tools.subagent.execution.subprocess.Popen", side_effect=capture_popen
-    ):
+        "gptme.tools.subagent.execution._run_subagent_subprocess",
+        return_value=MagicMock(),
+    ) as mock_run:
         subagent(
             agent_id="test-subprocess-profile",
             prompt="Explore task",
             use_subprocess=True,
             profile="explorer",
         )
+        # Keep the patch active until the launcher thread has built the command.
+        _wait_for_new_subagent_threads(0)
 
-    # Verify --agent-profile flag is in the command
-    assert "--agent-profile" in captured_cmd
-    profile_idx = captured_cmd.index("--agent-profile")
-    assert captured_cmd[profile_idx + 1] == "explorer"
+    # Verify profile was passed to _run_subagent_subprocess
+    mock_run.assert_called_once()
+    sub_kwargs = mock_run.call_args[1]
+    assert sub_kwargs.get("profile") == "explorer"
 
 
 def test_create_subagent_thread_warns_on_unknown_profile_tools(tmp_path):
@@ -1549,6 +1577,71 @@ def test_acp_mode_handles_failure():
             assert result.status == "failure"
 
 
+def test_cancelled_queued_acp_does_not_launch_after_slot_frees():
+    """ACP subagents cancelled while queued must not start once a slot opens."""
+    import threading
+    from unittest.mock import AsyncMock, patch
+
+    from gptme.tools.subagent import (
+        _subagent_results,
+        _subagent_results_lock,
+        _subagents,
+        subagent,
+        subagent_cancel,
+    )
+
+    _subagents.clear()
+    with _subagent_results_lock:
+        _subagent_results.clear()
+
+    sem = threading.BoundedSemaphore(1)
+    assert sem.acquire(timeout=0)
+
+    mock_client = AsyncMock()
+    mock_client.run = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    cleanup_calls: list[str] = []
+
+    with (
+        patch("gptme.acp.client.GptmeAcpClient", return_value=mock_client),
+        patch("gptme.tools.subagent.notify_completion") as mock_notify,
+        patch("gptme.tools.subagent.api.get_slot_sem", return_value=sem),
+        patch(
+            "gptme.tools.subagent.api._exec._cleanup_isolation",
+            side_effect=lambda sa: cleanup_calls.append(sa.agent_id),
+        ),
+    ):
+        subagent(
+            agent_id="test-acp-cancelled",
+            prompt="Do not run",
+            use_acp=True,
+            acp_command="fake-acp",
+        )
+
+        sa = next(s for s in _subagents if s.agent_id == "test-acp-cancelled")
+        assert sa.thread is not None
+
+        result = subagent_cancel("test-acp-cancelled")
+        assert "marked as cancelled" in result.lower()
+
+        sem.release()
+        sa.thread.join(timeout=10)
+        assert not sa.thread.is_alive()
+
+        mock_client.__aenter__.assert_not_awaited()
+        mock_client.run.assert_not_awaited()
+        mock_notify.assert_not_called()
+        assert cleanup_calls == ["test-acp-cancelled"]
+
+    with _subagent_results_lock:
+        assert _subagent_results["test-acp-cancelled"].status == "failure"
+        assert (
+            _subagent_results["test-acp-cancelled"].result
+            == "Cancelled by orchestrator"
+        )
+
+
 def test_acp_mode_subagent_batch():
     """Test that subagent_batch forwards use_acp and acp_command to subagent()."""
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -1662,6 +1755,9 @@ def test_role_verify_defaults_subprocess_and_isolated(
         prompt="Verify the auth module",
         role="verify",
     )
+
+    # Wait for launcher thread to execute (subprocess mode is now async)
+    _wait_for_new_subagent_threads(0)
 
     assert len(_subagents) == 1
     sa = _subagents[-1]
@@ -1798,10 +1894,15 @@ def test_role_verify_explicit_false_subprocess_opts_out(
     )
 
 
+@patch("gptme.tools.subagent.execution._run_subagent_subprocess")
 @patch("gptme.tools.subagent.execution._create_subagent_thread")
-def test_planner_subtask_role_passthrough(mock_create_thread: MagicMock):
+def test_planner_subtask_role_passthrough(
+    mock_create_thread: MagicMock, mock_run_subprocess: MagicMock
+):
     """Test that planner subtasks with role pass role through to spawned executor."""
     from gptme.tools.subagent import SubtaskDef, _subagents, subagent
+
+    mock_run_subprocess.return_value = MagicMock()  # fake Popen
 
     initial_count = len(_subagents)
 
@@ -1821,6 +1922,11 @@ def test_planner_subtask_role_passthrough(mock_create_thread: MagicMock):
     # Wait for threads to execute while the patch is still active; without this
     # the OS may schedule them after @patch exits and they call the real function.
     _wait_for_new_subagent_threads(initial_count, timeout=5.0)
+    # Additional wait for the verify subtask's closure thread (subprocess SA has
+    # thread=None so _wait_for_new_subagent_threads can't join it)
+    import time
+
+    time.sleep(0.3)
 
     # Should have spawned 3 executors
     assert len(_subagents) == initial_count + 3
@@ -1951,6 +2057,8 @@ def test_planner_subtask_role_overrides_planner_profile(
         subtasks=subtasks,
     )
 
+    _wait_for_new_subagent_threads(initial_count, timeout=1.0)
+
     # role=verify routes to subprocess backend (not thread mode)
     mock_run_subprocess.assert_called_once()
     sub_kwargs = mock_run_subprocess.call_args[1]
@@ -1996,6 +2104,8 @@ def test_planner_subtask_role_verify_uses_subprocess(
         subtasks=subtasks,
     )
 
+    _wait_for_new_subagent_threads(initial_count, timeout=1.0)
+
     # Subprocess backend should have been called for the verify subtask
     mock_run_subprocess.assert_called_once()
     call_kwargs = mock_run_subprocess.call_args[1]
@@ -2038,6 +2148,8 @@ def test_planner_subtask_role_verify_sets_isolated(
         subtasks=subtasks,
     )
 
+    _wait_for_new_subagent_threads(initial_count, timeout=1.0)
+
     new_agents = _subagents[initial_count:]
     assert len(new_agents) == 1
     sa = new_agents[0]
@@ -2065,18 +2177,21 @@ def test_planner_subtask_role_verify_cleans_isolation_on_launch_failure(
         {"id": "check3", "description": "Verify output", "role": "verify"},
     ]
 
-    with pytest.raises(OSError, match="boom"):
-        subagent(
-            agent_id="test-verify-launch-failure",
-            prompt="context",
-            mode="planner",
-            subtasks=subtasks,
-        )
+    subagent(
+        agent_id="test-verify-launch-failure",
+        prompt="context",
+        mode="planner",
+        subtasks=subtasks,
+    )
+
+    _wait_for_new_subagent_threads(initial_count, timeout=1.0)
 
     mock_run_subprocess.assert_called_once()
     mock_monitor.assert_not_called()
     mock_cleanup_isolation.assert_called_once()
-    assert len(_subagents) == initial_count
+    new_agents = _subagents[initial_count:]
+    assert len(new_agents) == 1
+    assert new_agents[0].execution_mode == "subprocess"
 
 
 @patch("gptme.tools.subagent.execution._create_subagent_thread")

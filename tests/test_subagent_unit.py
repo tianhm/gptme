@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gptme.tools.subagent.api as subagent_api
+import gptme.tools.subagent.execution as subagent_execution
 from gptme.tools.subagent.api import subagent, subagent_cancel
 from gptme.tools.subagent.batch import BatchJob
 from gptme.tools.subagent.execution import _monitor_subprocess
@@ -589,3 +590,297 @@ class TestSubagentCancel:
             assert _subagent_results["thread-agent"] == ReturnType(
                 "failure", "Cancelled by orchestrator"
             )
+
+    def test_subprocess_launch_failure_cleans_isolation_when_cancel_wins_race(
+        self, monkeypatch, tmp_path
+    ):
+        cli_main = importlib.import_module("gptme.cli.main")
+        llm_models = importlib.import_module("gptme.llm.models")
+        profiles = importlib.import_module("gptme.profiles")
+        git_worktree = importlib.import_module("gptme.util.git_worktree")
+        monkeypatch.setattr(cli_main, "get_logdir", lambda name: tmp_path / name)
+        monkeypatch.setattr(llm_models, "get_default_model", lambda: None)
+        monkeypatch.setattr(profiles, "get_profile", lambda _: None)
+        monkeypatch.setattr(git_worktree, "get_git_root", lambda _: None)
+
+        def boom(**kwargs):
+            raise OSError("boom")
+
+        monkeypatch.setattr(subagent_api._exec, "_run_subagent_subprocess", boom)
+
+        cleanup_calls: list[str] = []
+        notify_calls: list[tuple[str, str, str]] = []
+
+        def fake_cleanup(sa: Subagent) -> None:
+            cleanup_calls.append(sa.agent_id)
+
+        def fake_notify_completion(agent_id: str, status: str, summary: str) -> None:
+            notify_calls.append((agent_id, status, summary))
+
+        def fake_set_subagent_result_if_absent(
+            agent_id: str, result: ReturnType
+        ) -> bool:
+            with _subagent_results_lock:
+                _subagent_results[agent_id] = ReturnType(
+                    "failure", "Cancelled by orchestrator"
+                )
+            return False
+
+        monkeypatch.setattr(subagent_api._exec, "_cleanup_isolation", fake_cleanup)
+        monkeypatch.setattr(subagent_api, "notify_completion", fake_notify_completion)
+        monkeypatch.setattr(
+            subagent_api,
+            "set_subagent_result_if_absent",
+            fake_set_subagent_result_if_absent,
+        )
+
+        subagent("proc-agent", "do the thing", use_subprocess=True, isolated=True)
+
+        with _subagents_lock:
+            sa = next(s for s in _subagents if s.agent_id == "proc-agent")
+        assert sa.thread is not None
+        sa.thread.join(timeout=1)
+        assert not sa.thread.is_alive()
+        assert cleanup_calls == ["proc-agent"]
+        assert notify_calls == []
+        with _subagent_results_lock:
+            assert _subagent_results["proc-agent"] == ReturnType(
+                "failure", "Cancelled by orchestrator"
+            )
+
+    def test_cancelled_queued_subprocess_does_not_launch_after_slot_frees(
+        self, monkeypatch, tmp_path
+    ):
+        cli_main = importlib.import_module("gptme.cli.main")
+        llm_models = importlib.import_module("gptme.llm.models")
+        profiles = importlib.import_module("gptme.profiles")
+        git_worktree = importlib.import_module("gptme.util.git_worktree")
+        monkeypatch.setattr(cli_main, "get_logdir", lambda name: tmp_path / name)
+        monkeypatch.setattr(llm_models, "get_default_model", lambda: None)
+        monkeypatch.setattr(profiles, "get_profile", lambda _: None)
+        monkeypatch.setattr(git_worktree, "get_git_root", lambda _: None)
+
+        sem = threading.BoundedSemaphore(1)
+        assert sem.acquire(timeout=0)
+        monkeypatch.setattr(subagent_api, "get_slot_sem", lambda: sem)
+
+        launch_mock = MagicMock(return_value=MagicMock())
+        cleanup_calls: list[str] = []
+
+        monkeypatch.setattr(subagent_api._exec, "_run_subagent_subprocess", launch_mock)
+        monkeypatch.setattr(subagent_api._exec, "_monitor_subprocess", lambda sa: None)
+        monkeypatch.setattr(
+            subagent_api._exec,
+            "_cleanup_isolation",
+            lambda sa: cleanup_calls.append(sa.agent_id),
+        )
+
+        subagent("proc-agent", "do the thing", use_subprocess=True, isolated=True)
+
+        with _subagents_lock:
+            sa = next(s for s in _subagents if s.agent_id == "proc-agent")
+        assert sa.thread is not None
+
+        result = subagent_cancel("proc-agent")
+        assert "marked as cancelled" in result.lower()
+
+        sem.release()
+        sa.thread.join(timeout=1)
+        assert not sa.thread.is_alive()
+
+        launch_mock.assert_not_called()
+        assert cleanup_calls == ["proc-agent"]
+        with _subagent_results_lock:
+            assert _subagent_results["proc-agent"] == ReturnType(
+                "failure", "Cancelled by orchestrator"
+            )
+
+    def test_cancelled_queued_thread_does_not_launch_after_slot_frees(
+        self, monkeypatch, tmp_path
+    ):
+        cli_main = importlib.import_module("gptme.cli.main")
+        llm_models = importlib.import_module("gptme.llm.models")
+        profiles = importlib.import_module("gptme.profiles")
+        monkeypatch.setattr(cli_main, "get_logdir", lambda name: tmp_path / name)
+        monkeypatch.setattr(llm_models, "get_default_model", lambda: None)
+        monkeypatch.setattr(profiles, "get_profile", lambda _: None)
+
+        sem = threading.BoundedSemaphore(1)
+        assert sem.acquire(timeout=0)
+        monkeypatch.setattr(subagent_api, "get_slot_sem", lambda: sem)
+
+        launch_mock = MagicMock()
+        cleanup_calls: list[str] = []
+
+        monkeypatch.setattr(subagent_api._exec, "_create_subagent_thread", launch_mock)
+        monkeypatch.setattr(
+            subagent_api._exec,
+            "_cleanup_isolation",
+            lambda sa: cleanup_calls.append(sa.agent_id),
+        )
+
+        subagent("thread-agent", "do the thing", isolated=True)
+
+        with _subagents_lock:
+            sa = next(s for s in _subagents if s.agent_id == "thread-agent")
+        assert sa.thread is not None
+
+        result = subagent_cancel("thread-agent")
+        assert "marked as cancelled" in result.lower()
+
+        sem.release()
+        sa.thread.join(timeout=1)
+        assert not sa.thread.is_alive()
+
+        launch_mock.assert_not_called()
+        assert cleanup_calls == ["thread-agent"]
+        with _subagent_results_lock:
+            assert _subagent_results["thread-agent"] == ReturnType(
+                "failure", "Cancelled by orchestrator"
+            )
+
+    def test_cancelled_queued_planner_subprocess_does_not_launch_after_slot_frees(
+        self, monkeypatch, tmp_path
+    ):
+        cli_main = importlib.import_module("gptme.cli.main")
+        llm_models = importlib.import_module("gptme.llm.models")
+        profiles = importlib.import_module("gptme.profiles")
+        git_worktree = importlib.import_module("gptme.util.git_worktree")
+        monkeypatch.setattr(cli_main, "get_logdir", lambda name: tmp_path / name)
+        monkeypatch.setattr(llm_models, "get_default_model", lambda: None)
+        monkeypatch.setattr(profiles, "get_profile", lambda _: None)
+        monkeypatch.setattr(git_worktree, "get_git_root", lambda _: None)
+
+        sem = threading.BoundedSemaphore(1)
+        assert sem.acquire(timeout=0)
+        monkeypatch.setattr(subagent_execution, "get_slot_sem", lambda: sem)
+
+        launch_mock = MagicMock(return_value=MagicMock())
+        cleanup_calls: list[str] = []
+
+        monkeypatch.setattr(subagent_execution, "_run_subagent_subprocess", launch_mock)
+        monkeypatch.setattr(subagent_execution, "_monitor_subprocess", lambda sa: None)
+        monkeypatch.setattr(
+            subagent_execution,
+            "_cleanup_isolation",
+            lambda sa: cleanup_calls.append(sa.agent_id),
+        )
+
+        subagent(
+            "planner-agent",
+            "context",
+            mode="planner",
+            subtasks=[{"id": "verify", "description": "Verify it", "role": "verify"}],
+        )
+
+        with _subagents_lock:
+            sa = next(s for s in _subagents if s.agent_id == "planner-agent-verify")
+        assert sa.thread is not None
+
+        result = subagent_cancel("planner-agent-verify")
+        assert "marked as cancelled" in result.lower()
+
+        sem.release()
+        sa.thread.join(timeout=1)
+        assert not sa.thread.is_alive()
+
+        launch_mock.assert_not_called()
+        assert cleanup_calls == ["planner-agent-verify"]
+        with _subagent_results_lock:
+            assert _subagent_results["planner-agent-verify"] == ReturnType(
+                "failure", "Cancelled by orchestrator"
+            )
+
+    def test_cancelled_queued_planner_thread_does_not_launch_after_slot_frees(
+        self, monkeypatch, tmp_path
+    ):
+        cli_main = importlib.import_module("gptme.cli.main")
+        llm_models = importlib.import_module("gptme.llm.models")
+        profiles = importlib.import_module("gptme.profiles")
+        monkeypatch.setattr(cli_main, "get_logdir", lambda name: tmp_path / name)
+        monkeypatch.setattr(llm_models, "get_default_model", lambda: None)
+        monkeypatch.setattr(profiles, "get_profile", lambda _: None)
+
+        sem = threading.BoundedSemaphore(1)
+        assert sem.acquire(timeout=0)
+        monkeypatch.setattr(subagent_execution, "get_slot_sem", lambda: sem)
+
+        launch_mock = MagicMock()
+        cleanup_calls: list[str] = []
+
+        monkeypatch.setattr(subagent_execution, "_create_subagent_thread", launch_mock)
+        monkeypatch.setattr(
+            subagent_execution,
+            "_cleanup_isolation",
+            lambda sa: cleanup_calls.append(sa.agent_id),
+        )
+
+        subagent(
+            "planner-agent",
+            "context",
+            mode="planner",
+            subtasks=[
+                {"id": "implement", "description": "Implement it", "role": "implement"}
+            ],
+        )
+
+        with _subagents_lock:
+            sa = next(s for s in _subagents if s.agent_id == "planner-agent-implement")
+        assert sa.thread is not None
+
+        result = subagent_cancel("planner-agent-implement")
+        assert "marked as cancelled" in result.lower()
+
+        sem.release()
+        sa.thread.join(timeout=1)
+        assert not sa.thread.is_alive()
+
+        launch_mock.assert_not_called()
+        assert cleanup_calls == ["planner-agent-implement"]
+        with _subagent_results_lock:
+            assert _subagent_results["planner-agent-implement"] == ReturnType(
+                "failure", "Cancelled by orchestrator"
+            )
+
+    def test_planner_thread_cleanup_failure_still_releases_semaphore(
+        self, monkeypatch, tmp_path
+    ):
+        cli_main = importlib.import_module("gptme.cli.main")
+        llm_models = importlib.import_module("gptme.llm.models")
+        profiles = importlib.import_module("gptme.profiles")
+        monkeypatch.setattr(cli_main, "get_logdir", lambda name: tmp_path / name)
+        monkeypatch.setattr(llm_models, "get_default_model", lambda: None)
+        monkeypatch.setattr(profiles, "get_profile", lambda _: None)
+
+        sem = threading.BoundedSemaphore(1)
+        monkeypatch.setattr(subagent_execution, "get_slot_sem", lambda: sem)
+        monkeypatch.setattr(
+            subagent_execution, "_create_subagent_thread", lambda **kwargs: None
+        )
+
+        cleanup_calls: list[str] = []
+
+        def fail_cleanup(sa):
+            cleanup_calls.append(sa.agent_id)
+            raise RuntimeError("cleanup boom")
+
+        monkeypatch.setattr(subagent_execution, "_cleanup_isolation", fail_cleanup)
+
+        subagent(
+            "planner-agent",
+            "context",
+            mode="planner",
+            subtasks=[
+                {"id": "implement", "description": "Implement it", "role": "implement"}
+            ],
+        )
+
+        with _subagents_lock:
+            sa = next(s for s in _subagents if s.agent_id == "planner-agent-implement")
+        assert sa.thread is not None
+
+        sa.thread.join(timeout=1)
+        assert not sa.thread.is_alive()
+        assert cleanup_calls == ["planner-agent-implement"]
+        assert sem.acquire(timeout=0.1)
+        sem.release()

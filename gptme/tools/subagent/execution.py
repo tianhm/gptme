@@ -25,6 +25,7 @@ from .._allowlist import (
     matching_allowlist_tools,
     tool_matches_allowlist,
 )
+from .concurrency import get_slot_sem
 
 if TYPE_CHECKING:
     from .types import ReturnType, Status, Subagent, SubtaskDef
@@ -490,7 +491,14 @@ def _run_planner(
     """
     from gptme.cli.main import get_logdir
 
-    from .types import Subagent, _subagents, _subagents_lock, resolve_role_defaults
+    from .types import (
+        Subagent,
+        _subagent_results,
+        _subagent_results_lock,
+        _subagents,
+        _subagents_lock,
+        resolve_role_defaults,
+    )
 
     logger.info(
         f"Starting planner {agent_id} with {len(subtasks)} subtasks "
@@ -573,55 +581,75 @@ def _run_planner(
                 )
 
         if resolved_use_subprocess:
-            # Subprocess mode: better output isolation for verify/sensitive roles
-            cleanup_sa = Subagent(
-                executor_id,
-                executor_prompt,
-                None,
-                logdir,
-                model,
-                execution_mode="subprocess",
-                isolated=resolved_isolated,
-                worktree_path=worktree_path,
-                repo_path=repo_path,
-            )
-
-            try:
-                process = _run_subagent_subprocess(
-                    prompt=executor_prompt,
-                    logdir=logdir,
-                    model=model,
-                    workspace=workspace,
-                    context_mode=context_mode,
-                    context_include=context_include,
-                    profile=resolved_profile,
-                )
-            except Exception:
-                _cleanup_isolation(cleanup_sa)
-                raise
-
             sa = Subagent(
                 executor_id,
                 executor_prompt,
                 None,
                 logdir,
                 model,
-                process=process,
+                process=None,
                 execution_mode="subprocess",
                 isolated=resolved_isolated,
                 worktree_path=worktree_path,
                 repo_path=repo_path,
             )
 
+            # Subprocess mode: a combined thread acquires the concurrency slot before
+            # Popen, monitors to completion, and releases in finally — same pattern as
+            # api.py _launch_subprocess. Captures all loop vars via default args.
+            def _run_executor_subprocess(
+                _sa: "Subagent" = sa,
+                _workspace=workspace,
+                _profile=resolved_profile,
+            ):
+                _sem = get_slot_sem()
+                _sem.acquire()
+                try:
+                    with _subagent_results_lock:
+                        if _sa.agent_id in _subagent_results:
+                            logger.info(
+                                "Skipping cancelled queued planner subprocess "
+                                f"executor {_sa.agent_id}"
+                            )
+                            _cleanup_isolation(_sa)
+                            return
+                    try:
+                        process = _run_subagent_subprocess(
+                            prompt=_sa.prompt,
+                            logdir=_sa.logdir,
+                            model=_sa.model,
+                            workspace=_workspace,
+                            context_mode=context_mode,
+                            context_include=context_include,
+                            profile=_profile,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Executor {_sa.agent_id} subprocess failed: {e}",
+                            exc_info=True,
+                        )
+                        from .hooks import notify_completion
+                        from .types import ReturnType, set_subagent_result_if_absent
+
+                        if set_subagent_result_if_absent(
+                            _sa.agent_id, ReturnType("failure", str(e))
+                        ):
+                            notify_completion(
+                                _sa.agent_id,
+                                "failure",
+                                f"Executor subprocess failed: {e}",
+                            )
+                        _cleanup_isolation(_sa)
+                        return
+                    object.__setattr__(_sa, "process", process)
+                    _monitor_subprocess(_sa)
+                finally:
+                    _sem.release()
+
+            monitor_t = threading.Thread(target=_run_executor_subprocess, daemon=True)
+            object.__setattr__(sa, "thread", monitor_t)
             with _subagents_lock:
                 _subagents.append(sa)
-
-            # Monitor thread handles completion notification and cleanup
-            monitor_t = threading.Thread(
-                target=_monitor_subprocess,
-                args=(sa,),
-                daemon=True,
-            )
             monitor_t.start()
 
             # Sequential mode: wait for this executor before starting the next
@@ -645,13 +673,23 @@ def _run_planner(
             )
 
             def run_executor(
+                executor_agent_id=executor_id,
                 prompt=executor_prompt,
                 log_dir=logdir,
                 ws=workspace,
                 subtask_profile=resolved_profile,
                 cleanup_subagent=cleanup_sa,
             ):
+                _sem = get_slot_sem()
+                _sem.acquire()
                 try:
+                    with _subagent_results_lock:
+                        if executor_agent_id in _subagent_results:
+                            logger.info(
+                                "Skipping cancelled queued planner thread "
+                                f"executor {executor_agent_id}"
+                            )
+                            return
                     _create_subagent_thread(
                         prompt=prompt,
                         logdir=log_dir,
@@ -663,7 +701,15 @@ def _run_planner(
                         profile_name=subtask_profile,
                     )
                 finally:
-                    _cleanup_isolation(cleanup_subagent)
+                    try:
+                        _cleanup_isolation(cleanup_subagent)
+                    except Exception:
+                        logger.exception(
+                            "Failed to clean up isolated planner thread executor "
+                            f"{executor_agent_id}"
+                        )
+                    finally:
+                        _sem.release()
 
             t = threading.Thread(target=run_executor, daemon=True)
             sa = Subagent(
