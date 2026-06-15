@@ -56,6 +56,9 @@ Screen:
     - cursor_position: Get current mouse position
     - wait_for_change: Poll until screen changes, then return one screenshot
 
+Window management:
+    - window_focus: Wait for a window matching a name pattern to appear and focus it
+
 The tool automatically handles screen resolution scaling to ensure optimal performance
 with LLM vision capabilities.
 
@@ -162,6 +165,7 @@ Action = Literal[
     "screenshot",
     "cursor_position",
     "wait_for_change",
+    "window_focus",
 ]
 
 ScrollDirection = Literal["up", "down", "left", "right"]
@@ -550,6 +554,106 @@ def _macos_scroll(x: int, y: int, direction: str, amount: int = 3) -> None:
     CGEventPost(kCGHIDEventTap, event)
 
 
+def _linux_window_focus(pattern: str, display: str, timeout: float = 10.0) -> None:
+    """Wait for a window matching the name pattern to appear and focus it.
+
+    Uses xdotool's ``--sync`` flag so the call blocks until the window exists,
+    then focuses it.  This avoids the screenshot-polling workaround previously
+    needed when opening new terminal windows in X11 environments.
+
+    Args:
+        pattern: Substring matched against WM_NAME (window title).
+        display: X11 display string (e.g. ":1").
+        timeout: Seconds to wait for the window to appear (default 10).
+    """
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    try:
+        subprocess.run(
+            [
+                "xdotool",
+                "search",
+                "--sync",
+                "--limit",
+                "1",
+                "--name",
+                pattern,
+                "windowfocus",
+                "--sync",
+            ],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 2,  # extra headroom beyond the xdotool sync wait
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"No window matching {pattern!r} appeared within {timeout:.0f}s"
+        ) from e
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"xdotool search/focus failed for pattern {pattern!r}: {e.stderr}"
+        ) from e
+
+
+def _macos_window_focus(pattern: str, timeout: float = 10.0) -> None:
+    """Focus the frontmost application whose name contains pattern on macOS.
+
+    Uses AppleScript via ``osascript`` with a Python-level retry loop so the
+    call blocks until a matching window appears or the timeout expires — matching
+    the blocking semantics of the Linux xdotool path.
+
+    Args:
+        pattern: Substring matched against application/process name.
+        timeout: Seconds to wait for the window to appear (default 10).
+    """
+    script = (
+        "on run argv\n"
+        "  set needle to item 1 of argv\n"
+        '  tell application "System Events"\n'
+        "    set found to false\n"
+        "    repeat with p in (every process whose background only is false)\n"
+        "      if name of p contains needle then\n"
+        "        set frontmost of p to true\n"
+        "        set found to true\n"
+        "        exit repeat\n"
+        "      end if\n"
+        "    end repeat\n"
+        "    if found then\n"
+        '      return "found"\n'
+        "    else\n"
+        '      return "not_found"\n'
+        "    end if\n"
+        "  end tell\n"
+        "end run"
+    )
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script, pattern],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"window_focus timed out for pattern {pattern!r}") from e
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to focus window matching {pattern!r}: {e.stderr}"
+            ) from e
+
+        if result.stdout.strip() == "found":
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"No window matching {pattern!r} appeared within {timeout:.0f}s"
+            )
+        time.sleep(0.5)
+
+
 def _macos_click(button: int) -> None:
     """
     Click mouse button using cliclick on macOS.
@@ -710,6 +814,13 @@ def _dispatch_transport(
             f"No screen change detected after {timeout:.0f}s — returning current screenshot"
         )
         return _make_screenshot_msg(transport.screenshot())
+
+    if action == "window_focus":
+        if not text:
+            raise ValueError("text (window name pattern) is required for window_focus")
+        transport.window_focus(text)
+        print(f"Focused window matching: {text!r}")
+        return None
 
     raise ValueError(f"Invalid action: {action}")
 
@@ -988,6 +1099,15 @@ def computer(
             ):
                 pass
         return _make_screenshot_msg(path)
+    if action == "window_focus":
+        if not text:
+            raise ValueError("text (window name pattern) is required for window_focus")
+        if IS_MACOS:
+            _macos_window_focus(text)
+        else:
+            _linux_window_focus(text, display)
+        print(f"Focused window matching: {text!r}")
+        return None
     raise ValueError(f"Invalid action: {action}")
 
 
@@ -1134,6 +1254,9 @@ Available actions:
   of how many internal polls were needed — avoids stacking redundant screenshots in
   the conversation context. Use after triggering an action that produces a visual
   response (page load, dialog open, animation finish).
+- window_focus: Wait for a window whose title contains text=<pattern> to appear,
+  then focus it. On Linux/X11 this uses xdotool --sync so no screenshot polling
+  is needed. Use after opening a new application to avoid guessing where to click.
 
 ### Efficient action-verify loops
 
@@ -1145,6 +1268,17 @@ Prefer wait_for_change over immediate screenshot after triggering UI changes:
 This prevents the conversation from accumulating multiple nearly-identical
 screenshots during transitions. Only call screenshot() directly when you need
 the current state without waiting.
+
+### Opening new windows without guessing their position
+
+Prefer window_focus over clicking at a guessed coordinate after launching a window:
+
+  computer("key", text="ctrl+alt+t")         # open terminal
+  computer("window_focus", text="Terminal")   # wait for it, then focus it
+  computer("type", text="echo hello")         # type into the now-focused window
+
+This avoids the delay/click-at-random pattern that fails when window position
+varies across sessions or virtual displays.
 
 Note: Key names are automatically mapped between platforms.
 Common modifiers (ctrl, alt, cmd/super, shift) work consistently across platforms.
@@ -1196,6 +1330,17 @@ System: Performed left_click
 {ToolUse("ipython", [], 'computer("wait_for_change", text="10")').to_output(tool_format)}
 System: Screen changed (23.4% pixels differ)
 Viewing image...
+
+User: Open a terminal and run a command
+Assistant: I'll open a terminal with a keyboard shortcut, wait for it to appear and focus it, then type the command.
+{ToolUse("ipython", [], 'computer("key", text="ctrl+alt+t")').to_output(tool_format)}
+System: Sent key sequence: ctrl+alt+t
+{ToolUse("ipython", [], 'computer("window_focus", text="Terminal")').to_output(tool_format)}
+System: Focused window matching: 'Terminal'
+{ToolUse("ipython", [], 'computer("type", text="ls -la")').to_output(tool_format)}
+System: Typed text: ls -la
+{ToolUse("ipython", [], 'computer("key", text="return")').to_output(tool_format)}
+System: Sent key sequence: return
 """
 
     # Platform-specific keyboard shortcut examples

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -95,6 +96,18 @@ class ComputerTransport(abc.ABC):
     def cursor_position(self) -> tuple[int, int]:
         """Return current cursor position as (x, y) in API-space."""
         ...
+
+    def window_focus(self, pattern: str) -> None:
+        """Wait for a window whose title matches pattern and focus it.
+
+        Not all transports support window management.  The default raises
+        ``NotImplementedError``; native transport overrides this with an
+        xdotool/osascript implementation.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support window_focus. "
+            "Use native transport (unset GPTME_COMPUTER_TRANSPORT)."
+        )
 
     @abc.abstractmethod
     def close(self) -> None:
@@ -340,6 +353,15 @@ class NativeComputerTransport(ComputerTransport):
         api_w, api_h = _get_api_resolution()
         x, y = _scale_coordinates(_ScalingSource.COMPUTER, x, y, api_w, api_h)
         return x, y
+
+    def window_focus(self, pattern: str) -> None:
+        from .computer import IS_MACOS, _linux_window_focus, _macos_window_focus
+
+        if IS_MACOS:
+            _macos_window_focus(pattern)
+        else:
+            display = os.getenv("DISPLAY", ":1")
+            _linux_window_focus(pattern, display)
 
     def close(self) -> None:
         pass  # No resources to release for native transport
