@@ -609,6 +609,152 @@ class TestToolSpecFromFunction:
         assert any("got:world" in m.content for m in msgs)
 
 
+# ── ToolSpec.as_function_subtoolspecs ─────────────────────────────
+
+
+class TestAsFunctionSubtoolspecs:
+    def test_empty_when_no_functions(self):
+        tool = ToolSpec(name="browser", desc="")
+        assert tool.as_function_subtoolspecs() == []
+
+    def test_one_subtool_per_function(self):
+        def view(url: str) -> str:
+            """View a URL."""
+            return url
+
+        def screenshot() -> str:
+            """Take a screenshot."""
+            return "ok"
+
+        tool = ToolSpec(
+            name="browser",
+            desc="",
+            functions=[
+                ToolFunction.from_callable(view),
+                ToolFunction.from_callable(screenshot),
+            ],
+        )
+        subs = tool.as_function_subtoolspecs()
+        assert len(subs) == 2
+
+    def test_subtool_names_are_qualified(self):
+        def view(url: str) -> str:
+            """View a URL."""
+            return url
+
+        tool = ToolSpec(
+            name="browser",
+            desc="",
+            functions=[ToolFunction.from_callable(view)],
+        )
+        subs = tool.as_function_subtoolspecs()
+        assert subs[0].name == "browser.view"
+
+    def test_subtool_is_runnable(self):
+        def greet(name: str) -> str:
+            """Greet someone."""
+            return f"hi {name}"
+
+        tool = ToolSpec(
+            name="chat",
+            desc="",
+            functions=[ToolFunction.from_callable(greet)],
+        )
+        subs = tool.as_function_subtoolspecs()
+        assert subs[0].is_runnable
+
+    def test_subtool_executes_without_ipython(self):
+        """Functions in sub-toolspecs must run without importing IPython."""
+        import sys
+
+        def double(n: str) -> str:
+            """Double a number string."""
+            return str(int(n) * 2)
+
+        tool = ToolSpec(
+            name="math",
+            desc="",
+            functions=[ToolFunction.from_callable(double)],
+        )
+        before = "IPython" in sys.modules
+        subs = tool.as_function_subtoolspecs()
+        after = "IPython" in sys.modules
+        assert before == after, "IPython must not be imported during subtool expansion"
+
+        sub = subs[0]
+        assert sub.execute is not None
+        msgs = list(sub.execute(None, None, {"n": "6"}))  # type: ignore[arg-type]
+        assert any("12" in m.content for m in msgs)
+
+    def test_subtool_inherits_hints(self):
+        def read_channel() -> str:
+            """Read a channel."""
+            return ""
+
+        tf = ToolFunction(
+            name="read_channel",
+            fn=read_channel,
+            hints=frozenset({"read-only"}),
+        )
+        tool = ToolSpec(name="discord", desc="", functions=[tf])
+        subs = tool.as_function_subtoolspecs()
+        assert "read-only" in subs[0].hints
+
+    def test_subtool_name_allows_glob_allowlist(self):
+        """Sub-tool names like discord.read_channel match 'discord.*' patterns."""
+        from gptme.tools._allowlist import tool_matches_allowlist
+
+        def read_channel() -> str:
+            """Read a channel."""
+            return ""
+
+        tool = ToolSpec(
+            name="discord",
+            desc="",
+            functions=[ToolFunction.from_callable(read_channel)],
+        )
+        subs = tool.as_function_subtoolspecs()
+        assert tool_matches_allowlist(subs[0].name, ["discord.*"])
+
+    def test_subtool_honours_custom_description_and_parameters(self):
+        """Custom description/parameters on ToolFunction must not be discarded."""
+
+        def fn(x: str) -> str:
+            """Auto-derived description (should be overridden)."""
+            return x
+
+        custom_param = Parameter(name="x", type="string", description="The input value")
+        tf = ToolFunction(
+            name="fn",
+            fn=fn,
+            description="Richer prose description",
+            parameters=[custom_param],
+        )
+        tool = ToolSpec(name="mytool", desc="", functions=[tf])
+        subs = tool.as_function_subtoolspecs()
+        sub = subs[0]
+        assert sub.desc == "Richer prose description"
+        assert len(sub.parameters) == 1
+        assert sub.parameters[0].description == "The input value"
+
+    def test_subtool_inherits_parent_availability_guard(self):
+        def read_channel() -> str:
+            """Read a channel."""
+            return ""
+
+        tool = ToolSpec(
+            name="discord",
+            desc="",
+            available=lambda: False,
+            functions=[ToolFunction.from_callable(read_channel)],
+        )
+
+        subs = tool.as_function_subtoolspecs()
+
+        assert subs[0].available is tool.available
+        assert subs[0].is_available is False
+
+
 # ── Hint-based allowlist ───────────────────────────────────────────
 
 
@@ -902,6 +1048,15 @@ class TestToolUseToolFormat:
         assert tool_calls[0].tool == "shell"
         assert tool_calls[0].call_id == "call-1"
         assert tool_calls[0].kwargs == {"command": "echo hi"}
+
+    def test_tool_call_parsing_allows_dotted_tool_names(self):
+        content = '@browser.view(call-1): {"url": "https://example.com"}'
+        uses = list(ToolUse.iter_from_content(content, tool_format_override="tool"))
+        tool_calls = [u for u in uses if u._format == "tool"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool == "browser.view"
+        assert tool_calls[0].call_id == "call-1"
+        assert tool_calls[0].kwargs == {"url": "https://example.com"}
 
     def test_tool_call_inside_codeblock_skipped(self):
         content = '```example\n@shell(id-1): {"cmd": "test"}\n```'
