@@ -31,6 +31,17 @@ export interface Settings {
    */
   ttsServerUrl: string;
   /**
+   * Bearer token sent with /api/v2/audio/speech requests.
+   * Set by cloud hosts (e.g. gptme.ai) so TTS can be billed to the user's account.
+   * Leave empty for self-hosted / unauthenticated endpoints.
+   *
+   * Token lifecycle: cloud hosts MUST call `updateSettings({ ttsAuthToken: '' })` on
+   * logout to clear this from localStorage. The token persists across page reloads
+   * intentionally (to avoid re-authentication overhead), so explicit logout cleanup is
+   * required.
+   */
+  ttsAuthToken: string;
+  /**
    * WebSocket URL for the gptme-voice-server /voice endpoint, e.g. ws://localhost:5700/voice.
    * Leave empty to hide the VoiceButton.
    */
@@ -59,6 +70,7 @@ const defaultSettings: Settings = {
   hasCompletedSetup: false,
   welcomeBackground: '',
   ttsServerUrl: '',
+  ttsAuthToken: '',
   voiceServerUrl: '',
   noConfirmMode: false,
 };
