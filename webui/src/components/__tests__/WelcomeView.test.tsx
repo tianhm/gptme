@@ -226,6 +226,26 @@ describe('WelcomeView', () => {
     expect(screen.queryByRole('button', { name: /use gptme\.ai/i })).not.toBeInTheDocument();
     // Retry connection stays available regardless of onboarding state
     expect(screen.getByRole('button', { name: /retry connection/i })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/appears to be running, but it is not allowing requests from/i)
+    ).not.toBeInTheDocument();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not probe loopback for first-time visitors on a hosted origin (regression guard)', () => {
+    // First-time user (no seedReturningUser) on a hosted origin where the probe
+    // would normally fire — only the `isFirstVisit` guard prevents it.
+    setLocation('https://chat.gptme.org/');
+    isConnected$.set(false);
+
+    render(
+      <SettingsProvider>
+        <WelcomeView />
+      </SettingsProvider>
+    );
+
+    // The probe must not fire — the isFirstVisit guard prevents it.
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('detects a reachable hosted loopback server and shows CORS setup guidance before retry', async () => {
