@@ -2319,6 +2319,84 @@ def test_v2_message_file_uris_reject_file_scheme(client: FlaskClient, endpoint_b
     assert conversation["log"][user_index].get("files") is None
 
 
+def test_v2_fork_conversation_from_message(client: FlaskClient):
+    """Forking should create a new conversation with messages up to the selected index."""
+    conversation_id = create_conversation(client)["conversation_id"]
+    client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json={"role": "user", "content": "First question"},
+    )
+    client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json={"role": "assistant", "content": "First answer"},
+    )
+    client.post(
+        f"/api/v2/conversations/{conversation_id}",
+        json={"role": "user", "content": "Second question"},
+    )
+
+    source = client.get(f"/api/v2/conversations/{conversation_id}").get_json()
+    assert source is not None
+    fork_index = len(source["log"]) - 2
+
+    response = client.post(
+        f"/api/v2/conversations/{conversation_id}/fork?after_message={fork_index}"
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data is not None
+    assert data["status"] == "ok"
+    assert data["conversation_id"] != conversation_id
+    assert data["session_id"]
+
+    forked = client.get(f"/api/v2/conversations/{data['conversation_id']}").get_json()
+    assert forked is not None
+    assert forked["name"] == f"Fork of {conversation_id} @ msg {fork_index + 1}"
+    assert [msg["content"] for msg in forked["log"]] == [
+        msg["content"] for msg in source["log"][: fork_index + 1]
+    ]
+    assert [msg["role"] for msg in forked["log"]] == [
+        msg["role"] for msg in source["log"][: fork_index + 1]
+    ]
+
+
+def test_v2_fork_conversation_rejects_out_of_range_index(client: FlaskClient):
+    """Out-of-range fork indexes are bad requests, not missing conversations."""
+    conversation_id = create_conversation(client)["conversation_id"]
+
+    response = client.post(
+        f"/api/v2/conversations/{conversation_id}/fork?after_message=999"
+    )
+
+    assert response.status_code == 400
+    assert "out of range" in response.get_json()["error"]
+
+
+def test_copy_messages_for_fork_copies_only_referenced_attachments(tmp_path: Path):
+    """Forking should not copy attachments excluded from the retained message slice."""
+    from gptme.message import Message  # fmt: skip
+    from gptme.server.api_v2 import _copy_messages_for_fork  # fmt: skip
+
+    source_logdir = tmp_path / "source"
+    dest_logdir = tmp_path / "fork"
+    source_attachments = source_logdir / "attachments"
+    source_attachments.mkdir(parents=True)
+    (source_attachments / "keep.txt").write_text("keep", encoding="utf-8")
+    (source_attachments / "skip.txt").write_text("skip", encoding="utf-8")
+
+    copied = _copy_messages_for_fork(
+        [Message("user", "Keep this file", files=[Path("attachments/keep.txt")])],
+        source_logdir,
+        dest_logdir,
+    )
+
+    assert copied[0].files == [dest_logdir / "attachments" / "keep.txt"]
+    fork_attachments = dest_logdir / "attachments"
+    assert (fork_attachments / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert not (fork_attachments / "skip.txt").exists()
+
+
 def test_v2_edit_message_rejects_non_string_content(client: FlaskClient):
     """Test that edit rejects non-string content with a 400."""
     conversation_id = create_conversation(client)["conversation_id"]
