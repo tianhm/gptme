@@ -405,7 +405,7 @@ class TestSubagentCancel:
             agent_id=agent_id,
             prompt="test",
             thread=kwargs.get("thread"),
-            logdir=self._logdir,
+            logdir=kwargs.get("logdir", self._logdir),
             model=None,
             process=kwargs.get("process"),
             execution_mode=kwargs.get("execution_mode", "thread"),
@@ -484,6 +484,40 @@ class TestSubagentCancel:
             assert _subagent_results["proc-agent"].status == "failure"
             assert _subagent_results["proc-agent"].result == "Cancelled by orchestrator"
         assert _completion_queue.empty()
+
+    def test_subprocess_monitor_preserves_clarification_status(self, tmp_path):
+        logdir = tmp_path / "proc-log"
+        logdir.mkdir()
+        (logdir / "conversation.jsonl").write_text(
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "content": "```clarify\nWhich format should I use?\n```",
+                    "timestamp": "2025-01-01T00:00:00+00:00",
+                }
+            )
+            + "\n"
+        )
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+        sa = self._register(
+            "proc-clarify",
+            process=mock_proc,
+            execution_mode="subprocess",
+            logdir=logdir,
+        )
+
+        _monitor_subprocess(sa)
+
+        with _subagent_results_lock:
+            result = _subagent_results["proc-clarify"]
+        assert result.status == "clarification_needed"
+        assert result.result == "Which format should I use?"
+        agent_id, status, summary = _completion_queue.get_nowait()
+        assert agent_id == "proc-clarify"
+        assert status == "clarification_needed"
+        assert "Which format" in summary
 
     def test_cancel_thread_marks_result(self):
         mock_thread = MagicMock(spec=threading.Thread)
@@ -884,3 +918,321 @@ class TestSubagentCancel:
         assert cleanup_calls == ["planner-agent-implement"]
         assert sem.acquire(timeout=0.1)
         sem.release()
+
+
+# ---------------------------------------------------------------------------
+# Clarification mechanism tests
+# ---------------------------------------------------------------------------
+
+
+class TestClarifyBlock:
+    """Tests for the subagent clarification mechanism.
+
+    Subagents can use a ``clarify`` code block (analogous to ``complete``) to
+    signal that they need more information.  _read_log() detects the block and
+    returns status="clarification_needed"; the hook delivers a ❓ notification;
+    subagent_reply() re-spawns with the original prompt + Q&A appended.
+    """
+
+    def setup_method(self):
+        with _subagents_lock:
+            _subagents.clear()
+        with _subagent_results_lock:
+            _subagent_results.clear()
+
+    def _make_subagent(self, tmp_path: Path, content: str) -> Subagent:
+        logdir = tmp_path / "subagent-log"
+        logdir.mkdir()
+        (logdir / "conversation.jsonl").write_text(
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "timestamp": "2025-01-01T00:00:00+00:00",
+                }
+            )
+            + "\n"
+        )
+        return Subagent(
+            agent_id="clarify-test",
+            prompt="original task",
+            thread=None,
+            logdir=logdir,
+            model=None,
+        )
+
+    def test_read_log_detects_clarify_block(self, tmp_path):
+        sa = self._make_subagent(
+            tmp_path, "```clarify\nWhich output format? JSON or CSV?\n```"
+        )
+        result = sa._read_log()
+        assert result.status == "clarification_needed"
+        assert "Which output format? JSON or CSV?" in (result.result or "")
+
+    def test_read_log_clarify_takes_priority_over_failure(self, tmp_path):
+        # A clarify block should be detected even if the session didn't also complete
+        sa = self._make_subagent(
+            tmp_path,
+            "I'm not sure how to proceed.\n```clarify\nWhat is the target directory?\n```",
+        )
+        result = sa._read_log()
+        assert result.status == "clarification_needed"
+        assert "target directory" in (result.result or "")
+
+    def test_read_log_empty_clarify_block_handled(self, tmp_path):
+        sa = self._make_subagent(tmp_path, "```clarify\n\n```")
+        result = sa._read_log()
+        assert result.status == "clarification_needed"
+        assert result.result is not None
+
+    def test_complete_block_still_returns_success(self, tmp_path):
+        # Clarify detection must not interfere with normal complete blocks
+        sa = self._make_subagent(tmp_path, "```complete\ntask done\n```")
+        result = sa._read_log()
+        assert result.status == "success"
+        assert "task done" in (result.result or "")
+
+    def test_hook_yields_clarification_message(self):
+        """The completion hook delivers a ❓ notification for clarification_needed."""
+        # Drain queue first
+        while not _completion_queue.empty():
+            try:
+                _completion_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        notify_completion("agent-q", "clarification_needed", "What format?")
+        manager = MagicMock()
+        messages = list(
+            _subagent_completion_hook(manager, interactive=False, prompt_queue=None)
+        )
+        assert len(messages) == 1
+        msg = messages[0]
+        assert msg.role == "system"
+        assert "❓" in msg.content
+        assert "agent-q" in msg.content
+        assert "What format?" in msg.content
+        assert "subagent_reply" in msg.content
+
+    def test_complete_instruction_mentions_clarify_block(self):
+        """_get_complete_instruction() must tell subagents about the clarify option."""
+        instruction = _get_complete_instruction()
+        assert "```clarify" in instruction
+
+    def test_subagent_reply_rejects_missing_agent(self):
+        from gptme.tools.subagent.api import subagent_reply
+
+        with pytest.raises(ValueError, match="not found"):
+            subagent_reply("nonexistent-agent", "answer")
+
+    def test_subagent_reply_rejects_running_agent(self, tmp_path, monkeypatch):
+        from gptme.tools.subagent.api import subagent_reply
+
+        mock_thread = MagicMock(spec=threading.Thread)
+        mock_thread.is_alive.return_value = True
+        sa = Subagent(
+            agent_id="running-agent",
+            prompt="do stuff",
+            thread=mock_thread,
+            logdir=tmp_path / "log",
+            model=None,
+        )
+        with _subagents_lock:
+            _subagents.append(sa)
+        try:
+            with pytest.raises(ValueError, match="still running"):
+                subagent_reply("running-agent", "answer")
+        finally:
+            with _subagents_lock:
+                _subagents.remove(sa)
+
+    def test_subagent_reply_rejects_non_clarification_status(self, tmp_path):
+        """subagent_reply() must reject agents that did not ask for clarification."""
+        from gptme.tools.subagent.api import subagent_reply
+
+        logdir = tmp_path / "log-done"
+        logdir.mkdir()
+        (logdir / "conversation.jsonl").write_text(
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "content": "```complete\ndone\n```",
+                    "timestamp": "2025-01-01T00:00:00+00:00",
+                }
+            )
+            + "\n"
+        )
+        sa = Subagent(
+            agent_id="done-agent",
+            prompt="task",
+            thread=None,
+            logdir=logdir,
+            model=None,
+        )
+        with _subagents_lock:
+            _subagents.append(sa)
+        try:
+            with pytest.raises(ValueError, match="clarification_needed"):
+                subagent_reply("done-agent", "answer")
+        finally:
+            with _subagents_lock:
+                _subagents.remove(sa)
+
+    def test_subagent_reply_replaces_registry_entry_and_preserves_spawn_params(
+        self, tmp_path, monkeypatch
+    ):
+        from gptme.tools.subagent.api import subagent_reply
+
+        class DummySchema:
+            pass
+
+        sa = Subagent(
+            agent_id="clarify-agent",
+            prompt="original task",
+            thread=None,
+            logdir=tmp_path / "old-log",
+            model="openai/gpt-4o-mini",
+            context_mode="selective",
+            context_include=["workspace", "tools"],
+            profile="custom-reviewer",
+            output_schema=DummySchema,
+            use_acp=True,
+            execution_mode="acp",
+            acp_command="claude-code-acp",
+            isolated=True,
+            timeout=42,
+            role="verify",
+        )
+        with _subagents_lock:
+            _subagents.append(sa)
+        with _subagent_results_lock:
+            _subagent_results["clarify-agent"] = ReturnType(
+                "clarification_needed", "Which format should I use?"
+            )
+
+        captured: dict = {}
+
+        def fake_subagent(**kwargs):
+            captured.update(kwargs)
+            with _subagents_lock:
+                assert not any(s.agent_id == "clarify-agent" for s in _subagents)
+                _subagents.append(
+                    Subagent(
+                        agent_id=kwargs["agent_id"],
+                        prompt=kwargs["prompt"],
+                        thread=None,
+                        logdir=tmp_path / "new-log",
+                        model=kwargs["model"],
+                        context_mode=kwargs["context_mode"],
+                        context_include=kwargs["context_include"],
+                        profile=kwargs["profile"],
+                        output_schema=kwargs["output_schema"],
+                        use_acp=kwargs["use_acp"],
+                        execution_mode="acp" if kwargs["use_acp"] else "thread",
+                        acp_command=kwargs["acp_command"],
+                        isolated=kwargs["isolated"],
+                        timeout=kwargs["timeout"],
+                        role=kwargs["role"],
+                    )
+                )
+
+        monkeypatch.setattr(subagent_api, "subagent", fake_subagent)
+
+        subagent_reply("clarify-agent", "Use JSON.")
+
+        assert captured == {
+            "agent_id": "clarify-agent",
+            "prompt": "original task\n\n[Clarification from previous attempt]\nQ: Which format should I use?\nA: Use JSON.",
+            "model": "openai/gpt-4o-mini",
+            "context_mode": "selective",
+            "context_include": ["workspace", "tools"],
+            "output_schema": DummySchema,
+            "use_subprocess": False,
+            "use_acp": True,
+            "acp_command": "claude-code-acp",
+            "profile": "custom-reviewer",
+            "isolated": True,
+            "timeout": 42,
+            "role": "verify",
+        }
+        with _subagent_results_lock:
+            assert "clarify-agent" not in _subagent_results
+        with _subagents_lock:
+            matching = [s for s in _subagents if s.agent_id == "clarify-agent"]
+        assert len(matching) == 1
+        assert matching[0].prompt == captured["prompt"]
+        assert matching[0].role == "verify"
+        assert matching[0].context_include == ["workspace", "tools"]
+        assert matching[0].profile == "custom-reviewer"
+        assert matching[0].execution_mode == "acp"
+
+    def test_subagent_reply_rejects_excessive_clarifications(self, tmp_path):
+        """subagent_reply() must reject after too many clarification rounds."""
+        from gptme.tools.subagent.api import subagent_reply
+
+        # Construct a prompt that already has 5 clarification rounds in it
+        prompt_with_many_rounds = "original task\n\n" + "\n\n".join(
+            f"[Clarification from previous attempt]\nQ: Q{i}\nA: A{i}" for i in range(5)
+        )
+        sa = Subagent(
+            agent_id="loop-agent",
+            prompt=prompt_with_many_rounds,
+            thread=None,
+            logdir=tmp_path / "loop-log",
+            model=None,
+        )
+        with _subagents_lock:
+            _subagents.append(sa)
+        with _subagent_results_lock:
+            _subagent_results["loop-agent"] = ReturnType(
+                "clarification_needed", "Another question?"
+            )
+        try:
+            with pytest.raises(ValueError, match="limit"):
+                subagent_reply("loop-agent", "answer")
+        finally:
+            with _subagents_lock:
+                _subagents[:] = [s for s in _subagents if s.agent_id != "loop-agent"]
+            with _subagent_results_lock:
+                _subagent_results.pop("loop-agent", None)
+
+    def test_subagent_reply_restores_state_on_spawn_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """If subagent() raises during re-spawn, the original state is restored."""
+        from gptme.tools.subagent.api import subagent_reply
+
+        sa = Subagent(
+            agent_id="atomic-agent",
+            prompt="original task",
+            thread=None,
+            logdir=tmp_path / "log",
+            model=None,
+        )
+        original_result = ReturnType("clarification_needed", "What format?")
+        with _subagents_lock:
+            _subagents.append(sa)
+        with _subagent_results_lock:
+            _subagent_results["atomic-agent"] = original_result
+
+        def failing_subagent(**kwargs):
+            raise RuntimeError("spawn failed")
+
+        monkeypatch.setattr(subagent_api, "subagent", failing_subagent)
+
+        with pytest.raises(RuntimeError, match="spawn failed"):
+            subagent_reply("atomic-agent", "JSON")
+
+        # Both the registry entry and the result must be restored
+        with _subagents_lock:
+            matching = [s for s in _subagents if s.agent_id == "atomic-agent"]
+        assert len(matching) == 1, (
+            "Subagent entry should be restored after spawn failure"
+        )
+        with _subagent_results_lock:
+            assert _subagent_results.get("atomic-agent") == original_result
+        # cleanup
+        with _subagents_lock:
+            _subagents[:] = [s for s in _subagents if s.agent_id != "atomic-agent"]
+        with _subagent_results_lock:
+            _subagent_results.pop("atomic-agent", None)

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-Status = Literal["running", "success", "failure"]
+Status = Literal["running", "success", "failure", "clarification_needed"]
 Role = Literal["general", "explore", "implement", "verify"]
 
 # Role → profile name mapping
@@ -134,6 +134,22 @@ class ReturnType:
     result: str | None = None
 
 
+def clarification_result_from_content(content: str) -> ReturnType | None:
+    """Return a clarification result if content contains a clarify block."""
+    if "```clarify" not in content:
+        return None
+
+    match = re.search(r"```clarify\s*\n(.*?)\n```", content, re.DOTALL)
+    if not match:
+        return None
+
+    question = match.group(1).strip()
+    return ReturnType(
+        "clarification_needed",
+        question or "Subagent needs clarification (no question provided)",
+    )
+
+
 @dataclass(frozen=True)
 class Subagent:
     """Represents a running or completed subagent.
@@ -141,15 +157,12 @@ class Subagent:
     Supports both thread-based (default) and subprocess-based execution modes.
     Subprocess mode provides better output isolation.
 
-    Communication Model (Phase 1):
-        - One-way: Parent sends prompt, child executes independently
-        - No runtime updates from child to parent
+    Communication Model:
+        - Parent sends prompt, child executes independently
         - Results retrieved after completion via status()/subagent_wait()
-
-    Future (Phase 2/3):
-        - Support for progress notifications from child → parent
-        - Clarification requests when child encounters ambiguity
-        - See module docstring for full design intent
+        - Subagents can use the ``clarify`` code block to signal ambiguity;
+          the parent receives a hook notification and can call subagent_reply()
+          to re-spawn with the question answered.
     """
 
     agent_id: str
@@ -157,7 +170,11 @@ class Subagent:
     thread: threading.Thread | None
     logdir: Path
     model: str | None
+    context_mode: Literal["full", "selective"] = "full"
+    context_include: list[str] | None = None
+    profile: str | None = None
     output_schema: type | None = None
+    use_acp: bool = False
     # Subprocess mode fields
     process: subprocess.Popen | None = None
     execution_mode: Literal["thread", "subprocess", "acp"] = "thread"
@@ -169,6 +186,7 @@ class Subagent:
     repo_path: Path | None = None
     # Maximum time (seconds) the subprocess monitor will wait before killing
     timeout: int = 1800  # 30 minutes
+    role: Role | None = None
 
     def get_log(self) -> "LogManager":
         # noreorder
@@ -215,6 +233,12 @@ class Subagent:
             return ReturnType("failure", "No messages in log")
 
         last_msg = log[-1]
+
+        # Check for clarify code block — subagent is asking the parent for more info.
+        # Must be checked before the complete block so a "clarify" isn't misread as failure.
+        clarification_result = clarification_result_from_content(last_msg.content)
+        if clarification_result:
+            return clarification_result
 
         # Check for complete tool call in last message
         # Try parsing as ToolUse first

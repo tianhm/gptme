@@ -26,6 +26,7 @@ from .types import (
     _subagent_results_lock,
     _subagents,
     _subagents_lock,
+    clarification_result_from_content,
     resolve_role_defaults,
     set_subagent_result_if_absent,
 )
@@ -331,12 +332,23 @@ def subagent(
                             "".join(collected_text) if collected_text else None
                         )
 
-                        status = "success" if stop_reason == "end_turn" else "failure"
-                        summary = (
-                            result_text[:500]
+                        clarification_result = (
+                            clarification_result_from_content(result_text)
                             if result_text
-                            else f"ACP stop_reason={stop_reason}"
+                            else None
                         )
+                        if clarification_result:
+                            status = clarification_result.status
+                            summary = clarification_result.result
+                        else:
+                            status = (
+                                "success" if stop_reason == "end_turn" else "failure"
+                            )
+                            summary = (
+                                result_text[:500]
+                                if result_text
+                                else f"ACP stop_reason={stop_reason}"
+                            )
                         return status, summary
 
                 try:
@@ -375,13 +387,18 @@ def subagent(
             thread=t,
             logdir=logdir,
             model=model_name,
+            context_mode=context_mode,
+            context_include=context_include,
+            profile=profile,
             output_schema=output_schema,
+            use_acp=True,
             process=None,
             execution_mode="acp",
             acp_command=acp_command,
             isolated=isolated,
             worktree_path=worktree_path,
             repo_path=repo_path,
+            role=role,
         )
         # Append sa before starting the thread so the finally block can find it
         # (avoids race condition where fast completion can't locate sa in _subagents)
@@ -457,6 +474,9 @@ def subagent(
             thread=launcher,
             logdir=logdir,
             model=model_name,
+            context_mode=context_mode,
+            context_include=context_include,
+            profile=profile,
             output_schema=output_schema,
             process=None,
             execution_mode="subprocess",
@@ -464,6 +484,7 @@ def subagent(
             worktree_path=worktree_path,
             repo_path=repo_path,
             timeout=timeout,
+            role=role,
         )
         with _subagents_lock:
             _subagents.append(sa)
@@ -561,12 +582,16 @@ def subagent(
             thread=t,
             logdir=logdir,
             model=model_name,
+            context_mode=context_mode,
+            context_include=context_include,
+            profile=profile,
             output_schema=output_schema,
             process=None,
             execution_mode="thread",
             isolated=isolated,
             worktree_path=worktree_path,
             repo_path=repo_path,
+            role=role,
         )
         with _subagents_lock:
             _subagents.append(sa)
@@ -620,6 +645,89 @@ def subagent_cancel(agent_id: str) -> str:
         f"Subagent '{agent_id}' marked as cancelled. "
         "The background thread will stop at its next natural checkpoint."
     )
+
+
+def subagent_reply(agent_id: str, reply: str) -> None:
+    """Re-spawn a subagent that requested clarification.
+
+    When a subagent ends with a ``clarify`` block, it stops and asks the
+    parent a question. Call this function with your answer to re-start the
+    subagent. The new run receives the original prompt plus an appended
+    Q&A block so it has full context.
+
+    Args:
+        agent_id: The subagent that raised the clarification request.
+        reply: Your answer to the subagent's question.
+    """
+    with _subagents_lock:
+        sa = next((s for s in _subagents if s.agent_id == agent_id), None)
+
+    if sa is None:
+        raise ValueError(f"Subagent with ID {agent_id!r} not found.")
+
+    result = sa.status()
+    if result.status == "running":
+        raise ValueError(
+            f"Subagent '{agent_id}' is still running. Wait for it to finish first."
+        )
+    if result.status != "clarification_needed":
+        raise ValueError(
+            f"Subagent '{agent_id}' has status '{result.status}', not 'clarification_needed'. "
+            "Only subagents that ended with a `clarify` block can be resumed."
+        )
+
+    # Guard against unbounded clarification loops
+    _MAX_CLARIFICATIONS = 5
+    clarification_count = sa.prompt.count("[Clarification from previous attempt]")
+    if clarification_count >= _MAX_CLARIFICATIONS:
+        raise ValueError(
+            f"Subagent '{agent_id}' has requested clarification {clarification_count} times "
+            f"(limit is {_MAX_CLARIFICATIONS}). "
+            "Resolve the ambiguity in the task prompt instead of relying on further clarification."
+        )
+
+    question = result.result or "(no question)"
+    augmented_prompt = (
+        f"{sa.prompt}\n\n"
+        f"[Clarification from previous attempt]\n"
+        f"Q: {question}\n"
+        f"A: {reply}"
+    )
+
+    # Atomically clear old state: save first so we can restore on failure.
+    with _subagent_results_lock:
+        old_result = _subagent_results.pop(agent_id, None)
+
+    with _subagents_lock:
+        _subagents[:] = [
+            existing for existing in _subagents if existing.agent_id != agent_id
+        ]
+
+    # Re-spawn with the same parameters, augmented prompt.
+    # On failure, restore the old state so the caller can retry.
+    try:
+        subagent(
+            agent_id=agent_id,
+            prompt=augmented_prompt,
+            model=sa.model,
+            context_mode=sa.context_mode,
+            context_include=list(sa.context_include) if sa.context_include else None,
+            output_schema=sa.output_schema,
+            use_subprocess=sa.execution_mode == "subprocess",
+            use_acp=sa.use_acp,
+            acp_command=sa.acp_command or "gptme-acp",
+            profile=sa.profile,
+            isolated=sa.isolated,
+            timeout=sa.timeout,
+            role=sa.role,
+        )
+    except Exception:
+        with _subagents_lock:
+            _subagents.append(sa)
+        if old_result is not None:
+            with _subagent_results_lock:
+                _subagent_results[agent_id] = old_result
+        raise
 
 
 def subagent_status(agent_id: str) -> dict:
