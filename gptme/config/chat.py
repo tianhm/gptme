@@ -194,7 +194,13 @@ class ChatConfig:
             # This ensures server sessions get isolated workspaces
             # instead of sharing the server process's cwd.
             workspace = path / "workspace"
-            ensure_workspace_dir(workspace)
+            try:
+                ensure_workspace_dir(workspace)
+            except PermissionError:
+                logger.warning(
+                    f"Could not create workspace dir {workspace} (permission denied); "
+                    "log dir may be owned by another user"
+                )
             return cls(_logdir=path, workspace=workspace.resolve())
         try:
             if tomllib is not None:
