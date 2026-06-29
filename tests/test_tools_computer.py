@@ -1,5 +1,6 @@
 """Tests for the computer tool."""
 
+import itertools
 import shutil
 import subprocess
 from typing import Any, cast
@@ -1184,8 +1185,9 @@ def test_wait_for_change_polls_with_backoff(mock_transport, mock_res, tmp_path):
         sleep_calls.append(interval)
 
     # Expire the loop on the 4th poll so we get 3 sleep calls and see the backoff
-    monotonic_values = [0.0, 0.0, 0.0, 0.0, 100.0]
-    monotonic_iter = iter(monotonic_values)
+    # Use an infinite tail (repeat(100.0)) to avoid StopIteration inside a generator
+    # (PEP 479: StopIteration raised in a generator becomes RuntimeError)
+    monotonic_iter = itertools.chain([0.0, 0.0, 0.0, 0.0], itertools.repeat(100.0))
 
     with (
         mock.patch("gptme.tools.computer.screenshot", return_value=static),
