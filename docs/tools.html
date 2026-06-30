@@ -3493,6 +3493,19 @@ varies across sessions or virtual displays.
 
 Note: Key names are automatically mapped between platforms.
 Common modifiers (ctrl, alt, cmd/super, shift) work consistently across platforms.
+
+<span class="gu">### Observation helpers (structured-first policy)</span>
+
+Two higher-level helpers are available that implement the structured-first observation policy:
+
+<span class="k">-</span><span class="w"> </span>``observe_web(url, screenshot_too=False)`` — observe a web page using ARIA snapshots first
+  (no vision tokens), with automatic fallback to a browser screenshot, then desktop screenshot.
+  Pass ``screenshot_too=True`` to get both an ARIA snapshot AND a screenshot side by side.
+<span class="k">-</span><span class="w"> </span>``observe_desktop()`` — thin wrapper around ``computer(&#39;screenshot&#39;)`` that signals intent
+  clearly for native apps and non-browser surfaces.
+
+These helpers are preferred over calling ``computer(&quot;screenshot&quot;)`` directly when observing
+web pages, because ARIA snapshots avoid costly vision tokens and give a DOM-addressable tree.
 </pre></div>
 </div>
 <p class="rubric">Examples</p>
@@ -3718,6 +3731,72 @@ Viewing image...</pre>
 <tr>
   <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #5555cc;">User</td>
   <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">Read the content of https://news.ycombinator.com</pre>
+  </td>
+</tr>
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #44cc44">Assistant</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">I'll use observe_web to get a structured ARIA snapshot of the page — faster and cheaper than a screenshot.<div style="opacity: 0.8;"><div style="display: inline-block; margin-bottom: -.5px; margin-top: 1em; border: 0 #888 solid; border-width: 1px 1px 0 1px; border-radius: 3px 3px 0 0; padding: 0.3em 0.6em; font-size: 0.7em; background-color: #000; color: #FFF">ipython</div>
+<pre style="background-color: #000; color: #ccc; margin-right: 1em; margin-top: 0; padding: 5px; margin-bottom: 0.5em; overflow: scroll;">observe_web("https://news.ycombinator.com")
+</pre></div></pre>
+  </td>
+</tr>
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #AAAAAA">System</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">[ARIA snapshot of Hacker News front page...]</pre>
+  </td>
+</tr>
+</table><table style="width: 100%; margin-bottom: 1em">
+  
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #5555cc;">User</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">Check what's on my desktop right now</pre>
+  </td>
+</tr>
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #44cc44">Assistant</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">I'll capture a screenshot of the desktop.<div style="opacity: 0.8;"><div style="display: inline-block; margin-bottom: -.5px; margin-top: 1em; border: 0 #888 solid; border-width: 1px 1px 0 1px; border-radius: 3px 3px 0 0; padding: 0.3em 0.6em; font-size: 0.7em; background-color: #000; color: #FFF">ipython</div>
+<pre style="background-color: #000; color: #ccc; margin-right: 1em; margin-top: 0; padding: 5px; margin-bottom: 0.5em; overflow: scroll;">observe_desktop()
+</pre></div></pre>
+  </td>
+</tr>
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #AAAAAA">System</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">Viewing image...</pre>
+  </td>
+</tr>
+</table><table style="width: 100%; margin-bottom: 1em">
+  
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #5555cc;">User</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">Navigate to https://example.com and verify both the text content and visual layout</pre>
+  </td>
+</tr>
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #44cc44">Assistant</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">I'll use observe_web with screenshot_too=True to get both the ARIA snapshot and a screenshot.<div style="opacity: 0.8;"><div style="display: inline-block; margin-bottom: -.5px; margin-top: 1em; border: 0 #888 solid; border-width: 1px 1px 0 1px; border-radius: 3px 3px 0 0; padding: 0.3em 0.6em; font-size: 0.7em; background-color: #000; color: #FFF">ipython</div>
+<pre style="background-color: #000; color: #ccc; margin-right: 1em; margin-top: 0; padding: 5px; margin-bottom: 0.5em; overflow: scroll;">observe_web("https://example.com", screenshot_too=True)
+</pre></div></pre>
+  </td>
+</tr>
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #AAAAAA">System</td>
+  <td>
+    <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">[ARIA snapshot + screenshot of example.com]</pre>
+  </td>
+</tr>
+</table><table style="width: 100%; margin-bottom: 1em">
+  
+<tr>
+  <td style="text-align: right; padding: 0 1em 0 1em; width: 0.1%; font-weight: bold; color: #5555cc;">User</td>
+  <td>
     <pre style="margin-right: 1em; padding: 5px; margin-bottom: 0.5em; white-space: pre-wrap;">Open a new browser tab</pre>
   </td>
 </tr>
@@ -3763,6 +3842,58 @@ Viewing image...</pre>
 </ul>
 </dd>
 </dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">gptme.tools.computer.</span></span><span class="sig-name descname"><span class="pre">observe_desktop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span></span></dt>
+<dd><p>Observe the current desktop state via screenshot.</p>
+<p>Thin wrapper around <code class="docutils literal notranslate"><span class="pre">computer('screenshot')</span></code> that makes the
+structured-first / screenshot-fallback policy explicit: call this when
+there is no URL to snapshot (native apps, the raw desktop, or any
+non-browser surface).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Screenshot <a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><code class="xref py py-class docutils literal notranslate"><span class="pre">Message</span></code></a>, or <code class="docutils literal notranslate"><span class="pre">None</span></code> if capture failed.</p>
+</dd>
+</dl>
+<p>Example (from IPython in a computer-use session):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">msg</span> <span class="o">=</span> <span class="n">observe_desktop</span><span class="p">()</span>
+<span class="c1"># Equivalent to computer(&quot;screenshot&quot;), but signals intent clearly.</span>
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">gptme.tools.computer.</span></span><span class="sig-name descname"><span class="pre">observe_web</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">url</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">screenshot_too</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><span class="pre">Message</span></a><span class="p"><span class="pre">]</span></span></span></span></dt>
+<dd><p>Observe a web page: structured ARIA snapshot first, screenshot as fallback.</p>
+<p>Implements the structured-first observation policy: prefer accessibility snapshots
+for web targets — they avoid vision-token cost and give a DOM-addressable tree.
+Use <code class="docutils literal notranslate"><span class="pre">screenshot_too=True</span></code> when you need pixel-level visual confirmation alongside
+the structured snapshot (e.g. to verify layout or canvas content).</p>
+<p>Falls back to a browser screenshot, then to a desktop screenshot, if Playwright is
+not available.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>url</strong> – Page URL to observe.</p></li>
+<li><p><strong>screenshot_too</strong> – If True, also take a screenshot even when a snapshot succeeded.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>List of <a class="reference internal" href="api.html#gptme.message.Message" title="gptme.message.Message"><code class="xref py py-class docutils literal notranslate"><span class="pre">Message</span></code></a> objects (snapshot and/or screenshots).
+Empty only if all observation paths fail.</p>
+</dd>
+</dl>
+<p>Example (from IPython in a computer-use session):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">msgs</span> <span class="o">=</span> <span class="n">observe_web</span><span class="p">(</span><span class="s2">&quot;https://news.ycombinator.com&quot;</span><span class="p">)</span>
+<span class="c1"># Returns one Message containing the ARIA snapshot text.</span>
+
+<span class="n">msgs</span> <span class="o">=</span> <span class="n">observe_web</span><span class="p">(</span><span class="s2">&quot;https://example.com&quot;</span><span class="p">,</span> <span class="n">screenshot_too</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="c1"># Returns snapshot Message + screenshot Message side-by-side.</span>
+</pre></div>
+</div>
 </dd></dl>
 
 </section>
