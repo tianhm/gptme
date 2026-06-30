@@ -52,7 +52,7 @@ python = "^3.10"
 click = "^8.4"
 click-default-group = "^1.2.4"
 python-dotenv = "^1.2.2"
-rich = "^15.0.0"
+rich = "^13.5.2"
 tabulate = "*"
 pick = {version = "^2.6.0", markers = "sys_platform != 'win32'"}
 tiktoken = ">=0.13.0"
@@ -167,7 +167,7 @@ server = ["flask", "flask-cors", "flask-compress", "pydantic", "prometheus-clien
 browser = ["playwright"]
 datascience = ["matplotlib", "pandas", "numpy"]  # pillow (non-opt)
 sounds = ["sounddevice", "scipy"]
-computer = []  # pillow (non-opt)
+computer = []  # pillow (non-opt); AT-SPI2 accessibility needs system pkg: apt install python3-pyatspi
 pyinstaller = ["pyinstaller"]
 acp = ["agent-client-protocol"]
 telemetry = [
