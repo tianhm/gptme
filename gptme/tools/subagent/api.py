@@ -54,6 +54,7 @@ def subagent(
     redact_secrets: bool = True,
     context_window: int | None = None,
     max_time: float | None = None,
+    context_turns: int | None = None,
     workdir: str | Path | None = None,
 ):
     """Starts an asynchronous subagent. Returns None immediately.
@@ -156,6 +157,28 @@ def subagent(
             Use this for defensive orchestration (prevent a stuck subagent from
             blocking the parent) or hard time budgets in autonomous sessions.
             ``max_time=None`` is fully backwards-compatible — no change in behavior.
+        context_turns: Number of recent parent conversation turns to forward to
+            the subagent as context. A "turn" starts at a user message and
+            includes all subsequent assistant and tool-result (system) messages
+            until the next user message, so the total message count per turn
+            varies with the number of tool calls. The messages are injected as
+            a system message so the subagent understands what the parent has
+            been doing without confusing its own conversation flow.
+
+            - ``None`` (default): no parent context forwarded (current behavior).
+            - ``N > 0``: forward the last N turns from the parent's active log.
+
+            The parent log is fetched automatically from the currently active
+            ``LogManager`` (set by the chat loop via ``ContextVar``). This works
+            when ``subagent()`` is called from within the ``ipython`` tool during
+            a running chat session.
+
+            Use this when the subagent needs awareness of what the parent has
+            already done (e.g. "the parent tried A and B, now try C") or when
+            the task prompt alone doesn't provide enough context.
+
+            Only applies to thread-mode subagents; has no effect in subprocess
+            or ACP modes.
         workdir: Working directory for the subagent. Defaults to the current
             working directory (``Path.cwd()``) when ``None``.
 
@@ -186,6 +209,42 @@ def subagent(
         raise ValueError(
             f"context_window must be None, 0, or a positive integer, got {context_window!r}"
         )
+    if context_turns is not None and context_turns <= 0:
+        raise ValueError(
+            f"context_turns must be None or a positive integer, got {context_turns!r}"
+        )
+
+    # Fetch parent messages from the active LogManager when context_turns is set.
+    # LogManager.get_current_log() reads a ContextVar set by the chat loop, so
+    # this works when subagent() is called from within an ipython tool execution.
+    parent_messages = None
+    if context_turns is not None:
+        from ...logmanager import LogManager  # fmt: skip
+
+        parent_log = LogManager.get_current_log()
+        if parent_log is not None:
+            msgs = parent_log.log
+            # Slice from the N-th-from-last user message so tool-result system
+            # messages within a turn are included and the count is exact.
+            # Fallback to user_indices[0] (not 0) so leading system bootstrap
+            # messages (identity, workspace context) are never forwarded when
+            # context_turns exceeds available turns.
+            user_indices = [i for i, m in enumerate(msgs) if m.role == "user"]
+            if user_indices:
+                start = (
+                    user_indices[-context_turns]
+                    if len(user_indices) >= context_turns
+                    else user_indices[0]
+                )
+                parent_messages = list(msgs[start:])
+            else:
+                parent_messages = list(msgs)
+        else:
+            logger.warning(
+                "context_turns=%d set but no active LogManager found; "
+                "parent context will not be forwarded",
+                context_turns,
+            )
 
     # noreorder
     from gptme.cli.main import get_logdir  # fmt: skip
@@ -260,6 +319,12 @@ def subagent(
             raise ValueError(f"workdir is not a directory: {workdir_path}")
 
     if mode == "planner":
+        if context_turns is not None:
+            logger.warning(
+                "context_turns=%d set but planner mode does not forward parent context; "
+                "parameter is ignored",
+                context_turns,
+            )
         if not subtasks:
             raise ValueError("Planner mode requires subtasks parameter")
 
@@ -404,6 +469,12 @@ def subagent(
             logger.warning(
                 f"Subagent {agent_id}: 'context_include' is not supported in ACP mode (ignored)"
             )
+        if context_turns is not None:
+            logger.warning(
+                "context_turns=%d set but ACP mode does not forward parent context; "
+                "parameter is ignored",
+                context_turns,
+            )
 
         def run_acp_subagent():
             _sem = get_slot_sem()
@@ -524,6 +595,7 @@ def subagent(
             repo_path=repo_path,
             role=role,
             max_time=max_time,
+            context_turns=context_turns,
         )
         # Append sa before starting the thread so the finally block can find it
         # (avoids race condition where fast completion can't locate sa in _subagents)
@@ -536,6 +608,12 @@ def subagent(
         # A launcher thread acquires the slot before starting the OS process so that
         # excess agents queue (rather than all starting at once).
         logger.info(f"Starting subagent {agent_id} in subprocess mode")
+        if context_turns is not None:
+            logger.warning(
+                "context_turns=%d set but subprocess mode does not forward parent context; "
+                "parameter is ignored",
+                context_turns,
+            )
         if profile:
             logger.info(f"  with profile: {profile}")
         # Convert output_schema type to JSON string if present
@@ -611,6 +689,7 @@ def subagent(
             timeout=timeout,
             role=role,
             max_time=max_time,
+            context_turns=context_turns,
         )
         with _subagents_lock:
             _subagents.append(sa)
@@ -649,6 +728,7 @@ def subagent(
                         agent_id=agent_id,
                         redact_secrets=redact_secrets,
                         context_window=context_window,
+                        parent_messages=parent_messages,
                     )
                 except Exception as e:
                     # If subagent creation fails, notify with error status
@@ -724,6 +804,7 @@ def subagent(
             redact_secrets=redact_secrets,
             context_window=context_window,
             max_time=max_time,
+            context_turns=context_turns,
         )
         with _subagents_lock:
             _subagents.append(sa)
@@ -901,6 +982,7 @@ def subagent_reply(agent_id: str, reply: str) -> None:
             redact_secrets=sa.redact_secrets,
             context_window=sa.context_window,
             max_time=sa.max_time,
+            context_turns=sa.context_turns,
         )
     except Exception:
         with _subagents_lock:
