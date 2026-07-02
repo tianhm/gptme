@@ -269,14 +269,43 @@ class TestObserveWeb:
         assert len(msgs) == 1
         assert fake_snapshot in msgs[0].content
 
-    def test_returns_list(self) -> None:
-        """observe_web() always returns a list (possibly empty on hard failure)."""
+    def test_hard_failure_returns_actionable_error(self) -> None:
+        """observe_web() surfaces a diagnosis when all observation paths fail.
+
+        Previously returned an empty list, leaving the agent with no feedback.
+        Now always returns at least one Message — an error explaining what failed
+        and how to fix it — so the agent can self-diagnose instead of looping.
+        """
         with (
             patch.dict("sys.modules", {"gptme.tools.browser": None}),
             patch("gptme.tools.computer.computer", return_value=None),
         ):
             result = observe_web("https://example.com")
         assert isinstance(result, list)
+        assert len(result) == 1, "hard failure must yield exactly one error message"
+        error_text = result[0].content
+        assert "failed" in error_text.lower(), "error message must say what failed"
+        assert "playwright" in error_text.lower(), "error must mention Playwright"
+
+    def test_missing_playwright_branch_returns_single_actionable_error(self) -> None:
+        """observe_web() reports missing Playwright once when browser imports work."""
+        browser_module = MagicMock(
+            has_playwright=lambda: False,
+            snapshot_url=MagicMock(),
+            screenshot_url=MagicMock(),
+        )
+        with (
+            patch.dict("sys.modules", {"gptme.tools.browser": browser_module}),
+            patch("gptme.tools.computer.computer", return_value=None),
+        ):
+            result = observe_web("https://example.com")
+
+        assert len(result) == 1
+        error_text = result[0].content
+        assert error_text.count("Playwright not installed") == 1
+        assert "snapshot_url unavailable" in error_text
+        browser_module.snapshot_url.assert_not_called()
+        browser_module.screenshot_url.assert_not_called()
 
     def test_screenshot_too_appends_second_message(self) -> None:
         """screenshot_too=True should add a browser screenshot alongside the snapshot."""
