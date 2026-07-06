@@ -1377,6 +1377,7 @@ Key features:
 <span class="k">-</span><span class="w"> </span>subagent_pipeline(items, *stages, timeout): Multi-stage fan-out with no barrier between stages — item A advances to stage 2 while item B is still in stage 1; each stage callable receives (item_prompt, prev_result) and returns the next stage&#39;s prompt
 <span class="k">-</span><span class="w"> </span>subagent_batch(): Start multiple subagents and return a BatchJob for explicit synchronization
 <span class="k">-</span><span class="w"> </span>subagent_cancel(): Cancel a running subagent (SIGTERM for subprocess, marks result for threads)
+<span class="k">-</span><span class="w"> </span>subagent_wait_any(agent_ids, timeout): Wait for the first of N subagents to complete — returns (agent_id, result). Useful for race/hedging patterns.
 <span class="k">-</span><span class="w"> </span>subagent_reply(agent_id, reply): Answer a clarification request and re-spawn the subagent
 <span class="k">-</span><span class="w"> </span>Hook-based notifications: Completions (and clarification requests) delivered as system messages
 
@@ -2023,6 +2024,41 @@ raw JSON string.</p>
 </dl>
 </dd></dl>
 
+<dl class="py method">
+<dt class="sig sig-object py">
+<span class="sig-name descname"><span class="pre">wait_any</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">300</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">]</span></span></span></span></dt>
+<dd><p>Wait for the first subagent to complete and return its result.</p>
+<p>Useful for speculative/hedging patterns: spawn N subagents and take
+whichever finishes first, then cancel the rest.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>timeout</strong> – Maximum seconds to wait for any agent to complete.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Tuple of <code class="docutils literal notranslate"><span class="pre">(agent_id,</span> <span class="pre">result_dict)</span></code> for the first agent that
+completes. When <code class="docutils literal notranslate"><span class="pre">output_schema</span></code> is set on the <code class="docutils literal notranslate"><span class="pre">BatchJob</span></code> the
+result is automatically parsed.</p>
+</dd>
+<dt class="field-odd">Raises<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#TimeoutError" title="(in Python v3.14)"><strong>TimeoutError</strong></a> – If no agent completes within <code class="docutils literal notranslate"><span class="pre">timeout</span></code> seconds.</p>
+</dd>
+</dl>
+<p>Example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">job</span> <span class="o">=</span> <span class="n">subagent_batch</span><span class="p">([</span>
+    <span class="p">(</span><span class="s2">&quot;attempt-fast&quot;</span><span class="p">,</span> <span class="s2">&quot;Try the quick approach for task X&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="s2">&quot;attempt-thorough&quot;</span><span class="p">,</span> <span class="s2">&quot;Try the thorough approach for task X&quot;</span><span class="p">),</span>
+<span class="p">])</span>
+<span class="n">first_id</span><span class="p">,</span> <span class="n">result</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">wait_any</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">120</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">first_id</span><span class="si">}</span><span class="s2"> finished first: </span><span class="si">{</span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="c1"># Cancel the remaining agent</span>
+<span class="kn">from</span> <span class="nn">gptme.tools.subagent</span> <span class="kn">import</span> <span class="n">subagent_cancel</span>
+<span class="k">for</span> <span class="n">aid</span> <span class="ow">in</span> <span class="n">job</span><span class="o">.</span><span class="n">agent_ids</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">aid</span> <span class="o">!=</span> <span class="n">first_id</span><span class="p">:</span>
+        <span class="n">subagent_cancel</span><span class="p">(</span><span class="n">aid</span><span class="p">)</span>
+</pre></div>
+</div>
+</dd></dl>
+
 </dd></dl>
 
 <dl class="py class">
@@ -2590,6 +2626,45 @@ Call subagent_read_log(agent_id) to read the full output.</p></li>
 </dl>
 </dd></dl>
 
+<dl class="py function">
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">gptme.tools.subagent.</span></span><span class="sig-name descname"><span class="pre">subagent_wait_any</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">agent_ids</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">300</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">]</span></span></span></span></dt>
+<dd><p>Wait for the first of the given subagents to complete.</p>
+<p>Useful for speculative/hedging patterns: spawn N subagents and take
+whichever finishes first, then cancel the rest with <code class="docutils literal notranslate"><span class="pre">subagent_cancel()</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>agent_ids</strong> – List of agent IDs to wait on.</p></li>
+<li><p><strong>timeout</strong> – Maximum seconds to wait for any agent to complete.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Tuple of <code class="docutils literal notranslate"><span class="pre">(agent_id,</span> <span class="pre">result_dict)</span></code> for the first agent that
+completes. <code class="docutils literal notranslate"><span class="pre">result_dict</span></code> has <code class="docutils literal notranslate"><span class="pre">&quot;status&quot;</span></code> (<code class="docutils literal notranslate"><span class="pre">&quot;success&quot;</span></code> /
+<code class="docutils literal notranslate"><span class="pre">&quot;failure&quot;</span></code> / <code class="docutils literal notranslate"><span class="pre">&quot;clarification_needed&quot;</span></code>) and <code class="docutils literal notranslate"><span class="pre">&quot;result&quot;</span></code> keys.</p>
+</dd>
+<dt class="field-odd">Raises<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If <code class="docutils literal notranslate"><span class="pre">agent_ids</span></code> is empty.</p></li>
+<li><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#TimeoutError" title="(in Python v3.14)"><strong>TimeoutError</strong></a> – If no agent completes within <code class="docutils literal notranslate"><span class="pre">timeout</span></code> seconds.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Race pattern: take whichever approach finishes first</span>
+<span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;Quick attempt at task X&quot;</span><span class="p">)</span>
+<span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;thorough&quot;</span><span class="p">,</span> <span class="s2">&quot;Thorough attempt at task X&quot;</span><span class="p">)</span>
+<span class="n">first_id</span><span class="p">,</span> <span class="n">result</span> <span class="o">=</span> <span class="n">subagent_wait_any</span><span class="p">([</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;thorough&quot;</span><span class="p">],</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">120</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">first_id</span><span class="si">}</span><span class="s2"> won the race: </span><span class="si">{</span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="c1"># Cancel the slower agent</span>
+<span class="k">for</span> <span class="n">aid</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;thorough&quot;</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">aid</span> <span class="o">!=</span> <span class="n">first_id</span><span class="p">:</span>
+        <span class="n">subagent_cancel</span><span class="p">(</span><span class="n">aid</span><span class="p">)</span>
+</pre></div>
+</div>
+</dd></dl>
+
 <section id="subagent-isolation-contract">
 <h3>Subagent Isolation Contract<a class="headerlink" href="#subagent-isolation-contract" title="Link to this heading">#</a></h3>
 <p>When spawning a subagent you need to know exactly what it inherits from the parent
@@ -2702,6 +2777,45 @@ has its own work to interleave:</p>
 <span class="n">results</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">wait_all</span><span class="p">()</span>
 </pre></div>
 </div>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">subagent_pipeline(items,</span> <span class="pre">*stages,</span> <span class="pre">...)</span></code></dt><dd><p>Staged fan-out <strong>without a barrier</strong> between stages. Each item is processed
+through all stages in order, but items at different stages run concurrently —
+item A advances to stage 2 as soon as its stage-1 subagent completes, while
+item B may still be in stage 1. Wall-clock time is bounded by the slowest
+single-item chain, not the sum of the slowest per stage.</p>
+<p>This is more efficient than repeated <code class="docutils literal notranslate"><span class="pre">subagent_parallel()</span></code> calls (which add
+a full synchronisation barrier between stages) when items are independent.
+Each stage is a callable <code class="docutils literal notranslate"><span class="pre">stage(item_prompt,</span> <span class="pre">prev_result)</span> <span class="pre">-&gt;</span> <span class="pre">next_prompt</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">items</span> <span class="o">=</span> <span class="p">[(</span><span class="s2">&quot;auth&quot;</span><span class="p">,</span> <span class="s2">&quot;Review auth.py&quot;</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;db&quot;</span><span class="p">,</span> <span class="s2">&quot;Review db.py&quot;</span><span class="p">)]</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">subagent_pipeline</span><span class="p">(</span>
+    <span class="n">items</span><span class="p">,</span>
+    <span class="c1"># Stage 0: review</span>
+    <span class="k">lambda</span> <span class="n">item</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Find bugs in this file: </span><span class="si">{</span><span class="n">item</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+    <span class="c1"># Stage 1: verify — runs on auth while db is still in stage 0</span>
+    <span class="k">lambda</span> <span class="n">item</span><span class="p">,</span> <span class="n">prev</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Adversarially verify these findings:</span><span class="se">\n</span><span class="si">{</span><span class="n">prev</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="c1"># results[i][j] — result for item i at stage j</span>
+<span class="k">for</span> <span class="p">(</span><span class="n">prefix</span><span class="p">,</span> <span class="n">_</span><span class="p">),</span> <span class="n">stage_results</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">results</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">stage_results</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">][</span><span class="s1">&#39;result&#39;</span><span class="p">][:</span><span class="mi">80</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">isolated=True</span></code> so concurrent file-editing subagents each get their own
+git worktree.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">subagent_wait_any(agent_ids,</span> <span class="pre">...)</span></code></dt><dd><p>Return the first of the given subagents to complete. Useful for
+<strong>speculative / hedging patterns</strong>: spawn N subagents racing on the same
+task and take whichever finishes first, then cancel the rest:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span>     <span class="s2">&quot;Quick attempt at task X&quot;</span><span class="p">)</span>
+<span class="n">subagent</span><span class="p">(</span><span class="s2">&quot;thorough&quot;</span><span class="p">,</span> <span class="s2">&quot;Thorough attempt at task X&quot;</span><span class="p">)</span>
+<span class="n">first_id</span><span class="p">,</span> <span class="n">result</span> <span class="o">=</span> <span class="n">subagent_wait_any</span><span class="p">([</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;thorough&quot;</span><span class="p">],</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">120</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">first_id</span><span class="si">}</span><span class="s2"> won: </span><span class="si">{</span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">aid</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;thorough&quot;</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">aid</span> <span class="o">!=</span> <span class="n">first_id</span><span class="p">:</span>
+        <span class="n">subagent_cancel</span><span class="p">(</span><span class="n">aid</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">agent_ids</span></code> is the list of IDs to wait on. Raises <code class="docutils literal notranslate"><span class="pre">TimeoutError</span></code> if no
+agent completes within <code class="docutils literal notranslate"><span class="pre">timeout</span></code> seconds (default 300).</p>
 </dd>
 </dl>
 </section>
