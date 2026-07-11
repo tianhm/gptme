@@ -48,7 +48,7 @@
     <link rel="icon" href="_static/logo.png"/>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Configuration" href="config.html" />
+    <link rel="next" title="TUI" href="tui.html" />
     <link rel="prev" title="Commands" href="commands.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -184,6 +184,7 @@
 <li class="toctree-l1"><a class="reference internal" href="tools.html">Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="commands.html">Commands</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tui.html">TUI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config.html">Configuration</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="providers.html">Providers</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="custom-providers.html">Custom Providers</a></li>
@@ -232,6 +233,7 @@
 <li class="toctree-l1"><a class="reference internal" href="misc/acronyms.html">What does “gptme” stand for?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="timeline.html">Timeline</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="releases/v0.32.0.html">v0.32.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.31.0.html">v0.31.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.30.0.html">v0.30.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="releases/v0.29.0.html">v0.29.0</a></li>
@@ -595,40 +597,7 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 </div>
 <div class="line-block">
 <div class="line">The interface provides /commands during a conversation:</div>
-<div class="line">Available commands:</div>
-<div class="line-block">
-<div class="line">/undo         Undo the last action</div>
-<div class="line">/backtrack    Rewind conversation to a checkpoint or message index</div>
-<div class="line">/log          Show the conversation log</div>
-<div class="line">/checkpoint   Manage workspace checkpoints</div>
-<div class="line">/edit         Edit the conversation in your editor</div>
-<div class="line">/rename       Rename the conversation</div>
-<div class="line">/fork         Create a copy of the conversation</div>
-<div class="line">/delete       Delete a conversation by ID (alias: /rm)</div>
-<div class="line">/summarize    Summarize the conversation</div>
-<div class="line">/replay       Replay tool operations</div>
-<div class="line">/export       Export conversation as HTML</div>
-<div class="line">/model        Show or switch the current model</div>
-<div class="line">/models       List available models</div>
-<div class="line">/tokens       Show token usage and costs (alias: /cost)</div>
-<div class="line">/context      Show context token breakdown</div>
-<div class="line">/tools        Show available tools</div>
-<div class="line">/commit       Ask assistant to git commit</div>
-<div class="line">/compact      Compact the conversation</div>
-<div class="line">/impersonate  Impersonate the assistant</div>
-<div class="line">/plugin       Manage plugins</div>
-<div class="line">/clear        Clear the terminal screen</div>
-<div class="line">/setup        Setup gptme with completions and configuration</div>
-<div class="line">/doctor       Run system diagnostics</div>
-<div class="line">/restart      Restart gptme process</div>
-<div class="line">/help         Show this help message</div>
-<div class="line">/exit         Exit the program</div>
-</div>
-<div class="line">Keyboard shortcuts:</div>
-<div class="line-block">
-<div class="line">Ctrl+X Ctrl+E  Edit prompt in your editor</div>
-<div class="line">Ctrl+J         Insert a new line without executing the prompt</div>
-</div>
+<div class="line">{commands_help}</div>
 </div>
 <div class="line-block">
 <div class="line">Subcommand shortcuts:</div>
@@ -671,7 +640,7 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-m">
 <span id="cmdoption-gptme-model"></span><span class="sig-name descname"><span class="pre">-m</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--model</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;model&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-m" title="Link to this definition">#</a></dt>
-<dd><p>Model to use, e.g. openai/gpt-5, anthropic/claude-sonnet-4-6. If only provider given then a default is used.</p>
+<dd><p>Model to use, e.g. {model_examples}. If only provider given then a default is used.</p>
 </dd></dl>
 
 <dl class="std option">
@@ -696,6 +665,12 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <dt class="sig sig-object std" id="cmdoption-gptme-y">
 <span id="cmdoption-gptme-no-confirm"></span><span class="sig-name descname"><span class="pre">-y</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--no-confirm</span></span><span class="sig-prename descclassname"></span><a class="headerlink" href="#cmdoption-gptme-y" title="Link to this definition">#</a></dt>
 <dd><p>Skip all confirmation prompts.</p>
+</dd></dl>
+
+<dl class="std option">
+<dt class="sig sig-object std" id="cmdoption-gptme-gear">
+<span class="sig-name descname"><span class="pre">--gear</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;gear&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-gear" title="Link to this definition">#</a></dt>
+<dd><p>Autonomy preset: 0=observe, 1=review, 2=plan, 3=execute, 4=integrate. Explicit –tools/–agent-profile/–no-confirm override preset parts.</p>
 </dd></dl>
 
 <dl class="std option">
@@ -724,7 +699,7 @@ PROMPTS can be chained with the ‘-’ separator.</p>
 <dl class="std option">
 <dt class="sig sig-object std" id="cmdoption-gptme-t">
 <span id="cmdoption-gptme-tools"></span><span class="sig-name descname"><span class="pre">-t</span></span><span class="sig-prename descclassname"></span><span class="sig-prename descclassname"><span class="pre">,</span> </span><span class="sig-name descname"><span class="pre">--tools</span></span><span class="sig-prename descclassname"> <span class="pre">&lt;tool_allowlist&gt;</span></span><a class="headerlink" href="#cmdoption-gptme-t" title="Link to this definition">#</a></dt>
-<dd><p>Tools to allow. Comma-separated or repeated. Use ‘+tool’ to add to defaults (e.g., ‘-t +subagent’). Use ‘-tool’ to exclude from defaults (e.g., ‘-t=-browser’). Use ‘none’ to disable all tools. Supports .py file paths for custom tools (e.g., ‘-t path/to/tool.py’). Available: append, autocommit, autocompact, browser, chats, choice, clarify, complete, computer, elicit, form, gh, ipython, lessons, mcp, patch, patch_anchored, patch_many, precommit, progress, read, restart, save, shell, subagent, tmux, todo, vent, view_anchored, vision.</p>
+<dd><p>Tools to allow. Comma-separated or repeated. Use ‘+tool’ to add to defaults (e.g., ‘-t +subagent’). Use ‘-tool’ to exclude from defaults (e.g., ‘-t=-browser’). Use ‘none’ to disable all tools. Supports .py file paths for custom tools (e.g., ‘-t path/to/tool.py’). Available: {available_tools}.</p>
 </dd></dl>
 
 <dl class="std option">
@@ -1824,11 +1799,11 @@ Use –all to include unavailable tools as well.</p>
       </div>
     </a>
     <a class="right-next"
-       href="config.html"
+       href="tui.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Configuration</p>
+        <p class="prev-next-title">TUI</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
