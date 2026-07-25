@@ -733,6 +733,7 @@ class ToolUse:
         def _execute_tool():
             tool = get_tool(self.tool)
             if tool and tool.execute:
+                result_msgs: list[Message] = []
                 try:
                     from ..hooks.types import ToolExecutePreData  # fmt: skip
 
@@ -762,7 +763,6 @@ class ToolUse:
                     # Set context var so tools can access current ToolUse
                     # via get_current_tool_use() or implicitly in get_confirmation()
                     token = _current_tool_use.set(self)
-                    result_msgs: list[Message] = []
                     try:
                         ex = tool.execute(
                             self.content,
@@ -776,16 +776,56 @@ class ToolUse:
                             else cast(Message | None, ex)
                         )
                         if generator_result is not None:
-                            for msg in generator_result:
-                                result_msgs.append(msg)
-                                if on_result_message:
-                                    on_result_message(msg)
-                                yield msg
+                            if self.call_id:
+                                # Buffer the generator so we can identify the last
+                                # message and stamp call_id on it. The Responses API
+                                # expects exactly one function_call_output per call_id;
+                                # stamping only the last message ensures the actual
+                                # tool result (not an earlier warning such as a
+                                # shellcheck notice) becomes the function_call_output.
+                                # Earlier messages pass through without call_id and
+                                # become system context instead.
+                                #
+                                # Catch KeyboardInterrupt so partial output from an
+                                # interrupted shell command is still forwarded and
+                                # on_result_message callbacks are still invoked.
+                                all_result_msgs: list[Message] = []
+                                _ki: KeyboardInterrupt | None = None
+                                try:
+                                    for msg in generator_result:
+                                        all_result_msgs.append(msg)  # noqa: PERF402
+                                except KeyboardInterrupt as e:
+                                    _ki = e
+                                last_idx = len(all_result_msgs) - 1
+                                for idx, msg in enumerate(all_result_msgs):
+                                    result_msgs.append(msg)
+                                    if on_result_message:
+                                        on_result_message(msg)
+                                    yield (
+                                        msg.replace(call_id=self.call_id)
+                                        if idx == last_idx and _ki is None
+                                        else msg
+                                    )
+                                if _ki is not None:
+                                    raise _ki
+                            else:
+                                # No call_id: stream immediately to preserve
+                                # progressive callback ordering for callers that
+                                # interleave on_result_message with the generator.
+                                for msg in generator_result:
+                                    result_msgs.append(msg)
+                                    if on_result_message:
+                                        on_result_message(msg)
+                                    yield msg
                         elif single_result is not None:
                             result_msgs = [single_result]
                             if on_result_message:
                                 on_result_message(single_result)
-                            yield single_result
+                            yield (
+                                single_result.replace(call_id=self.call_id)
+                                if self.call_id
+                                else single_result
+                            )
                     finally:
                         _current_tool_use.reset(token)
 
@@ -835,7 +875,14 @@ class ToolUse:
                     logger.exception(e)
                     if "pytest" in globals():
                         raise e
-                    yield Message("system", f"Error executing tool '{self.tool}': {e}")
+                    # Only attribute the error to this call_id if no real result
+                    # was already emitted — a post-hook exception after yielding a
+                    # result would create a duplicate function_call_output entry.
+                    yield Message(
+                        "system",
+                        f"Error executing tool '{self.tool}': {e}",
+                        call_id=self.call_id if not result_msgs else None,
+                    )
             else:
                 logger.warning(f"Tool '{self.tool}' is not available for execution.")
 
