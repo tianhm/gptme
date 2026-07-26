@@ -247,21 +247,42 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
     expandedGroups$.set(next);
   };
 
-  // Recompute step roles when messages or visibility settings change.
-  // All .get() calls inside are auto-tracked, so this re-runs when any of
-  // conversation log, showHiddenMessages, showInitialSystem, firstNonSystemIndex,
-  // or logOffset changes.
+  // Structural key: encodes message count, logOffset, and wholesale-log revision.
+  // The selector re-runs on every log mutation (including streaming tokens), but its
+  // VALUE (e.g. "12:0:3") changes only when messages are added/removed, the window
+  // shifts, or the log is replaced after an edit/branch switch/reload. Legend State
+  // compares by value, so downstream observers skip per-token content updates.
+  const logStructureKey$ = useObservable(() => {
+    const count = conversation$?.data.log.get()?.length ?? 0;
+    const offset = conversation$?.logOffset?.get() ?? 0;
+    const revision = conversation$?.logRevision?.get() ?? 0;
+    return `${count}:${offset}:${revision}`;
+  });
+
+  // Recompute step roles when the message structure or visibility settings change.
+  // Subscribes to logStructureKey$ (not the full log) so it does NOT re-run on
+  // every streaming token — only when message count, logOffset, or settings change.
   useObserveEffect(() => {
-    const messages = conversation$?.data.log.get();
-    if (!messages?.length) {
+    const structureKey = logStructureKey$.get();
+    const firstNonSystem = firstNonSystemIndex$.get();
+    const showInitial = showInitialSystem$.get();
+    const showHidden = showHiddenMessages$.get();
+
+    const [messageCountText, logOffsetText] = structureKey.split(':');
+    const messageCount = parseInt(messageCountText, 10);
+    const logOffset = parseInt(logOffsetText, 10);
+
+    if (!messageCount) {
       stepRoles$.set({});
       return;
     }
 
-    const logOffset = conversation$?.logOffset?.get() ?? 0;
-    const firstNonSystem = firstNonSystemIndex$.get();
-    const showInitial = showInitialSystem$.get();
-    const showHidden = showHiddenMessages$.get();
+    // Peek (non-reactive read) — structural changes are already tracked via logStructureKey$.
+    const messages = conversation$?.data.log.peek() as Message[] | undefined;
+    if (!messages?.length) {
+      stepRoles$.set({});
+      return;
+    }
 
     // isHidden receives LOCAL indices (array positions in messages[]).
     const isHidden = (idx: number) => {
