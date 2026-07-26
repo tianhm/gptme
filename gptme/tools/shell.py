@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..message import Message
+from ..sandbox import SandboxConfig, build_env, wrap_shell_cmd
 from ..util import get_installed_programs
 from ..util.ask_execute import execute_with_confirmation
 from ..util.context import md_codeblock
@@ -277,6 +278,25 @@ class ShellSession:
             popen_kwargs = {
                 "start_new_session": True,  # Create new process group for proper signal handling
             }
+
+        # Apply sandbox wrapper if GPTME_SANDBOX is set
+        sandbox = SandboxConfig.from_env(
+            workspace=Path(self._cwd) if self._cwd else None
+        )
+        if sandbox.enabled:
+            available, msg = sandbox.check_available()
+            if not available:
+                raise RuntimeError(
+                    f"GPTME_SANDBOX={sandbox.backend!r} was requested but the"
+                    f" backend is not available: {msg}. Either install the"
+                    f" sandbox tool or unset GPTME_SANDBOX."
+                )
+            shell_cmd = wrap_shell_cmd(sandbox, shell_cmd)
+            logger.info("Sandboxed shell: %s", " ".join(shell_cmd))
+        sandbox_env = build_env(
+            sandbox
+        )  # None if sandbox disabled → inherit os.environ
+
         self.process = subprocess.Popen(
             shell_cmd,
             stdin=subprocess.PIPE,
@@ -285,6 +305,7 @@ class ShellSession:
             bufsize=0,  # Unbuffered
             universal_newlines=True,
             cwd=self._cwd,  # Use explicit workspace dir (thread-safe)
+            env=sandbox_env,  # None → inherit; dict → sanitized env
             **popen_kwargs,
         )
         assert self.process.stdout is not None
@@ -326,6 +347,10 @@ class ShellSession:
         if _is_windows:
             return False  # No /dev/tty on Windows
         if not sys.stdin.isatty():
+            return False
+        if SandboxConfig.from_env().enabled:
+            # _run_with_tty launches a separate host process, outside the persistent
+            # sandbox. Keep sandboxed commands on the isolated shell instead.
             return False
         # Check for sudo without -S (stdin password) or -n (non-interactive)
         try:
