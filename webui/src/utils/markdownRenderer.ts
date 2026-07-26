@@ -249,11 +249,15 @@ export function customRenderer(
           }
         }
 
-        // Display escaped text incrementally during streaming
-        data.code.innerHTML = data.codeText
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
+        // Append to the current text node when possible. This keeps each update O(1)
+        // without retaining one DOM node per streamed fragment until the fence closes.
+        // Text nodes are never interpreted as HTML, so entities remain safe.
+        const lastChild = data.code.lastChild;
+        if (lastChild instanceof Text) {
+          lastChild.appendData(text);
+        } else {
+          data.code.appendChild(document.createTextNode(text));
+        }
       } else {
         smd.default_add_text(data, text);
       }

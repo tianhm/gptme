@@ -118,3 +118,75 @@ test.describe('Performance: sidebar hot-loop prevention', () => {
     expect(elapsed).toBeLessThan(2000);
   });
 });
+
+test.describe('Performance: streaming code block rendering', () => {
+  // Regression suite for gptme/gptme#3362 (second hot path).
+  //
+  // Root cause: markdownRenderer.ts `add_text` rebuilt data.code.innerHTML from
+  // the full accumulated text on every streaming token — O(N) work per token,
+  // O(N²) total. After the fix, streamed fragments update one text node (O(1))
+  // and innerHTML is written exactly once when syntax highlighting runs.
+
+  test('streamed code tokens keep bounded DOM writes and one text node', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+    const result = await page.evaluate(async () => {
+      const [{ customRenderer }, smd] = await Promise.all([
+        import('/src/utils/markdownRenderer.ts'),
+        import('/src/utils/smd.js'),
+      ]);
+      const root = document.createElement('div');
+      document.body.appendChild(root);
+      const parser = smd.parser(customRenderer(root));
+
+      let codeInnerHTMLWrites = 0;
+      const innerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML')!;
+      Object.defineProperty(Element.prototype, 'innerHTML', {
+        configurable: true,
+        get() {
+          return innerHTMLDescriptor.get!.call(this);
+        },
+        set(value: string) {
+          if (this instanceof HTMLElement && this.tagName === 'CODE') {
+            codeInnerHTMLWrites++;
+          }
+          innerHTMLDescriptor.set!.call(this, value);
+        },
+      });
+
+      try {
+        const body = 'const value = "<safe> & fast";\n'.repeat(100);
+        for (const char of `\`\`\`typescript\n${body}`) {
+          smd.parser_write(parser, char);
+        }
+
+        const streamingCode = root.querySelector('code')!;
+        const duringStream = {
+          childNodes: streamingCode.childNodes.length,
+          innerHTMLWrites: codeInnerHTMLWrites,
+          text: streamingCode.textContent,
+        };
+
+        for (const char of '```\n') {
+          smd.parser_write(parser, char);
+        }
+        smd.parser_end(parser);
+
+        return {
+          duringStream,
+          finalInnerHTMLWrites: codeInnerHTMLWrites,
+          finalText: root.querySelector('code')?.textContent,
+        };
+      } finally {
+        Object.defineProperty(Element.prototype, 'innerHTML', innerHTMLDescriptor);
+        root.remove();
+      }
+    });
+
+    expect(result.duringStream.childNodes).toBe(1);
+    expect(result.duringStream.innerHTMLWrites).toBe(0);
+    expect(result.duringStream.text).toContain('<safe> & fast');
+    expect(result.finalInnerHTMLWrites).toBeLessThanOrEqual(1);
+    expect(result.finalText).toContain('<safe> & fast');
+  });
+});
