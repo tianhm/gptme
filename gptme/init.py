@@ -2,6 +2,7 @@ import atexit
 import logging
 import os
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 from dotenv import load_dotenv
@@ -79,6 +80,16 @@ def init(
         )
     init_tools(tool_allowlist)
     init_hooks(interactive=interactive, no_confirm=no_confirm, server=server)
+
+    config = get_config()
+    if script_hooks := config.get_script_hooks():
+        from .hooks.script import register_script_hooks
+
+        workspace = config.chat.workspace if config.chat is not None else None
+        if workspace is None and config.project is not None:
+            workspace = config.project._workspace
+        register_script_hooks(script_hooks, workspace or Path.cwd())
+
     init_commands()
 
     set_tool_format(tool_format)
