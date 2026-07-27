@@ -6,16 +6,49 @@
  * connection state and demo mode.
  */
 import '@testing-library/jest-dom';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { observable } from '@legendapp/state';
 import type { Message } from '@/types/conversation';
 import { ConversationContent } from '../ConversationContent';
 
+// Control how many items the virtualizer "renders" (simulates viewport size).
+// Defaults to Infinity so existing tests see all messages (no change in behaviour).
+// Set __virtualWindow to a number in specific tests to verify bounded rendering.
+declare global {
+  var __virtualWindow: number;
+}
+global.__virtualWindow = Infinity;
+const mockScrollToIndex = jest.fn();
+
+jest.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (opts: { count: number }) => {
+    const win = isFinite(global.__virtualWindow) ? global.__virtualWindow : opts.count;
+    const items = Array.from({ length: Math.min(opts.count, win) }, (_, i) => ({
+      index: i,
+      key: i,
+      start: i * 150,
+      size: 150,
+      end: (i + 1) * 150,
+      lane: 0,
+    }));
+    return {
+      getTotalSize: () => opts.count * 150,
+      getVirtualItems: () => items,
+      scrollToIndex: mockScrollToIndex,
+      measureElement: () => {},
+    };
+  },
+}));
+
 const mockBuildStepRoles = jest.fn((_messages: Message[]) => new Map());
+let mockStepRoles = new Map<number, { type: 'grouped'; groupId: number }>();
 
 jest.mock('@/utils/stepGrouping', () => ({
   ...jest.requireActual('@/utils/stepGrouping'),
-  buildStepRoles: (messages: Message[]) => mockBuildStepRoles(messages),
+  buildStepRoles: (messages: Message[]) => {
+    mockBuildStepRoles(messages);
+    return mockStepRoles;
+  },
 }));
 
 // --- Mocks ---
@@ -230,6 +263,7 @@ describe('step role recomputation', () => {
   beforeEach(() => {
     mockConversation$.set(makeConversationState().peek());
     mockBuildStepRoles.mockClear();
+    mockStepRoles = new Map();
   });
 
   it('does not recompute roles for streamed content updates', () => {
@@ -407,5 +441,124 @@ describe('server disconnected banner — removed server', () => {
     mockIsDemoMode.mockReturnValue(true);
     render(<ConversationContent conversationId="demo/test" serverId="removed-server" />);
     expect(screen.queryByText(/server not connected/i)).toBeNull();
+  });
+});
+
+describe('virtual message list', () => {
+  beforeEach(() => {
+    mockConversation$.set(makeConversationState().peek());
+    jest.clearAllMocks();
+    mockIsDemoMode.mockReturnValue(false);
+    isConnected$.set(true);
+    lastConnectionResult$.set(null);
+    global.__virtualWindow = Infinity; // reset to "render all" default
+    mockStepRoles = new Map();
+  });
+
+  afterEach(() => {
+    global.__virtualWindow = Infinity;
+  });
+
+  it('renders only a bounded subset of messages when the virtualizer window is smaller than the list', () => {
+    // Simulate a viewport that fits 8 items — the rest stay off-screen (no DOM node).
+    global.__virtualWindow = 8;
+    const many = Array.from({ length: 50 }, (_, i) =>
+      message(i === 0 ? 'user' : 'assistant', `Message ${i}`)
+    );
+    act(() => {
+      mockConversation$.data.log.set(many);
+    });
+    renderComponent();
+
+    const rendered = document.querySelectorAll('[data-message-index]');
+    expect(rendered.length).toBe(8);
+    expect(rendered.length).toBeLessThan(50);
+  });
+
+  it('renders all messages when the list is smaller than the virtualizer window', () => {
+    // With __virtualWindow = Infinity the mock returns all items (min(3, ∞) = 3).
+    const few = [
+      message('user', 'Hello'),
+      message('assistant', 'Hi there'),
+      message('user', 'Thanks'),
+    ];
+    act(() => {
+      mockConversation$.data.log.set(few);
+    });
+    renderComponent();
+
+    const rendered = document.querySelectorAll('[data-message-index]');
+    expect(rendered.length).toBe(3);
+  });
+
+  it('excludes hidden messages from virtualizer geometry', () => {
+    act(() => {
+      mockConversation$.data.log.set([
+        message('system', 'Initial prompt'),
+        { ...message('assistant', 'Hidden lesson'), hide: true },
+        message('user', 'Visible question'),
+        message('assistant', 'Visible answer'),
+      ]);
+    });
+    renderComponent();
+
+    expect(document.querySelectorAll('[data-index]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-message-index]')).toHaveLength(2);
+  });
+
+  it('excludes grouped messages when their group is collapsed', () => {
+    mockStepRoles = new Map([[1, { type: 'grouped', groupId: 0 }]]);
+    act(() => {
+      mockConversation$.data.log.set([
+        message('user', 'Question'),
+        message('system', 'Tool result'),
+        message('assistant', 'Answer'),
+      ]);
+    });
+    renderComponent();
+
+    expect(document.querySelectorAll('[data-index]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-message-index]')).toHaveLength(2);
+  });
+
+  it('retries search highlighting until a virtual row mounts', () => {
+    jest.useFakeTimers();
+    global.__virtualWindow = 1;
+    act(() => {
+      mockConversation$.data.log.set([
+        message('user', 'First'),
+        message('assistant', 'Find this target'),
+      ]);
+    });
+    renderComponent();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }));
+    });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'target' } });
+
+    expect(mockScrollToIndex).toHaveBeenCalledWith(1, { align: 'center' });
+    act(() => jest.advanceTimersByTime(16 * 10));
+    jest.useRealTimers();
+  });
+
+  it('assigns data-index to rendered wrappers (required for ResizeObserver height measurement)', () => {
+    act(() => {
+      mockConversation$.data.log.set([message('user', 'Hello'), message('assistant', 'Hi')]);
+    });
+    renderComponent();
+
+    const items = document.querySelectorAll('[data-index]');
+    expect(items.length).toBeGreaterThan(0);
+    items.forEach((item) => {
+      expect(item.getAttribute('data-index')).not.toBeNull();
+    });
+  });
+
+  it('mounts without errors when there are no messages', () => {
+    act(() => {
+      mockConversation$.data.log.set([]);
+    });
+    expect(() => renderComponent()).not.toThrow();
   });
 });
