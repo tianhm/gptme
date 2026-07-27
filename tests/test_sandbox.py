@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,11 +10,14 @@ import pytest
 
 from gptme.sandbox import (
     _DEFAULT_ENV_ALLOWLIST,
+    _PYTHON_WASM_CACHE,
     SandboxConfig,
     _bwrap_cmd,
+    _ensure_python_wasm,
     _firejail_cmd,
     build_env,
     sandbox_exec_python,
+    sandbox_exec_wasmtime,
     wrap_shell_cmd,
 )
 
@@ -615,3 +619,256 @@ class TestDockerExecPythonIntegration:
         assert rc == 0
         assert "ssh: False" in stdout
         assert "aws: False" in stdout
+
+
+# ---------------------------------------------------------------------------
+# Wasmtime backend — config tests (no wasmtime install required)
+# ---------------------------------------------------------------------------
+
+
+class TestWasmtimeBackendConfig:
+    def test_wasmtime_backend_accepted(self):
+        cfg = SandboxConfig(backend="wasmtime")
+        assert cfg.backend == "wasmtime"
+        assert cfg.enabled
+
+    def test_wasmtime_backend_from_env(self):
+        with patch.dict(os.environ, {"GPTME_SANDBOX": "wasmtime"}):
+            cfg = SandboxConfig.from_env()
+        assert cfg.backend == "wasmtime"
+
+    def test_timeout_from_env(self):
+        with patch.dict(
+            os.environ, {"GPTME_SANDBOX": "wasmtime", "GPTME_SANDBOX_TIMEOUT": "60"}
+        ):
+            cfg = SandboxConfig.from_env()
+        assert cfg.timeout == 60
+
+    def test_python_wasm_path_default_is_none(self):
+        cfg = SandboxConfig(backend="wasmtime")
+        assert cfg.python_wasm_path is None
+
+    def test_python_wasm_path_from_env(self, tmp_path):
+        wasm_file = tmp_path / "python.wasm"
+        with patch.dict(
+            os.environ,
+            {
+                "GPTME_SANDBOX": "wasmtime",
+                "GPTME_SANDBOX_PYTHON_WASM": str(wasm_file),
+            },
+        ):
+            cfg = SandboxConfig.from_env()
+        assert cfg.python_wasm_path == wasm_file
+
+    def test_check_available_when_wasmtime_missing(self):
+        cfg = SandboxConfig(backend="wasmtime")
+        with patch("gptme.sandbox.importlib.util.find_spec", return_value=None):
+            ok, msg = cfg.check_available()
+        assert not ok
+        assert "wasmtime" in msg
+
+    def test_check_available_when_wasmtime_present(self):
+        cfg = SandboxConfig(backend="wasmtime")
+        with patch("gptme.sandbox.importlib.util.find_spec", return_value=object()):
+            ok, _ = cfg.check_available()
+        assert ok
+
+    def test_exec_wasmtime_wrong_backend_raises(self):
+        cfg = SandboxConfig(backend="none")
+        with pytest.raises(ValueError, match="backend='wasmtime'"):
+            sandbox_exec_wasmtime(cfg, "pass")
+
+    def test_default_cache_path(self):
+        assert Path.home() / ".cache" / "gptme" / "python.wasm" == _PYTHON_WASM_CACHE
+
+
+# ---------------------------------------------------------------------------
+# _ensure_python_wasm
+# ---------------------------------------------------------------------------
+
+
+class TestEnsurePythonWasm:
+    def test_returns_existing_path_without_download(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        wasm.write_bytes(b"\x00asm")
+        with patch("gptme.sandbox.urllib.request.urlretrieve") as mock_dl:
+            result = _ensure_python_wasm(wasm)
+        assert result == wasm
+        mock_dl.assert_not_called()
+
+    def test_downloads_when_missing(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+
+        def fake_download(url, dest):
+            Path(dest).write_bytes(b"\x00asm")
+
+        with patch(
+            "gptme.sandbox.urllib.request.urlretrieve", side_effect=fake_download
+        ):
+            result = _ensure_python_wasm(wasm)
+        assert result == wasm
+        assert wasm.exists()
+
+    def test_raises_on_download_failure(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        with (
+            patch(
+                "gptme.sandbox.urllib.request.urlretrieve",
+                side_effect=OSError("network error"),
+            ),
+            pytest.raises(RuntimeError, match="Failed to download"),
+        ):
+            _ensure_python_wasm(wasm)
+
+    def test_cleans_up_tmp_on_failure(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        with patch(
+            "gptme.sandbox.urllib.request.urlretrieve",
+            side_effect=OSError("network error"),
+        ):
+            try:
+                _ensure_python_wasm(wasm)
+            except RuntimeError:
+                pass
+        # .tmp leftover must not exist
+        assert not any(tmp_path.glob("*.tmp"))
+
+    def test_uses_default_cache_path(self, monkeypatch, tmp_path):
+        default_path = tmp_path / "python.wasm"
+        default_path.write_bytes(b"\x00asm")
+        monkeypatch.setattr("gptme.sandbox._PYTHON_WASM_CACHE", default_path)
+        result = _ensure_python_wasm()  # no explicit path
+        assert result == default_path
+
+
+# ---------------------------------------------------------------------------
+# Wasmtime exec — unit tests (mocked wasmtime)
+# ---------------------------------------------------------------------------
+
+
+class TestWasmtimeExecUnit:
+    """Tests for sandbox_exec_wasmtime() without a real CPython WASI binary."""
+
+    def _cfg(self, wasm_path: Path, **kwargs) -> SandboxConfig:
+        return SandboxConfig(
+            backend="wasmtime",
+            workspace=Path("/ws"),
+            python_wasm_path=wasm_path,
+            **kwargs,
+        )
+
+    def _mock_wasmtime(self, start_fn=None):
+        """Build the minimal wasmtime surface used by the executor."""
+        mock_wt = MagicMock()
+        mock_wt.ExitTrap = type("ExitTrap", (Exception,), {})
+        mock_wt.Trap = type("Trap", (Exception,), {})
+        mock_wt.TrapCode.INTERRUPT = "interrupt"
+        mock_wt.DirPerms.READ_ONLY = "dir-read-only"
+        mock_wt.FilePerms.READ_ONLY = "file-read-only"
+        mock_wt.WasiConfig.return_value = MagicMock()
+        mock_start = start_fn or MagicMock()
+        mock_wt.Func = type(mock_start)
+        mock_instance = MagicMock()
+        mock_instance.exports.return_value = {"_start": mock_start}
+        mock_wt.Linker.return_value.instantiate.return_value = mock_instance
+        return mock_wt
+
+    def test_wrong_backend_raises(self):
+        cfg = SandboxConfig(backend="none")
+        with pytest.raises(ValueError, match="backend='wasmtime'"):
+            sandbox_exec_wasmtime(cfg, "pass")
+
+    def test_exit_code_zero_on_clean_run(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        wasm.write_bytes(b"\x00asm")
+        mock_wt = self._mock_wasmtime()
+
+        with patch.dict("sys.modules", {"wasmtime": mock_wt}):
+            stdout, stderr, rc = sandbox_exec_wasmtime(self._cfg(wasm), "pass")
+
+        assert (stdout, stderr, rc) == ("", "", 0)
+        assert mock_wt.Config.return_value.epoch_interruption is True
+        mock_wt.Store.return_value.set_limits.assert_called_once_with(
+            memory_size=256 * 1024 * 1024
+        )
+        mock_wt.Store.return_value.set_epoch_deadline.assert_called_once_with(1)
+        wasi_cfg = mock_wt.WasiConfig.return_value
+        assert Path(wasi_cfg.stdout_file).name == "stdout"
+        assert Path(wasi_cfg.stderr_file).name == "stderr"
+
+    def test_preopens_private_directory_read_only(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        wasm.write_bytes(b"\x00asm")
+        mock_wt = self._mock_wasmtime()
+
+        with patch.dict("sys.modules", {"wasmtime": mock_wt}):
+            sandbox_exec_wasmtime(self._cfg(wasm), "pass")
+
+        args, kwargs = mock_wt.WasiConfig.return_value.preopen_dir.call_args
+        assert args[1] == "/work"
+        assert Path(args[0]).name.startswith("gptme_wasm_")
+        assert Path(args[0]) != Path(tempfile.gettempdir())
+        assert kwargs == {
+            "dir_perms": mock_wt.DirPerms.READ_ONLY,
+            "file_perms": mock_wt.FilePerms.READ_ONLY,
+        }
+
+    def test_timeout_interrupts_guest_and_returns_error(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        wasm.write_bytes(b"\x00asm")
+        mock_wt = self._mock_wasmtime()
+        timer = MagicMock()
+        timeout_trap = mock_wt.Trap("interrupt")
+        timeout_trap.trap_code = mock_wt.TrapCode.INTERRUPT
+        start = MagicMock(side_effect=timeout_trap)
+        mock_wt.Func = type(start)
+        mock_wt.Linker.return_value.instantiate.return_value.exports.return_value = {
+            "_start": start
+        }
+
+        with (
+            patch("gptme.sandbox.threading.Timer", return_value=timer),
+            patch.dict("sys.modules", {"wasmtime": mock_wt}),
+        ):
+            stdout, stderr, rc = sandbox_exec_wasmtime(self._cfg(wasm), "pass")
+
+        assert (stdout, rc) == ("", 1)
+        assert "timed out" in stderr
+        timer.start.assert_called_once_with()
+        timer.cancel.assert_called_once_with()
+
+    def test_non_timeout_trap_returns_error(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        wasm.write_bytes(b"\x00asm")
+        mock_wt = self._mock_wasmtime()
+        timer = MagicMock()
+        guest_trap = mock_wt.Trap("guest trap")
+        guest_trap.trap_code = "unreachable"
+        start = MagicMock(side_effect=guest_trap)
+        mock_wt.Func = type(start)
+        mock_wt.Linker.return_value.instantiate.return_value.exports.return_value = {
+            "_start": start
+        }
+
+        with (
+            patch("gptme.sandbox.threading.Timer", return_value=timer),
+            patch.dict("sys.modules", {"wasmtime": mock_wt}),
+        ):
+            stdout, stderr, rc = sandbox_exec_wasmtime(self._cfg(wasm), "pass")
+
+        assert (stdout, rc) == ("", 1)
+        assert "guest trap" in stderr
+        assert "timed out" not in stderr
+        timer.cancel.assert_called_once_with()
+
+    def test_engine_error_returns_error(self, tmp_path):
+        wasm = tmp_path / "python.wasm"
+        wasm.write_bytes(b"\x00asm")
+        mock_wt = self._mock_wasmtime()
+        mock_wt.Engine.side_effect = RuntimeError("wasmtime engine init failed")
+
+        with patch.dict("sys.modules", {"wasmtime": mock_wt}):
+            stdout, stderr, rc = sandbox_exec_wasmtime(self._cfg(wasm), "pass")
+
+        assert (stdout, rc) == ("", 1)
+        assert "Wasmtime error" in stderr
