@@ -445,6 +445,16 @@ class TestDockerExecPythonCommandShape:
         cmd = self._run("x=1").call_args[0][0]
         assert "--pids-limit=512" in cmd
 
+    def test_cap_drop_all_present(self):
+        """All Linux capabilities must be dropped to prevent raw sockets etc."""
+        cmd = self._run("x=1").call_args[0][0]
+        assert "--cap-drop=ALL" in cmd
+
+    def test_no_new_privileges_present(self):
+        """Privilege escalation must be blocked."""
+        cmd = self._run("x=1").call_args[0][0]
+        assert "--security-opt=no-new-privileges" in cmd
+
     def test_network_none_by_default(self):
         cmd = self._run("x=1").call_args[0][0]
         assert "--network=none" in cmd
@@ -469,6 +479,29 @@ class TestDockerExecPythonCommandShape:
             cmd[i + 1] for i, a in enumerate(cmd) if a == "-v" and i + 1 < len(cmd)
         ]
         assert any(":ro" in p for p in v_pairs)
+
+    def test_script_is_readable_without_dac_override(self):
+        """Capability-free container root must be able to read the bind mount."""
+        observed_mode = None
+
+        def inspect_mode(cmd, **kwargs):
+            nonlocal observed_mode
+            script_mount = next(
+                cmd[i + 1]
+                for i, arg in enumerate(cmd)
+                if arg == "-v" and cmd[i + 1].endswith(":/tmp/script.py:ro")
+            )
+            observed_mode = Path(script_mount.split(":", 1)[0]).stat().st_mode & 0o777
+            mock_proc = MagicMock()
+            mock_proc.communicate.return_value = ("", "")
+            mock_proc.returncode = 0
+            return mock_proc
+
+        cfg = SandboxConfig(backend="docker", workspace=Path("/workspace"))
+        with patch("gptme.sandbox.subprocess.Popen", side_effect=inspect_mode):
+            sandbox_exec_python(cfg, "x=1")
+
+        assert observed_mode == 0o644
 
     def test_working_dir_set_to_workspace(self):
         mock = self._run("x=1")
