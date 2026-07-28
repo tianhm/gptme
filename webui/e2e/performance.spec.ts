@@ -191,3 +191,104 @@ test.describe('Performance: streaming code block rendering', () => {
     expect(result.finalText).toContain('<safe> & fast');
   });
 });
+
+test.describe('Performance: message list virtualization', () => {
+  // Regression suite for gptme/gptme#3379.
+  //
+  // Root cause: before virtualization, every message in a conversation was
+  // mounted in the DOM simultaneously. A 200-message conversation rendered
+  // 200 ChatMessage components, creating tens of thousands of DOM nodes and
+  // causing multi-second layout jank.
+  //
+  // Fix: ConversationContent uses @tanstack/react-virtual to render only the
+  // messages visible in the scroll viewport (plus overscan), keeping DOM node
+  // count bounded regardless of total conversation length.
+  //
+  // These tests guard against regressions that would re-mount all messages.
+
+  test('mounts only a bounded subset of DOM nodes for a 200-message conversation', async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName !== 'chromium', 'Virtualization behavior is browser-independent');
+    test.setTimeout(30000);
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText('Stress test (200 messages)')).toBeVisible({ timeout: 10000 });
+
+    await page.getByText('Stress test (200 messages)').click();
+    await expect(page.locator('[data-message-index]').first()).toBeVisible({ timeout: 10000 });
+
+    // Count rendered message rows. With virtualization only ~viewport + overscan
+    // rows are in the DOM. A non-virtualized list would mount all 200.
+    const renderedRows = await page.locator('[data-message-index]').count();
+
+    // The virtualizer renders viewport items + overscan (5). On a standard
+    // CI viewport (1280x720) this is well under 30. Use 50 as a generous
+    // ceiling that still catches a full 200-message regression.
+    expect(renderedRows).toBeLessThan(50);
+    expect(renderedRows).toBeLessThan(200);
+  });
+
+  test('scrolling reveals new messages without mounting all at once', async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName !== 'chromium', 'Virtualization behavior is browser-independent');
+    test.setTimeout(30000);
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText('Stress test (200 messages)')).toBeVisible({ timeout: 10000 });
+
+    await page.getByText('Stress test (200 messages)').click();
+    await expect(page.locator('[data-message-index]').first()).toBeVisible({ timeout: 10000 });
+
+    // Conversations open at the bottom. Scroll the actual message viewport to
+    // the top rather than sending a wheel event to the sidebar item we clicked.
+    const messageViewport = page.getByTestId('message-scroll-viewport');
+    const initialIndices = await page
+      .locator('[data-message-index]')
+      .evaluateAll((els) => els.map((el) => Number(el.getAttribute('data-message-index'))));
+    await messageViewport.evaluate((element) => element.scrollTo({ top: 0 }));
+
+    // Wait for the virtualizer to replace the bottom rows with top rows.
+    await expect
+      .poll(async () =>
+        page
+          .locator('[data-message-index]')
+          .evaluateAll((els) => els.map((el) => Number(el.getAttribute('data-message-index'))))
+      )
+      .not.toEqual(initialIndices);
+
+    const scrolledIndices = await page
+      .locator('[data-message-index]')
+      .evaluateAll((els) => els.map((el) => Number(el.getAttribute('data-message-index'))));
+
+    // The top of the conversation is now rendered, while the DOM stays bounded.
+    expect(scrolledIndices).toContain(0);
+    expect(scrolledIndices.length).toBeLessThan(50);
+  });
+
+  test('total DOM node count stays bounded for a long conversation', async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName !== 'chromium', 'DOM metrics require Chromium');
+    test.setTimeout(30000);
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText('Stress test (200 messages)')).toBeVisible({ timeout: 10000 });
+
+    await page.getByText('Stress test (200 messages)').click();
+    await expect(page.locator('[data-message-index]').first()).toBeVisible({ timeout: 10000 });
+
+    // Count total DOM elements. Pre-virtualization, 200 messages with markdown
+    // rendering produced 8000+ nodes. With virtualization it should be well
+    // under 2000 even with the sidebar and chrome.
+    const totalElements = await page.evaluate(() => document.querySelectorAll('*').length);
+
+    // 3000 is a generous ceiling that still catches a non-virtualized regression
+    // (which would produce 8000+ nodes for 200 rendered messages).
+    expect(totalElements).toBeLessThan(3000);
+  });
+});
