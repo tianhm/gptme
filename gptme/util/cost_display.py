@@ -4,9 +4,11 @@ Provides functions to gather costs from multiple sources (CostTracker, metadata,
 and display them in a consistent format.
 """
 
+import os
 from dataclasses import dataclass
 
-from ..message import Message
+from ..message import Message, is_output_json, is_output_quiet
+from . import console
 from .cost_tracker import CostTracker
 
 
@@ -98,6 +100,94 @@ def _format_cost(cost: float) -> str:
     if 0 < cost < 0.0001:
         return "<$0.0001"
     return f"${cost:.4f}"
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format token counts compactly: 1200 → '1.2k'."""
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def inline_cost_text(msg: Message) -> str | None:
+    """Build the inline cost summary for an assistant message."""
+    if os.environ.get("GPTME_SHOW_COST") != "1":
+        return None
+
+    # Prefer real per-message metadata (most accurate), but only when it
+    # contains actual usage data — a metadata dict with only a "model" key
+    # (partial metadata) must fall through to CostTracker rather than printing
+    # zeros.
+    if msg.metadata:
+        usage = msg.metadata.get("usage", {})
+        input_tokens = usage.get("input_tokens", 0)
+        cache_read = usage.get("cache_read_tokens", 0)
+        cache_creation = usage.get("cache_creation_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        cost = msg.metadata.get("cost", 0.0)
+        model_name = msg.metadata.get("model")
+
+        has_usage = "cost" in msg.metadata or any(
+            key in usage
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_creation_tokens",
+            )
+        )
+        if has_usage:
+            total_in = input_tokens + cache_read + cache_creation
+            cost_text = _format_cost(cost)
+
+            # Subscription providers: show "~$0 (subscription)" instead of $0.0000
+            if model_name:
+                try:
+                    from ..llm.models import get_model
+
+                    meta = get_model(model_name)
+                    if meta and meta.pricing_type == "subscription":
+                        cost_text = "~$0 (subscription)"
+                except Exception:
+                    pass
+
+            return (
+                f"[cost: {cost_text} | tokens: {_fmt_tokens(total_in)} in / "
+                f"{_fmt_tokens(output_tokens)} out]"
+            )
+
+    # Fall back to CostTracker last entry.
+    session_costs = CostTracker.get_session_costs()
+    if session_costs and session_costs.entries:
+        last = session_costs.entries[-1]
+        total_in = (
+            last.input_tokens + last.cache_read_tokens + last.cache_creation_tokens
+        )
+        cost_text = _format_cost(last.cost)
+        try:
+            from ..llm.models import get_model
+
+            meta = get_model(last.model)
+            if meta and meta.pricing_type == "subscription":
+                cost_text = "~$0 (subscription)"
+        except Exception:
+            pass
+        return (
+            f"[cost: {cost_text} | tokens: {_fmt_tokens(total_in)} in / "
+            f"{_fmt_tokens(last.output_tokens)} out]"
+        )
+    return None
+
+
+def print_inline_cost(msg: Message) -> None:
+    """Print a dim per-message cost line for the plain CLI.
+
+    The Textual TUI uses :func:`inline_cost_text` in its own render path.
+    """
+    if is_output_json() or is_output_quiet():
+        return
+    if text := inline_cost_text(msg):
+        console.print(f"[dim]{text}[/dim]")
 
 
 def gather_session_costs() -> CostData | None:
