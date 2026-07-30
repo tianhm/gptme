@@ -175,7 +175,6 @@ def pytest_runtest_makereport(item, call):
     #   (c) the error is specifically from _pytest.stash internals
     if (
         report.when == "teardown"
-        and report.failed
         and getattr(item, "_stash_guard_call_attempts", 0) > 1
         and getattr(item, "_stash_guard_call_passed", False)
     ):
@@ -333,6 +332,7 @@ def cleanup_acp_health_monitor():
             with SessionManager._lock:
                 SessionManager._sessions.clear()
                 SessionManager._conversation_sessions.clear()
+                SessionManager._conversation_locks.clear()
         except ImportError:
             pass
     except Exception as e:

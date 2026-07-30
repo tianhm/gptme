@@ -394,6 +394,59 @@ class TestStepEndpoint:
         finally:
             session.generating = False
 
+    def test_step_loads_config_and_reserves_under_conversation_lock(
+        self, conv, client: FlaskClient
+    ):
+        """Config snapshot and generation reservation share the mutation lock."""
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+        lock = MagicMock()
+        lock.__enter__.side_effect = lambda: setattr(lock, "held", True)
+        lock.__exit__.side_effect = lambda *_: setattr(lock, "held", False)
+
+        with (
+            patch.object(SessionManager, "conversation_lock", return_value=lock),
+            patch.object(
+                session,
+                "step_lock",
+                MagicMock(
+                    __enter__=MagicMock(
+                        side_effect=lambda: setattr(
+                            lock, "step_entered_while_held", lock.held
+                        )
+                    )
+                ),
+            ),
+            patch("gptme.server.api_v2_sessions.get_default_model", return_value=None),
+            patch(
+                "gptme.server.api_v2_sessions.ChatConfig.load_or_create"
+            ) as mock_config,
+            patch(
+                "gptme.server.api_v2_sessions.Config.from_workspace"
+            ) as mock_ws_config,
+        ):
+            from gptme.config import ChatConfig
+
+            cfg = ChatConfig()
+            cfg.model = None
+
+            def load_config(*_args, **_kwargs):
+                lock.config_loaded_while_held = lock.held
+                return cfg
+
+            mock_config.side_effect = load_config
+            mock_ws_config.return_value = MagicMock(
+                get_env=MagicMock(return_value=None)
+            )
+            response = client.post(
+                f"/api/v2/conversations/{conv['conversation_id']}/step",
+                json={"session_id": conv["session_id"]},
+            )
+
+        assert response.status_code == 400
+        assert lock.config_loaded_while_held is True
+        assert lock.step_entered_while_held is True
+
 
 # --- Interrupt endpoint tests ---
 
@@ -697,8 +750,10 @@ class TestToolConfirmEndpoint:
         finally:
             session.pending_tools.pop(tool_id, None)
 
-    def test_skip_action(self, conv, client: FlaskClient):
-        """Skip action removes pending tool and appends system message."""
+    def test_skip_loads_config_after_reserving_continuation(
+        self, conv, client: FlaskClient
+    ):
+        """Skip captures model/workspace while holding the mutation lock."""
         session = SessionManager.get_session(conv["session_id"])
         assert session is not None
         tool_id = str(uuid.uuid4())
@@ -706,10 +761,58 @@ class TestToolConfirmEndpoint:
             tool_id=tool_id,
             tooluse=ToolUse("bash", [], "rm -rf /"),
         )
+        lock = MagicMock()
+        lock.__enter__.side_effect = lambda: setattr(lock, "held", True)
+        lock.__exit__.side_effect = lambda *_: setattr(lock, "held", False)
+        from gptme.config import ChatConfig
+
+        cfg = ChatConfig(model="fresh/model")
+
+        def load_config(*_args, **_kwargs):
+            lock.config_loaded_while_held = lock.held
+            return cfg
+
+        with (
+            patch.object(SessionManager, "conversation_lock", return_value=lock),
+            patch(
+                "gptme.server.api_v2_sessions.ChatConfig.load_or_create",
+                side_effect=load_config,
+            ),
+            patch(
+                "gptme.server.api_v2_sessions._start_step_thread", return_value=True
+            ) as start_step,
+            patch("gptme.server.api_v2_sessions._append_and_notify"),
+        ):
+            response = client.post(
+                f"/api/v2/conversations/{conv['conversation_id']}/tool/confirm",
+                json={
+                    "session_id": conv["session_id"],
+                    "tool_id": tool_id,
+                    "action": "skip",
+                },
+            )
+        assert response.status_code == 200
+        assert lock.config_loaded_while_held is True
+        assert start_step.call_args.args[2] == "fresh/model"
+        assert start_step.call_args.args[3] == cfg.workspace
+
+    def test_skip_action(self, conv, client: FlaskClient):
+        """Skip consumes the tool only after reserving its continuation."""
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+        tool_id = str(uuid.uuid4())
+        tool_exec = ToolExecution(
+            tool_id=tool_id,
+            tooluse=ToolUse("bash", [], "rm -rf /"),
+        )
+        session.pending_tools[tool_id] = tool_exec
 
         with (
             patch("gptme.server.api_v2_sessions._append_and_notify"),
-            patch("gptme.server.api_v2_sessions._start_step_thread"),
+            patch(
+                "gptme.server.api_v2_sessions._start_step_thread", return_value=True
+            ) as start_step,
+            patch("gptme.server.api_v2_sessions.resolve_hook_confirmation") as resolve,
         ):
             response = client.post(
                 f"/api/v2/conversations/{conv['conversation_id']}/tool/confirm",
@@ -722,6 +825,78 @@ class TestToolConfirmEndpoint:
 
         assert response.status_code == 200
         assert tool_id not in session.pending_tools
+        assert tool_exec.status.value == "skipped"
+        resolve.assert_called_once_with(tool_id, "skip", None)
+        assert start_step.call_count == 1
+        assert start_step.call_args.args[:2] == (conv["conversation_id"], session)
+        assert start_step.call_args.kwargs == {"reserved": True}
+
+    def test_skip_preserves_tool_when_step_reserved_generation(
+        self, conv, client: FlaskClient
+    ):
+        """A rejected skip remains retryable while another generation runs."""
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+        tool_id = str(uuid.uuid4())
+        tool_exec = ToolExecution(
+            tool_id=tool_id,
+            tooluse=ToolUse("bash", [], "rm -rf /"),
+        )
+        session.pending_tools[tool_id] = tool_exec
+        session.generating = True
+
+        with (
+            patch("gptme.server.api_v2_sessions._append_and_notify") as append,
+            patch("gptme.server.api_v2_sessions._start_step_thread") as start_step,
+            patch("gptme.server.api_v2_sessions.resolve_hook_confirmation") as resolve,
+        ):
+            response = client.post(
+                f"/api/v2/conversations/{conv['conversation_id']}/tool/confirm",
+                json={
+                    "session_id": conv["session_id"],
+                    "tool_id": tool_id,
+                    "action": "skip",
+                },
+            )
+
+        assert response.status_code == 409
+        assert session.pending_tools[tool_id] is tool_exec
+        assert tool_exec.status.value == "pending"
+        append.assert_not_called()
+        start_step.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_skip_releases_reservation_when_dispatch_fails(
+        self, conv, client: FlaskClient
+    ):
+        """A failed continuation dispatch must not strand generating=True."""
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+        tool_id = str(uuid.uuid4())
+        session.pending_tools[tool_id] = ToolExecution(
+            tool_id=tool_id,
+            tooluse=ToolUse("bash", [], "rm -rf /"),
+        )
+
+        with (
+            patch("gptme.server.api_v2_sessions._append_and_notify"),
+            patch(
+                "gptme.server.api_v2_sessions._start_step_thread",
+                side_effect=RuntimeError("thread start failed"),
+            ),
+        ):
+            response = client.post(
+                f"/api/v2/conversations/{conv['conversation_id']}/tool/confirm",
+                json={
+                    "session_id": conv["session_id"],
+                    "tool_id": tool_id,
+                    "action": "skip",
+                },
+            )
+
+        assert response.status_code == 500
+        assert session.generating is False
+        assert session.generating_since is None
 
     def test_edit_requires_content(self, conv, client: FlaskClient):
         """Edit action without content returns 400."""

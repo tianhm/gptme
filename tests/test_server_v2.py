@@ -2308,6 +2308,44 @@ def test_v2_chat_config_patch_rejected_during_generation(client: FlaskClient):
     assert "generation is in progress" in response.get_json()["error"]
 
 
+def test_v2_chat_config_patch_loads_log_under_conversation_lock(
+    client: FlaskClient,
+):
+    """Config PATCH must not retain a stale log snapshot while waiting on /step."""
+    from gptme.logmanager import LogManager
+    from gptme.server.session_models import SessionManager
+
+    conv = create_conversation(client)
+    conversation_id = conv["conversation_id"]
+    lock = unittest.mock.MagicMock()
+    lock.held = False
+    lock.__enter__.side_effect = lambda: setattr(lock, "held", True)
+    lock.__exit__.side_effect = lambda *_: setattr(lock, "held", False)
+    real_load = LogManager.load
+    loaded_while_locked: list[bool] = []
+
+    def tracking_load(*args, **kwargs):
+        if args and args[0] == conversation_id:
+            loaded_while_locked.append(lock.held)
+        return real_load(*args, **kwargs)
+
+    with (
+        unittest.mock.patch.object(
+            SessionManager, "conversation_lock", return_value=lock
+        ),
+        unittest.mock.patch(
+            "gptme.server.api_v2.LogManager.load", side_effect=tracking_load
+        ),
+    ):
+        response = client.patch(
+            f"/api/v2/conversations/{conversation_id}/config",
+            json={"chat": {"model": "openai/gpt-4o"}},
+        )
+
+    assert response.status_code == 200
+    assert loaded_while_locked == [True]
+
+
 @pytest.mark.parametrize(
     "files_payload",
     [
@@ -2608,6 +2646,31 @@ def test_v2_fork_conversation_rejects_out_of_range_index(client: FlaskClient):
 
     assert response.status_code == 400
     assert "out of range" in response.get_json()["error"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "json"),
+    [
+        ("PATCH", "/messages/0", {"content": "updated"}),
+        ("DELETE", "/messages/0", None),
+        ("POST", "/fork?after_message=0", None),
+    ],
+)
+def test_missing_conversation_mutations_do_not_allocate_locks(
+    client: FlaskClient, method: str, path: str, json: dict | None
+):
+    """Rejected mutation requests must not grow the process-wide lock registry."""
+    from gptme.server.session_models import SessionManager
+
+    before = dict(SessionManager._conversation_locks)
+    conversation_id = f"missing-{uuid.uuid4().hex}"
+
+    response = client.open(
+        f"/api/v2/conversations/{conversation_id}{path}", method=method, json=json
+    )
+
+    assert response.status_code == 404
+    assert SessionManager._conversation_locks == before
 
 
 def test_copy_messages_for_fork_copies_only_referenced_attachments(tmp_path: Path):
