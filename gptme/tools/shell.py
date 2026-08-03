@@ -1494,18 +1494,25 @@ def execute_shell_impl(
         timeout_value=timeout,
         logdir=logdir,
     )
-    yield Message("system", msg)
+    # Workspace-awareness: notify when cd enters a directory with gptme.toml.
+    # Append hint text directly to the command output (single yield) so no
+    # separate message is interleaved between the assistant tool_calls entry
+    # and the tool response.  The serializer converts system messages without
+    # a call_id to user-role messages; any message interleaved between
+    # tool_calls and the tool result causes strict providers (e.g. Moonshot AI
+    # / kimi-k2.6) to reject the conversation with a 400 error.
+    workspace_hint_content = ""
+    if returncode == 0 and not interrupted:
+        cmd_stripped = cmd.strip()
+        if cmd_stripped.startswith("cd ") or cmd_stripped == "cd":
+            hint = _check_workspace_config()
+            if hint:
+                workspace_hint_content = "\n\n" + hint.content
+
+    yield Message("system", msg + workspace_hint_content)
 
     if interrupted:
         raise KeyboardInterrupt from None
-
-    # Workspace-awareness: notify when cd enters a directory with gptme.toml
-    if returncode == 0:
-        cmd_stripped = cmd.strip()
-        if cmd_stripped.startswith("cd ") or cmd_stripped == "cd":
-            workspace_hint = _check_workspace_config()
-            if workspace_hint:
-                yield workspace_hint
 
 
 # Workspace paths already hinted this session, so we don't spam the
