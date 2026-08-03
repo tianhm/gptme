@@ -29,7 +29,7 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from itertools import islice, zip_longest
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import (
     Literal,
     TextIO,
@@ -495,10 +495,83 @@ class LogManager:
                     view_path = views_dir / f"{view_name}.jsonl"
                     log.write_jsonl(view_path)
 
+        # Persist model selection trace alongside the conversation
+        trace_path = self.write_model_trace()
+
         # Force sync to disk if requested
         if sync:
-            with open(self.logfile, "rb") as f:
-                os.fsync(f.fileno())
+            paths = [Path(self.logfile)]
+            if trace_path is not None:
+                paths.append(trace_path)
+            for path in paths:
+                with path.open("rb") as f:
+                    os.fsync(f.fileno())
+            if trace_path is not None:
+                self._fsync_directory(trace_path.parent)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        """Best-effort sync of directory-entry changes on POSIX filesystems."""
+        if os.name == "nt":
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            directory_fd = os.open(path, flags)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError as error:
+            logger.warning("Could not fsync log directory %s: %s", path, error)
+
+    _TRACE_FILENAME = "model_selection_trace.json"
+
+    def write_model_trace(self) -> Path | None:
+        """Persist the active ModelSelectionTrace and return its path.
+
+        Called automatically by write(). No-op when no trace is active in the
+        current context (e.g. tests or sessions that pre-date Phase 0).
+        """
+        from ..model_attestation import get_selection_trace
+
+        trace = get_selection_trace()
+        if trace is None:
+            return None
+        trace_path = self.logdir / self._TRACE_FILENAME
+        with NamedTemporaryFile(
+            mode="w",
+            dir=self.logdir,
+            prefix=f".{self._TRACE_FILENAME}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(trace.to_json() + "\n")
+            temp_path = Path(temp_file.name)
+        try:
+            temp_path.replace(trace_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        return trace_path
+
+    def read_model_trace(self):
+        """Read the persisted ModelSelectionTrace from logdir, or None if absent.
+
+        Returns:
+            ModelSelectionTrace if model_selection_trace.json exists, else None.
+        """
+        from ..model_attestation import ModelSelectionTrace
+
+        trace_path = self.logdir / self._TRACE_FILENAME
+        if not trace_path.exists():
+            return None
+        try:
+            data = json.loads(trace_path.read_text())
+            return ModelSelectionTrace.from_dict(data)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                "Failed to parse model_selection_trace.json in %s", self.logdir
+            )
+            return None
 
     def _save_backup_branch(self, type="edit") -> None:
         """backup the current log to a new branch, usually before editing/undoing"""
