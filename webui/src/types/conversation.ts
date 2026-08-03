@@ -11,6 +11,7 @@ export interface MessageMetadata {
   model?: string;
   cost?: number;
   usage?: MessageUsage;
+  tool?: string;
 }
 
 export interface Message {
@@ -19,6 +20,7 @@ export interface Message {
   timestamp?: string;
   files?: string[];
   hide?: boolean;
+  call_id?: string;
   metadata?: MessageMetadata;
   /** Client-only: tracks send status for optimistic messages */
   _status?: 'pending' | 'sent' | 'failed';
