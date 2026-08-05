@@ -90,6 +90,9 @@ export function useConversation(conversationId: string, serverId?: string) {
           `[useConversation] Failed to preload chat config for ${conversationId}:`,
           error
         );
+        // Set chatConfig: null (not undefined) so the model selector skeleton
+        // clears — null means "fetch attempted, no config", not "still loading".
+        if (!cancelled) updateConversation(conversationId, { chatConfig: null });
       });
     return () => {
       cancelled = true;
@@ -143,9 +146,11 @@ export function useConversation(conversationId: string, serverId?: string) {
                 `[useConversation] Failed to load chat config for ${conversationId}:`,
                 error
               );
-              // Still update with conversation data even if config fails
+              // Still update with conversation data even if config fails.
+              // Set chatConfig: null (not undefined) so the model selector skeleton
+              // clears — null means "fetch attempted, no config", not "still loading".
               updateConversationData(conversationId, data);
-              updateConversation(conversationId, { loadError: null });
+              updateConversation(conversationId, { chatConfig: null, loadError: null });
             }
           } catch (error) {
             console.warn(
@@ -155,7 +160,9 @@ export function useConversation(conversationId: string, serverId?: string) {
             // Don't overwrite existing placeholder data if API call fails, but
             // surface the failure so the user isn't left staring at a blank chat.
             const message = error instanceof Error ? error.message : 'Failed to load conversation';
-            updateConversation(conversationId, { loadError: message });
+            // Set chatConfig: null (not undefined) so the model selector shows the
+            // fallback model rather than an inert loading skeleton indefinitely.
+            updateConversation(conversationId, { chatConfig: null, loadError: message });
             toast({
               variant: 'destructive',
               title: 'Failed to load conversation',

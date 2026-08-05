@@ -327,10 +327,23 @@ const ModelBadge: FC<{
   models: { id: string; provider: string; model: string }[];
   onModelChange: (model: string) => void;
   isDisabled: boolean;
-}> = ({ model, models, onModelChange, isDisabled }) => {
+  isLoading?: boolean;
+}> = ({ model, models, onModelChange, isDisabled, isLoading }) => {
   const [open, setOpen] = useState(false);
   const modelInfo = models.find((m) => m.id === model);
   const displayName = modelInfo?.model || model.split('/').pop() || model;
+
+  // Show a skeleton pill while the conversation's chatConfig is still loading,
+  // so we never display the wrong fallback model to the user.
+  if (isLoading) {
+    return (
+      <div
+        data-testid="model-selector"
+        className="h-5 w-24 animate-pulse rounded-sm bg-muted"
+        aria-label="Loading model..."
+      />
+    );
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -340,6 +353,8 @@ const ModelBadge: FC<{
           size="sm"
           className="h-5 max-w-[200px] rounded-sm px-1.5 text-[10px] text-muted-foreground transition-all hover:bg-accent hover:text-muted-foreground hover:opacity-100"
           disabled={isDisabled}
+          data-testid="model-selector"
+          aria-label={`Model: ${displayName}`}
         >
           {modelInfo?.provider && <ProviderIcon provider={modelInfo.provider} size={10} />}
           <span className="ml-1 truncate">{displayName}</span>
@@ -603,9 +618,19 @@ export const ChatInput: FC<Props> = ({
   // Use dynamic models instead of static list
   const { models: modelInfos, defaultModel: apiDefaultModel } = useModels();
 
-  // Get conversation config to read the actual model
+  // Get conversation config to read the actual model.
+  // chatConfig uses a three-value sentinel:
+  //   undefined = fetch not yet attempted (show loading skeleton)
+  //   null      = fetch attempted but failed (clear skeleton, show fallback model)
+  //   ChatConfig = successfully fetched
   const conversation$ = conversationId ? conversations$.get(conversationId) : null;
-  const conversationModel = conversation$?.chatConfig?.get()?.chat?.model;
+  const chatConfig = conversation$?.chatConfig?.get();
+  const conversationModel = chatConfig?.chat?.model;
+  // True only while a chatConfig fetch is actively in flight for an existing
+  // conversation — prevents showing the wrong fallback model during the fetch.
+  // Once the fetch completes (success OR failure), chatConfig transitions from
+  // undefined to a non-undefined value and the skeleton clears.
+  const isChatConfigLoading = !!conversationId && !isReadOnly && chatConfig === undefined;
 
   // Initialize message from localStorage for persistence across page reloads
   // Skip localStorage in edit mode — content comes from the message being edited
@@ -1245,6 +1270,7 @@ export const ChatInput: FC<Props> = ({
                           setHasExplicitModelSelection(true);
                         }}
                         isDisabled={isDisabled}
+                        isLoading={isChatConfigLoading}
                       />
                       {/* File attach button */}
                       <Button
