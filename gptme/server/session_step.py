@@ -27,7 +27,7 @@ from ..hooks import HookType, trigger_hook
 from ..hooks.confirm import ConfirmationResult
 from ..llm import _chat_complete, _stream
 from ..logmanager import LogManager, prepare_messages
-from ..message import Message
+from ..message import Message, MessageMetadata, MessageTimings
 from ..telemetry import trace_function
 from ..tools import ToolUse, get_tools
 from ..tools.shell import set_workspace_cwd
@@ -227,6 +227,93 @@ def _append_and_notify(manager: LogManager, session: ConversationSession, msg: M
             "message": msg2dict(msg, manager.workspace, manager.logdir),
         },
     )
+
+
+def _attach_tool_timings(
+    conversation_id: str,
+    tool_ms_by_name: dict[str, float],
+    target_timestamp: datetime | None = None,
+    branch: str = "main",
+) -> None:
+    """Attach aggregated tool-execution timing to the originating assistant message.
+
+    Walks the log backwards looking for the assistant message whose timestamp
+    matches ``target_timestamp`` (the message that requested these tools),
+    merges the per-tool timing data into its ``metadata.timings`` dict, and
+    rewrites the JSONL file. This is a best-effort operation — failures are
+    logged but do not interrupt tool execution or step continuation.
+
+    ``target_timestamp`` matters because a continuation step can already have
+    appended a *newer* assistant message by the time a slower confirmation
+    thread finishes: two non-auto-confirm tools from the same message can be
+    confirmed on separate threads, and if the earlier one clears the last
+    pending tool it triggers auto-step (a new assistant message) before the
+    later thread gets here. Without a target, "most recent assistant message"
+    would then be the wrong one. Falls back to the most recent assistant
+    message if no ``target_timestamp`` is given (or no match is found), for
+    backward compatibility with callers that don't have it.
+
+    Multiple confirmation threads for the same assistant message can call this
+    concurrently, each with only its own local tool durations. Merging alone
+    isn't enough to avoid a lost update: two threads can each read the
+    caller's (possibly stale) in-memory log before either has written, merge
+    against that same stale state, and the later write silently discards the
+    earlier thread's contribution. Serialize the whole read-merge-write under
+    the conversation lock and reload fresh from disk inside it so each thread
+    merges against the latest state, not a snapshot taken before the lock.
+    """
+    from typing import cast
+
+    with SessionManager.conversation_lock(conversation_id):
+        manager = LogManager.load(conversation_id, branch=branch, lock=False)
+        messages = manager.log.messages
+
+        target_idx: int | None = None
+        fallback_idx: int | None = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].role == "assistant":
+                if fallback_idx is None:
+                    fallback_idx = i
+                if (
+                    target_timestamp is not None
+                    and messages[i].timestamp == target_timestamp
+                ):
+                    target_idx = i
+                    break
+        if target_idx is None:
+            target_idx = fallback_idx
+
+        if target_idx is not None:
+            msg = messages[target_idx]
+            existing_meta = dict(msg.metadata) if msg.metadata else {}
+            _raw_timings = existing_meta.get("timings")
+            existing_timings = cast(
+                MessageTimings,
+                dict(_raw_timings) if isinstance(_raw_timings, dict) else {},
+            )
+            # Merge with any tool timings already recorded by prior
+            # confirmation threads — each thread only has its own local
+            # measurements, so we must accumulate rather than replace to
+            # avoid losing earlier tools.
+            prior = {
+                k: round(v, 1)
+                for k, v in (existing_timings.get("tool_ms_by_name") or {}).items()
+            }
+            for k, v in tool_ms_by_name.items():
+                prior[k] = round(prior.get(k, 0.0) + v, 1)
+            existing_timings["tool_ms"] = round(sum(prior.values()), 1)
+            existing_timings["tool_ms_by_name"] = prior
+            existing_meta["timings"] = existing_timings
+            updated_msg = msg.replace(metadata=cast(MessageMetadata, existing_meta))
+            manager.log.messages[target_idx] = updated_msg
+            manager.write()
+            logger.debug(
+                "Attached tool timings to assistant message: tool_ms=%.1f, by_name=%s",
+                existing_timings["tool_ms"],
+                existing_timings["tool_ms_by_name"],
+            )
+            return
+        logger.warning("_attach_tool_timings: no assistant message found in log")
 
 
 def _persist_generation_error(
@@ -832,6 +919,7 @@ def step(
                 tooluse=tooluse,
                 auto_confirm=session.auto_confirm_count > 0 or auto_confirm,
                 branch=branch,
+                assistant_msg_timestamp=msg.timestamp,
             )
             session.pending_tools[tool_id] = tool_exec
 
@@ -935,6 +1023,14 @@ def start_tool_execution(
             # to guarantee serial execution order.
             current_tool_id: str = tool_id
             current_edited_tooluse: ToolUse | None = edited_tooluse
+            # Accumulate per-tool durations across all chained executions so
+            # they can be persisted in the assistant message metadata at the end.
+            tool_ms_by_name: dict[str, float] = {}
+            # Timestamp of the assistant message that requested these tools —
+            # captured from the first tool claimed below, so timing is
+            # attached to that message even if a later one is appended before
+            # this thread finishes (see _attach_tool_timings).
+            assistant_msg_timestamp = None
 
             while True:
                 # Reload the conversation to pick up outputs from prior tools.
@@ -957,6 +1053,8 @@ def start_tool_execution(
                         session.generating = False
                         session.generating_since = None
                     return  # another thread claimed this tool; don't trigger auto-step
+                if assistant_msg_timestamp is None:
+                    assistant_msg_timestamp = tool_exec.assistant_msg_timestamp
                 tool_exec.status = ToolStatus.EXECUTING
 
                 # use explicit tooluse if set (may be modified), else from pending
@@ -1007,18 +1105,36 @@ def start_tool_execution(
                     # ToolUse.execute() for real results; hook messages intentionally
                     # have no call_id — don't re-stamp here or hook messages become
                     # duplicate function_call_output entries (Responses API 400).
-                    for tool_output in tool_outputs:
-                        _append_and_notify(manager, session, tool_output)
+                    #
+                    # Reload under conversation_lock before appending: without this,
+                    # a stale in-memory manager (loaded at the top of the loop) would
+                    # rewrite the full JSONL, overwriting concurrent tool-result appends
+                    # or timing patches written by other confirmation threads.
+                    with SessionManager.conversation_lock(conversation_id):
+                        manager = LogManager.load(
+                            conversation_id, branch=branch, lock=False
+                        )
+                        for tool_output in tool_outputs:
+                            _append_and_notify(manager, session, tool_output)
                 except Exception as e:
                     logger.exception(f"Error executing tool {tooluse.tool}: {e}")
                     tool_exec.status = ToolStatus.FAILED
 
-                    msg = Message("system", f"Error: {e!s}", call_id=tooluse.call_id)
-                    _append_and_notify(manager, session, msg)
+                    with SessionManager.conversation_lock(conversation_id):
+                        manager = LogManager.load(
+                            conversation_id, branch=branch, lock=False
+                        )
+                        msg = Message(
+                            "system", f"Error: {e!s}", call_id=tooluse.call_id
+                        )
+                        _append_and_notify(manager, session, msg)
 
-                # Emit tool_complete with duration
+                # Emit tool_complete with duration; also accumulate for metadata.
                 if tool_exec.started_at is not None:
                     duration_ms = (time.monotonic() - tool_exec.started_at) * 1000
+                    tool_ms_by_name[tooluse.tool] = (
+                        tool_ms_by_name.get(tooluse.tool, 0.0) + duration_ms
+                    )
                     SessionManager.add_event(
                         conversation_id,
                         {
@@ -1029,21 +1145,44 @@ def start_tool_execution(
                         },
                     )
 
-                # Persist tool outputs to disk
-                manager.write()
-
                 # Chain to next pending auto-confirm tool (serial execution)
                 next_auto_id: str | None = None
+                next_auto_ts: datetime | None = None
                 for tid, texec in list(session.pending_tools.items()):
                     if texec.auto_confirm:
                         next_auto_id = tid
+                        next_auto_ts = texec.assistant_msg_timestamp
                         break
 
                 if next_auto_id is not None:
+                    # If the next chained tool belongs to a different assistant
+                    # message (e.g. added by a rerun while this thread is
+                    # running), flush accumulated timings for the current target
+                    # before switching — otherwise those durations would be
+                    # attached to the wrong step.
+                    if next_auto_ts != assistant_msg_timestamp and tool_ms_by_name:
+                        _attach_tool_timings(
+                            conversation_id,
+                            dict(tool_ms_by_name),
+                            assistant_msg_timestamp,
+                            branch=branch,
+                        )
+                        tool_ms_by_name.clear()
+                        assistant_msg_timestamp = next_auto_ts
                     current_tool_id = next_auto_id
                     current_edited_tooluse = None
                 else:
                     break
+
+            # Persist aggregated tool timing in the assistant message that
+            # triggered these tool calls so it is available in session records.
+            if tool_ms_by_name:
+                _attach_tool_timings(
+                    conversation_id,
+                    tool_ms_by_name,
+                    assistant_msg_timestamp,
+                    branch=branch,
+                )
 
             # Only auto-step when all pending tools have been executed.
             # With multiple tools per message, we must wait until every tool
