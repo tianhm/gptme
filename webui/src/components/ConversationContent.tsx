@@ -369,6 +369,11 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
   // a burst of log updates queues at most one scroll per animation frame.
   const scrollRAFRef = useRef<number | null>(null);
 
+  // Monotonically-increasing counter: each scrollToBottom call increments it.
+  // The inner rAF checks that its captured gen still matches before clearing
+  // isAutoScrolling$, so an older cycle cannot kill a newer one mid-flight.
+  const scrollGenRef = useRef(0);
+
   // Observable for if the conversation is auto-scrolling
   const isAutoScrolling$ = useObservable(false);
 
@@ -396,13 +401,52 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
     const count = visibleMessageIndicesRef.current.length;
     if (count <= 0) return;
     isAutoScrolling$.set(true);
-    // scrollToIndex ensures the last item is actually rendered before measuring,
-    // which is more reliable than container.scrollHeight with virtual lists.
+    // Capture a generation token so the inner rAF only clears isAutoScrolling$
+    // when no newer scrollToBottom call has started.  Without this, overlapping
+    // rAF chains (e.g. a log update fires while executingTool$ is also
+    // transitioning) let an older cycle unconditionally clear the flag before
+    // the newest cycle reaches the true bottom, causing onScroll to classify
+    // the ongoing programmatic scroll as manual and abort auto-scroll.
+    const gen = ++scrollGenRef.current;
+    // Snapshot position before programmatic scroll.  scrollToIndex only moves the
+    // viewport downward (toward the last item); if scrollTop drops below this value
+    // in the first rAF, the user dragged the viewport up while isAutoScrolling$
+    // blocked onScroll — honour their position instead of snapping to the bottom.
+    const scrollTopSnapshot = scrollContainerRef.current?.scrollTop ?? 0;
+    // scrollToIndex ensures the last virtual item is rendered before measuring.
     virtualizerRef.current.scrollToIndex(count - 1, { align: 'end' });
+    // A second rAF scrolls the container to its true bottom so elements below
+    // the virtual list (InlineToolExecution card, completion badge, bottom pad)
+    // are also in view.  isAutoScrolling$ stays true across both frames so the
+    // onScroll handler does not mistake the intermediate position for a manual
+    // scroll and abort auto-scroll.
     requestAnimationFrame(() => {
-      isAutoScrolling$.set(false);
+      const container = scrollContainerRef.current;
+      if (container) {
+        // If scrollTop regressed below where we started, the user scrolled up
+        // during the isAutoScrolling$ lock window.  Abort without snapping.
+        if (container.scrollTop < scrollTopSnapshot) {
+          autoScrollAborted$.set(true);
+          if (scrollGenRef.current === gen) isAutoScrolling$.set(false);
+          return;
+        }
+        container.scrollTop = container.scrollHeight - container.clientHeight;
+      }
+      requestAnimationFrame(() => {
+        if (scrollGenRef.current === gen) {
+          // If scrollTop drifted away from true bottom while isAutoScrolling$
+          // was true, the user scrolled during the lock (onScroll exits early
+          // and can't set autoScrollAborted$ itself).  Honour it here before
+          // releasing the lock so the viewport stays where the user put it.
+          const c = scrollContainerRef.current;
+          if (c && c.scrollHeight - c.scrollTop - c.clientHeight > 1) {
+            autoScrollAborted$.set(true);
+          }
+          isAutoScrolling$.set(false);
+        }
+      });
     });
-  }, [isAutoScrolling$]);
+  }, [autoScrollAborted$, isAutoScrolling$, scrollContainerRef]);
 
   // Auto-scroll when the conversation is updated (e.g., streaming response).
   // Cancel any pending rAF before scheduling a new one so rapid log updates
@@ -416,6 +460,23 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
       scrollRAFRef.current = requestAnimationFrame(() => {
         scrollRAFRef.current = null;
         scrollToBottom();
+      });
+    }
+  });
+
+  // When the executing-tool card appears or disappears its height is added to /
+  // removed from the scroll container outside the virtualizer.  Fire an explicit
+  // scroll-to-bottom on those transitions so the card stays in view and the
+  // onScroll handler does not abort auto-scroll from a stale intermediate position.
+  // Re-check autoScrollAborted$ inside the rAF (not just when scheduling it): a
+  // manual scroll can land in the gap between scheduling and the frame firing,
+  // and without the recheck the queued scrollToBottom would override it.
+  useObserveEffect(conversation$?.executingTool, () => {
+    if (!autoScrollAborted$.get()) {
+      requestAnimationFrame(() => {
+        if (!autoScrollAborted$.get()) {
+          scrollToBottom();
+        }
       });
     }
   });
