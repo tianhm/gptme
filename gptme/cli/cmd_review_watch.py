@@ -295,6 +295,213 @@ def _load_artifact(artifact_path: str) -> ReviewArtifact:
     return ReviewArtifact.from_json(text)
 
 
+def _verify_comment_reviewer(
+    *,
+    owner: str,
+    repo: str,
+    comment_id: int,
+    expected_reviewer: str,
+    expected_body: str = "",
+    target_pr_number: int | None = None,
+) -> tuple[bool, str]:
+    """Verify a PR review comment belongs to the claimed reviewer and has matching body.
+
+    Fetches the comment and compares:
+    1. ``user.login`` case-insensitively (using casefold for proper Unicode handling)
+    2. Comment body matches the artifact finding body exactly (if provided)
+    3. If target_pr_number is provided, verifies the comment is on that specific PR
+
+    Tries the inline review-comment endpoint first (``pulls/comments``); falls
+    back to the issue-comment endpoint (``issues/comments``) for PR-level
+    conversation comments, which live in a separate ID space.
+
+    Returns (verified, body) where verified is True only if login matches and
+    body is authentic. When verification fails, body is empty string.
+    Fails closed on network errors or mismatches.
+    """
+    # Try inline review comment endpoint first.
+    data = run_gh_json(
+        ["gh", "api", f"repos/{owner}/{repo}/pulls/comments/{comment_id}"],
+        timeout=10,
+    )
+    is_issue_comment = False
+    if not isinstance(data, dict):
+        # Fall back to the issue/conversation comment endpoint.
+        # PR-level comments (not attached to a diff line) use this endpoint and
+        # have IDs that are independent of the pulls/comments ID space.
+        data = run_gh_json(
+            ["gh", "api", f"repos/{owner}/{repo}/issues/comments/{comment_id}"],
+            timeout=10,
+        )
+        is_issue_comment = True
+
+    if not isinstance(data, dict):
+        logger.warning(
+            "Could not fetch GitHub comment %d for reviewer verification "
+            "(tried both pulls/comments and issues/comments endpoints); "
+            "rejecting finding as unverifiable.",
+            comment_id,
+        )
+        return False, ""
+
+    actual_login = data.get("user", {}).get("login", "")
+    if actual_login.casefold() != expected_reviewer.casefold():
+        logger.warning(
+            "GitHub comment %d reviewer mismatch: artifact claims '%s', "
+            "API returned '%s'; rejecting finding.",
+            comment_id,
+            expected_reviewer,
+            actual_login,
+        )
+        return False, ""
+
+    # Verify the comment is on the target PR (prevent cross-PR comment injection).
+    if target_pr_number is not None:
+        comment_pr: int | None = None
+        if is_issue_comment:
+            # Issue comments use ``issue_url``:
+            # "https://api.github.com/repos/owner/repo/issues/42"
+            issue_url = data.get("issue_url", "")
+            if issue_url:
+                try:
+                    comment_pr = int(issue_url.rstrip("/").split("/")[-1])
+                except (ValueError, IndexError):
+                    pass
+        else:
+            # Inline review comments use ``pull_request_url``:
+            # "https://api.github.com/repos/owner/repo/pulls/42"
+            pr_url = data.get("pull_request_url", "")
+            if pr_url:
+                try:
+                    comment_pr = int(pr_url.rstrip("/").split("/")[-1])
+                except (ValueError, IndexError):
+                    pass
+        if comment_pr != target_pr_number:
+            logger.warning(
+                "GitHub comment %d is from PR #%s, but artifact targets PR #%d; "
+                "rejecting finding (prevents unrelated feedback injection).",
+                comment_id,
+                comment_pr,
+                target_pr_number,
+            )
+            return False, ""
+
+    # Verify the comment body if one was expected.
+    # Require exact match (after stripping leading/trailing whitespace) to prevent
+    # substring manipulation: an attacker who supplies a context-altering fragment
+    # of a genuine trusted comment would otherwise pass a containment check.
+    comment_body = data.get("body", "")
+    if expected_body:
+        if expected_body.strip() != comment_body.strip():
+            logger.warning(
+                "GitHub comment %d body mismatch: artifact body does not exactly "
+                "match reviewer's actual comment; rejecting finding (prevents forgery).",
+                comment_id,
+            )
+            return False, ""
+
+    return True, comment_body
+
+
+def _filter_findings_by_trusted_reviewers(
+    findings: list[ReviewFinding],
+    trusted_reviewers: tuple[str, ...],
+    *,
+    owner: str = "",
+    repo: str = "",
+    pr_number: int | None = None,
+) -> list[ReviewFinding]:
+    """Filter findings to only those authored by trusted reviewers.
+
+    If ``trusted_reviewers`` is empty, all findings are returned unchanged.
+    If ``trusted_reviewers`` is non-empty, only findings whose ``reviewer``
+    field matches one of the allowed logins are returned (comparison is
+    case-insensitive using casefold — GitHub logins are case-preserving but not
+    case-sensitive).
+
+    When ``trusted_reviewers`` is enabled, all findings MUST carry a
+    ``github_comment_id`` to be verifiable against the GitHub API.  This
+    prevents forged artifacts from injecting attacker-controlled findings.
+    The reviewer field and finding body are cross-checked against GitHub
+    before the finding is accepted.  Findings that fail API verification or
+    lack a ``github_comment_id`` are rejected (fail-closed).
+
+    When ``pr_number`` is provided, verified comments are checked to ensure
+    they are on the target PR (prevents cross-PR comment injection).
+
+    When ``owner`` and ``repo`` are omitted but ``trusted_reviewers`` is
+    enabled, ALL findings are rejected (fail-closed).  Without repository
+    context the comment body cannot be cross-checked against GitHub, so
+    accepting any finding would allow an attacker to strip pr metadata from
+    the artifact and bypass body verification entirely.
+    """
+    if not trusted_reviewers:
+        return findings
+
+    # Normalise allowlist using casefold for proper Unicode case handling.
+    # GitHub logins are case-insensitive.
+    trusted_set_lower = {r.casefold() for r in trusted_reviewers}
+
+    filtered: list[ReviewFinding] = []
+    for f in findings:
+        if f.reviewer.casefold() not in trusted_set_lower:
+            continue
+
+        # When trusted-reviewer filtering is enabled, all findings MUST have
+        # a github_comment_id for verification. Findings without one are
+        # rejected (fail-closed) to prevent forged artifacts from injecting
+        # arbitrary content. See gptme/gptme#3451 for threat model.
+        if not f.github_comment_id:
+            logger.warning(
+                "Finding from trusted reviewer '%s' lacks github_comment_id; "
+                "rejecting as unverifiable (requires explicit GitHub comment link).",
+                f.reviewer,
+            )
+            continue
+
+        if owner and repo:
+            # Verify attribution and body against GitHub — reject on mismatch or API error.
+            verified, _body = _verify_comment_reviewer(
+                owner=owner,
+                repo=repo,
+                comment_id=f.github_comment_id,
+                expected_reviewer=f.reviewer,
+                expected_body=f.body,  # Verify the finding body matches the comment
+                target_pr_number=pr_number,  # Verify comment is on target PR
+            )
+            if not verified:
+                continue
+        else:
+            # Fail-closed: trusted-reviewer mode requires repo context for body
+            # verification. Without owner/repo the comment body cannot be
+            # cross-checked against GitHub, so accepting would allow an attacker
+            # to omit repository metadata from the artifact and bypass verification.
+            # Provide --repo on the CLI or ensure the artifact includes pr_owner/pr_repo.
+            logger.warning(
+                "Finding from trusted reviewer '%s' (github_comment_id=%d) "
+                "cannot be verified: no repository context (owner/repo) available. "
+                "Rejecting to prevent unverified content from reaching the fix session. "
+                "Pass --repo owner/repo or ensure the artifact includes pr metadata.",
+                f.reviewer,
+                f.github_comment_id,
+            )
+            continue
+
+        filtered.append(f)
+
+    if len(filtered) < len(findings):
+        skipped = len(findings) - len(filtered)
+        logger.info(
+            "Filtered %d finding(s) from untrusted/unverified reviewer(s); "
+            "kept %d from %s.",
+            skipped,
+            len(filtered),
+            set(trusted_reviewers),
+        )
+
+    return filtered
+
+
 def spawn_review_session(
     *,
     prompt: str,
@@ -382,6 +589,18 @@ def spawn_review_session(
     ),
 )
 @click.option(
+    "--trusted-reviewer",
+    "trusted_reviewers",
+    multiple=True,
+    metavar="LOGIN",
+    help=(
+        "Filter artifact findings to only those authored by these GitHub logins. "
+        "Findings from reviewers not in this allowlist are skipped. "
+        "If not given, all findings are processed (default behavior). "
+        "Can be passed multiple times: --trusted-reviewer ErikBjare --trusted-reviewer alice"
+    ),
+)
+@click.option(
     "--model",
     default=None,
     help="Model override for the continuation gptme session.",
@@ -429,6 +648,7 @@ def review_watch(
     pr_number: int | None,
     repo: str | None,
     artifact_path: str | None,
+    trusted_reviewers: tuple[str, ...],
     model: str | None,
     max_iterations: int,
     poll_interval: int,
@@ -490,6 +710,24 @@ def review_watch(
             f"#{effective_pr_number}: {len(open_findings)} open finding(s).",
             err=True,
         )
+
+        # Filter findings by trusted reviewers if specified.
+        # Pass repo context so findings with a github_comment_id are verified
+        # against the GitHub API (prevents forged-reviewer bypass).
+        if trusted_reviewers:
+            open_findings = _filter_findings_by_trusted_reviewers(
+                open_findings,
+                trusted_reviewers,
+                owner=effective_owner,
+                repo=effective_repo_name,
+                pr_number=effective_pr_number,
+            )
+            if not open_findings:
+                click.echo(
+                    "  ℹ️  No findings from trusted reviewers — nothing to fix.",
+                    err=True,
+                )
+                return
 
         prompt = _build_review_prompt_from_findings(
             owner=effective_owner,
