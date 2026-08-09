@@ -163,9 +163,41 @@ def _get_top_p(
     return top_p if top_p is not None else TOP_P
 
 
-def _record_usage(usage, model: str) -> MessageMetadata | None:
+def _make_resolved_model(model: str, openrouter_provider: str) -> str | None:
+    """Build resolved model ID with the actual OpenRouter subprovider.
+
+    Returns None when the resolved provider matches the one already in the
+    model string (i.e. no new information to add), including when the user
+    explicitly pinned a provider suffix that names the same provider.
+    """
+    provider_slug = openrouter_provider.lower().replace(" ", "-")
+    base = model.split("@")[0] if "@" in model else model
+    if "@" in model:
+        user_suffix = model.split("@", 1)[1].lower()
+        # OpenRouter's response header uses display names ("Moonshot AI")
+        # while model suffixes use IDs ("moonshotai"). Compare both their
+        # slug and compact forms, while retaining the documented stem match.
+        compact_slug = provider_slug.replace("-", "")
+        compact_suffix = user_suffix.replace("-", "")
+        if (
+            provider_slug == user_suffix
+            or provider_slug.startswith(user_suffix + "-")
+            or compact_slug == compact_suffix
+        ):
+            return None
+    resolved = f"{base}@{provider_slug}"
+    if resolved == model:
+        return None
+    return resolved
+
+
+def _record_usage(
+    usage, model: str, resolved_model: str | None = None
+) -> MessageMetadata | None:
     """Record usage metrics as telemetry and return MessageMetadata."""
     if not usage:
+        if resolved_model:
+            return {"model": model, "resolved_model": resolved_model}
         return None
 
     counts = _extract_usage_token_counts(usage)
@@ -226,6 +258,8 @@ def _record_usage(usage, model: str) -> MessageMetadata | None:
 
     # Return MessageMetadata for attachment to Message
     metadata: MessageMetadata = {"model": model}
+    if resolved_model:
+        metadata["resolved_model"] = resolved_model
     if usage_data:
         metadata["usage"] = usage_data
     if cost > 0:
@@ -1039,14 +1073,21 @@ def chat(
     if max_tokens is not None:
         optional_kwargs[_max_tokens_param_name(provider, api_model)] = max_tokens
 
-    response = client.chat.completions.create(
+    raw_response = client.chat.completions.with_raw_response.create(
         model=api_model.split("@")[0],
         messages=cast(list, messages_dicts),
         extra_headers=extra_headers(provider),
         extra_body=extra_body(provider, model_meta, max_tokens=max_tokens),
         **optional_kwargs,
     )
-    metadata = _record_usage(response.usage, model)
+    response = raw_response.parse()
+    _or_provider = (
+        raw_response.headers.get("x-openrouter-provider")
+        if _uses_openrouter_backend(provider, model_meta)
+        else None
+    )
+    _resolved = _make_resolved_model(model, _or_provider) if _or_provider else None
+    metadata = _record_usage(response.usage, model, resolved_model=_resolved)
     if not response.choices:
         raise ValueError("OpenAI API returned empty choices list")
     choice = response.choices[0]
@@ -1072,6 +1113,13 @@ def chat(
             f"LLM returned empty response (finish_reason={choice.finish_reason})"
         )
     return "\n".join(result), metadata
+
+
+def _uses_openrouter_backend(provider: Provider, model_meta: ModelMeta) -> bool:
+    """Return whether this OpenAI-compatible request routes through OpenRouter."""
+    return provider == "openrouter" or (
+        provider == "gptme" and model_meta.model.startswith("openrouter/")
+    )
 
 
 def extra_headers(provider: Provider) -> dict[str, str]:
@@ -1317,7 +1365,7 @@ def stream(
     if max_tokens is not None:
         optional_kwargs[_max_tokens_param_name(provider, api_model)] = max_tokens
 
-    for chunk_raw in client.chat.completions.create(
+    _stream_obj = client.chat.completions.create(
         model=api_model.split("@")[0],
         messages=cast(list, messages_dicts),
         stream=True,
@@ -1325,7 +1373,23 @@ def stream(
         extra_body=extra_body(provider, model_meta, max_tokens=max_tokens),
         stream_options={"include_usage": True},
         **optional_kwargs,
-    ):
+    )
+    # Capture which subprovider OpenRouter actually used before consuming the
+    # stream. The x-openrouter-provider header is available on the initial
+    # HTTP response (before the stream body starts).
+    _or_resolved: str | None = None
+    if _uses_openrouter_backend(provider, model_meta):
+        try:
+            _or_stream_provider = _stream_obj.response.headers.get(
+                "x-openrouter-provider"
+            )
+        except AttributeError:
+            _or_stream_provider = None
+        if _or_stream_provider:
+            _or_resolved = _make_resolved_model(model, _or_stream_provider)
+            captured_metadata = _record_usage(None, model, resolved_model=_or_resolved)
+
+    for chunk_raw in _stream_obj:
         from openai.types.chat import ChatCompletionChunk  # fmt: skip
         from openai.types.chat.chat_completion_chunk import (  # fmt: skip
             ChoiceDeltaToolCall,
@@ -1338,7 +1402,9 @@ def stream(
         # Record usage if available (typically in final chunk)
         # and capture metadata for message attachment
         if hasattr(chunk, "usage") and chunk.usage:
-            captured_metadata = _record_usage(chunk.usage, model)
+            captured_metadata = _record_usage(
+                chunk.usage, model, resolved_model=_or_resolved
+            )
 
         if not chunk.choices:
             continue
