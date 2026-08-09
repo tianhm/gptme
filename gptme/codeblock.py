@@ -34,6 +34,7 @@ class Codeblock:
     @classmethod
     @trace_function(name="codeblock.from_markdown", attributes={"component": "parser"})
     def from_markdown(cls, content: str) -> "Codeblock":
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
         stripped = content.strip()
         fence_len = 0
 
@@ -176,6 +177,9 @@ def _extract_codeblocks(
     fence_pattern = re.compile(r"`{3,}")
     if len(fence_pattern.findall(markdown)) < 2:
         return
+
+    # Normalize line endings so CRLF input does not leak carriage returns into content.
+    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n")
 
     lines = markdown.split("\n")
     i = 0
