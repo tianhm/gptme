@@ -18,6 +18,37 @@ const CLOUD_AUTH_BASE_URL = process.env['VITE_GPTME_CLOUD_BASE_URL'] || 'https:/
 const CLOUD_AUTH_URL = `${CLOUD_AUTH_BASE_URL}/authorize`;
 const CLOUD_AUTH_ORIGIN = new URL(CLOUD_AUTH_URL).origin;
 
+// Replaces window.location with a stub for the given href.
+//
+// jsdom's Location exposes its fields as own enumerable properties, so the
+// spread does copy `pathname`/`search`/`protocol`/… — but it copies them from
+// the *previous* location, which would leave the stub internally inconsistent
+// with the href being set. Derive every URL-ish field from the URL instead, and
+// keep the navigation methods as no-op jest mocks so a stray call is inert
+// rather than a TypeError.
+const setLocation = (href: string) => {
+  const url = new URL(href);
+  Object.defineProperty(window, 'location', {
+    value: {
+      assign: jest.fn(),
+      replace: jest.fn(),
+      reload: jest.fn(),
+      toString: () => url.href,
+      href: url.href,
+      origin: url.origin,
+      protocol: url.protocol,
+      host: url.host,
+      hostname: url.hostname,
+      port: url.port,
+      pathname: url.pathname,
+      search: url.search,
+      hash: url.hash,
+    },
+    writable: true,
+    configurable: true,
+  });
+};
+
 type MockTauriServerStatus = {
   running: boolean;
   port: number;
@@ -151,6 +182,7 @@ jest.mock('sonner', () => ({
 describe('SetupWizard', () => {
   beforeEach(() => {
     localStorage.clear();
+    setLocation('http://localhost/');
     isConnected$.set(false);
     setupWizard$.step.set('welcome');
     setupWizard$.open.set(false);
@@ -206,6 +238,60 @@ describe('SetupWizard', () => {
 
     expect(screen.queryByRole('heading', { name: /welcome to gptme/i })).not.toBeInTheDocument();
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-open on chat.gptme.org for first-time visitors', () => {
+    setLocation('https://chat.gptme.org/');
+
+    render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    expect(screen.queryByRole('heading', { name: /welcome to gptme/i })).not.toBeInTheDocument();
+  });
+
+  it.each(['http://192.168.1.20/', 'https://gptme.internal.example/'])(
+    'still auto-opens on self-hosted origin %s',
+    (origin) => {
+      setLocation(origin);
+
+      render(
+        <SettingsProvider>
+          <SetupWizard />
+        </SettingsProvider>
+      );
+
+      expect(screen.getByRole('heading', { name: /welcome to gptme/i })).toBeInTheDocument();
+    }
+  );
+
+  it('still auto-opens in Tauri', () => {
+    setLocation('http://tauri.localhost/');
+    mockIsTauriEnvironment.mockReturnValue(true);
+
+    render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    expect(screen.getByRole('heading', { name: /welcome to gptme/i })).toBeInTheDocument();
+  });
+
+  it('still opens on hosted origins when requested explicitly', async () => {
+    setLocation('https://chat.gptme.org/');
+    setupWizard$.open.set(true);
+    setupWizard$.step.set('welcome');
+
+    render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    expect(await screen.findByRole('heading', { name: /welcome to gptme/i })).toBeInTheDocument();
   });
 
   it('closes the wizard via Skip on the welcome step and persists hasCompletedSetup', async () => {
