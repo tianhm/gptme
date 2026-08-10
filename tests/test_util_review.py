@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from gptme.cli.util import main as util_main
@@ -1941,3 +1943,660 @@ class TestBuildReviewPromptTitleInjection:
         assert injected_title in post_boundary, (
             "PR title was missing from the prompt entirely"
         )
+
+
+class TestReviewToolPresets:
+    """The reviewer toolset is a security control: closed set, safe default.
+
+    The review session consumes untrusted PR content, so these tests assert
+    both that the default is unchanged for existing users and that the
+    read-only preset is genuinely read-only.
+    """
+
+    def test_default_preset_is_none(self):
+        from gptme.cli.cmd_review_pr import (
+            DEFAULT_REVIEW_TOOL_PRESET,
+            REVIEW_TOOL_PRESETS,
+        )
+
+        assert DEFAULT_REVIEW_TOOL_PRESET == "none"
+        assert REVIEW_TOOL_PRESETS["none"] == ()
+
+    def test_spawn_default_still_passes_tools_none(self, monkeypatch):
+        """No caller change: the default spawn is byte-identical to before."""
+        from gptme.cli import cmd_review_pr
+
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(cmd_review_pr.subprocess, "run", fake_run)
+        cmd_review_pr._spawn_review_session(
+            prompt="review", model=None, max_turns=1, timeout=1
+        )
+        assert captured["cmd"][captured["cmd"].index("--tools") + 1] == "none"
+
+    def test_spawn_read_only_preset_passes_read_and_confines_it(
+        self, monkeypatch, tmp_path
+    ):
+        from gptme.cli import cmd_review_pr
+
+        captured: dict = {}
+        review_tree = tmp_path / "review-tree"
+        review_tree.mkdir()
+
+        class FakeTemporaryDirectory:
+            name = str(review_tree)
+
+            def cleanup(self):
+                captured["review_tree_cleaned"] = True
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs["env"]
+            captured["cwd"] = kwargs["cwd"]
+            captured["cwd_contents"] = list(Path(kwargs["cwd"]).iterdir())
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            cmd_review_pr,
+            "_materialize_review_tree",
+            lambda cwd: FakeTemporaryDirectory(),
+        )
+        monkeypatch.setattr(cmd_review_pr.subprocess, "run", fake_run)
+        cmd_review_pr._spawn_review_session(
+            prompt="review",
+            model=None,
+            max_turns=1,
+            timeout=1,
+            tool_preset="read-only",
+            cwd=str(tmp_path),
+        )
+        assert captured["cmd"][captured["cmd"].index("--tools") + 1] == "read"
+        assert "--no-workspace" in captured["cmd"]
+        assert captured["env"]["GPTME_READ_ROOT"] == str(review_tree)
+        # The child must not load project configuration from attacker content.
+        assert captured["cwd"] != str(review_tree)
+        assert captured["cwd_contents"] == []
+        assert captured["review_tree_cleaned"] is True
+        assert not Path(captured["cwd"]).exists()
+
+    def test_spawn_read_only_without_verified_cwd_fails_closed(self):
+        import click as _click
+
+        from gptme.cli import cmd_review_pr
+
+        with pytest.raises(_click.ClickException, match="verified checkout"):
+            cmd_review_pr._spawn_review_session(
+                prompt="review",
+                model=None,
+                max_turns=1,
+                timeout=1,
+                tool_preset="read-only",
+            )
+
+    def test_read_only_preset_is_exactly_read(self):
+        from gptme.cli.cmd_review_pr import REVIEW_TOOL_PRESETS
+
+        assert REVIEW_TOOL_PRESETS["read-only"] == ("read",)
+
+    def test_no_preset_grants_a_mutating_or_executing_tool(self):
+        """Every preset must exclude every shell/write/network-write tool."""
+        from gptme.cli.cmd_review_pr import (
+            _FORBIDDEN_REVIEW_TOOLS,
+            REVIEW_TOOL_PRESETS,
+        )
+
+        # Guard the guard: the forbidden list must name the obvious offenders.
+        for name in ("shell", "ipython", "save", "patch", "browser", "subagent"):
+            assert name in _FORBIDDEN_REVIEW_TOOLS
+
+        for preset, tools in REVIEW_TOOL_PRESETS.items():
+            overlap = set(tools) & _FORBIDDEN_REVIEW_TOOLS
+            assert not overlap, f"preset {preset!r} grants {sorted(overlap)}"
+
+    def test_preset_tools_are_read_only_in_the_real_registry(self):
+        """Preset names must resolve to real tools that gptme tags read-only.
+
+        Checked against the live tool registry rather than a hardcoded list, so
+        a tool that later gains write/exec capability (losing its ``read-only``
+        hint or gaining ``destructive``/``code-exec``) fails this test.
+        """
+        from gptme.cli.cmd_review_pr import REVIEW_TOOL_PRESETS
+        from gptme.tools import get_tools, init_tools
+
+        names = {name for tools in REVIEW_TOOL_PRESETS.values() for name in tools}
+        assert names, "expected at least one preset to grant a tool"
+
+        init_tools(allowlist=sorted(names))
+        specs = {tool.name: tool for tool in get_tools()}
+        for name in names:
+            assert name in specs, f"preset tool {name!r} is not a registered tool"
+            hints = specs[name].hints
+            assert "read-only" in hints, f"{name!r} is not tagged read-only"
+            assert "destructive" not in hints, f"{name!r} is destructive"
+            assert "code-exec" not in hints, f"{name!r} can execute code"
+
+    def test_unknown_preset_fails_closed(self):
+        import click as _click
+
+        from gptme.cli.cmd_review_pr import _resolve_review_tools
+
+        with pytest.raises(_click.UsageError):
+            _resolve_review_tools("everything")
+
+    def test_cli_rejects_unknown_preset(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            util_main,
+            ["review", "pr", "1", "--repo", "o/r", "--tool-preset", "shell"],
+        )
+        assert result.exit_code != 0
+        # Click rejects the value at parse time — no session is ever spawned.
+        assert "Spawning reviewer session" not in result.output
+
+    def test_cli_help_documents_the_trust_boundary(self):
+        runner = CliRunner()
+        result = runner.invoke(util_main, ["review", "pr", "--help"])
+        assert result.exit_code == 0
+        assert "--tool-preset" in result.output
+        assert "read-only" in result.output
+
+    def test_prompt_mentions_read_only_when_granted(self):
+        from gptme.cli.cmd_review_pr import _build_review_prompt
+
+        kwargs = {
+            "owner": "o",
+            "repo": "r",
+            "pr_number": 1,
+            "pr_title": "t",
+            "pr_body": "",
+            "diff": "--- a\n+++ b\n",
+            "extra_instructions": None,
+        }
+        without = _build_review_prompt(**kwargs)  # type: ignore[arg-type]
+        with_read = _build_review_prompt(**kwargs, can_read_files=True)  # type: ignore[arg-type]
+
+        assert "`read` tool" not in without
+        assert "`read` tool" in with_read
+        # The read-access framing must sit in the trusted region, before the
+        # untrusted diff/PR-body security boundary.
+        assert with_read.index("## File access") < with_read.index(
+            "## Security boundary"
+        )
+        # And it must restate that read content is untrusted.
+        assert "UNTRUSTED DATA" in with_read
+
+    # ------------------------------------------------------------------
+    # _preset_grants_file_reads: the grant and its guards stay in sync
+    # ------------------------------------------------------------------
+
+    def test_preset_grants_file_reads_matches_the_resolved_toolset(self):
+        """The predicate must agree with what is actually passed to --tools."""
+        from gptme.cli.cmd_review_pr import (
+            _READ_TOOL,
+            REVIEW_TOOL_PRESETS,
+            _preset_grants_file_reads,
+            _resolve_review_tools,
+        )
+
+        for preset in REVIEW_TOOL_PRESETS:
+            granted = _resolve_review_tools(preset).split(",")
+            assert _preset_grants_file_reads(preset) == (_READ_TOOL in granted)
+
+        assert _preset_grants_file_reads("read-only") is True
+        assert _preset_grants_file_reads("none") is False
+
+    def test_preset_grants_file_reads_is_derived_not_hardcoded(self):
+        """Renaming the read tool must move the grant AND its guards together.
+
+        The failure this guards against: a call site hardcoding ``"read"``
+        keeps granting the (renamed) tool while everything conditioned on the
+        grant — the File access prompt section, the checkout check — silently
+        switches off, handing the model a capability nobody told it about and
+        no longer verifying the revision it reads from.
+        """
+        from gptme.cli import cmd_review_pr
+
+        monkey_name = "peruse"
+        original_presets = cmd_review_pr.REVIEW_TOOL_PRESETS
+        try:
+            cmd_review_pr._READ_TOOL = monkey_name
+            cmd_review_pr.REVIEW_TOOL_PRESETS = {
+                "none": (),
+                "read-only": (monkey_name,),
+            }
+            assert cmd_review_pr._preset_grants_file_reads("read-only") is True
+            assert cmd_review_pr._preset_grants_file_reads("none") is False
+        finally:
+            cmd_review_pr._READ_TOOL = "read"
+            cmd_review_pr.REVIEW_TOOL_PRESETS = original_presets
+
+    def test_preset_grants_file_reads_fails_closed_on_unknown_preset(self):
+        import click as _click
+
+        from gptme.cli.cmd_review_pr import _preset_grants_file_reads
+
+        with pytest.raises(_click.UsageError):
+            _preset_grants_file_reads("everything")
+
+
+@pytest.fixture
+def review_git_repo(tmp_path):
+    """A real git checkout with one commit, for checkout-provenance tests."""
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+
+    def run(args: list[str]) -> None:
+        subprocess.run(args, cwd=repo, capture_output=True, check=True)
+
+    run(["git", "init"])
+    run(["git", "config", "user.email", "test@test.com"])
+    run(["git", "config", "user.name", "Test"])
+    # Non-master branch: global hooks may block commits on master.
+    run(["git", "checkout", "-b", "review-test"])
+    (repo / "file.py").write_text("def foo():\n    return 1\n")
+    run(["git", "add", "."])
+    run(["git", "commit", "--no-verify", "-m", "init"])
+    return repo
+
+
+def _head_sha(repo) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def test_materialize_review_tree_excludes_untracked_files_and_git_metadata(
+    review_git_repo,
+):
+    from gptme.cli.cmd_review_pr import _materialize_review_tree
+
+    (review_git_repo / ".env").write_text("SECRET=do-not-disclose\n")
+    (review_git_repo / "file.py").write_text("locally modified\n")
+
+    with _materialize_review_tree(str(review_git_repo)) as review_tree:
+        exported = Path(review_tree)
+        assert (exported / "file.py").read_text() == "def foo():\n    return 1\n"
+        assert not (exported / ".env").exists()
+        assert not (exported / ".git").exists()
+
+
+def test_materialize_review_tree_captures_archive_before_extracting(monkeypatch):
+    from gptme.cli import cmd_review_pr
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ["git", "archive"]:
+            assert kwargs["capture_output"] is True
+            return subprocess.CompletedProcess(args, 0, stdout=b"archive", stderr=b"")
+        assert args[:2] == ["tar", "-xf"]
+        assert kwargs["input"] == b"archive"
+        return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(cmd_review_pr.subprocess, "run", fake_run)
+
+    with cmd_review_pr._materialize_review_tree("/checkout"):
+        pass
+
+    assert len(calls) == 2
+
+
+class TestReviewCheckoutProvenance:
+    """A file-reading reviewer must run against the PR head, and it is checked.
+
+    Granting ``read`` exists to stop the model reasoning about text that is not
+    in the file.  A checkout at the wrong revision defeats that in the worst
+    possible way: the model reads *real* contents of the *wrong* version, and
+    the resulting quote genuinely matches the file it was read from — so no
+    downstream quote-verification pass can catch it.  Hence: refuse.
+    """
+
+    def test_default_preset_never_touches_git(self, monkeypatch):
+        """The path every existing caller uses gains no friction and no git call."""
+        from gptme.cli import cmd_review_pr
+
+        def explode(*args, **kwargs):  # pragma: no cover - must never run
+            raise AssertionError("git must not be invoked for the default preset")
+
+        monkeypatch.setattr(cmd_review_pr, "_git_output", explode)
+
+        assert (
+            cmd_review_pr._verify_review_checkout(
+                tool_preset="none",
+                expected_head_sha="a" * 40,
+                allow_mismatch=False,
+            )
+            is None
+        )
+
+    def test_matching_head_is_accepted(self, monkeypatch, review_git_repo):
+        from gptme.cli import cmd_review_pr
+
+        monkeypatch.chdir(review_git_repo)
+        verified = cmd_review_pr._verify_review_checkout(
+            tool_preset="read-only",
+            expected_head_sha=_head_sha(review_git_repo),
+            allow_mismatch=False,
+        )
+        assert verified is not None
+        # The verified directory is the one the session will be run in.
+        assert Path(verified).resolve() == review_git_repo.resolve()
+
+    def test_mismatched_head_refuses(self, monkeypatch, review_git_repo):
+        import click as _click
+
+        from gptme.cli import cmd_review_pr
+
+        monkeypatch.chdir(review_git_repo)
+        with pytest.raises(_click.ClickException) as excinfo:
+            cmd_review_pr._verify_review_checkout(
+                tool_preset="read-only",
+                expected_head_sha="0" * 40,
+                allow_mismatch=False,
+            )
+        message = str(excinfo.value)
+        assert "Refusing to run a file-reading review" in message
+        # The message must name both revisions and the way out.
+        assert _head_sha(review_git_repo)[:12] in message
+        assert "000000000000" in message
+        assert "--allow-checkout-mismatch" in message
+
+    def test_mismatched_head_with_override_warns_and_proceeds(
+        self, monkeypatch, review_git_repo, capsys
+    ):
+        from gptme.cli import cmd_review_pr
+
+        monkeypatch.chdir(review_git_repo)
+        verified = cmd_review_pr._verify_review_checkout(
+            tool_preset="read-only",
+            expected_head_sha="0" * 40,
+            allow_mismatch=True,
+        )
+        assert verified is not None
+        err = capsys.readouterr().err
+        assert "UNVERIFIED CHECKOUT" in err
+
+    def test_non_git_directory_refuses(self, monkeypatch, tmp_path):
+        """No checkout at all is as disqualifying as the wrong one."""
+        import click as _click
+
+        from gptme.cli import cmd_review_pr
+
+        plain = tmp_path / "not-a-repo"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+        # Guard against an enclosing repo in tmp_path: force the "no HEAD" answer.
+        monkeypatch.setattr(cmd_review_pr, "_checkout_head_sha", lambda: None)
+
+        with pytest.raises(_click.ClickException) as excinfo:
+            cmd_review_pr._verify_review_checkout(
+                tool_preset="read-only",
+                expected_head_sha="a" * 40,
+                allow_mismatch=False,
+            )
+        assert "not a usable git checkout" in str(excinfo.value)
+
+    def test_unknown_pr_head_refuses(self, monkeypatch, review_git_repo):
+        """Unverifiable is treated exactly like mismatched — fail closed."""
+        import click as _click
+
+        from gptme.cli import cmd_review_pr
+
+        monkeypatch.chdir(review_git_repo)
+        with pytest.raises(_click.ClickException) as excinfo:
+            cmd_review_pr._verify_review_checkout(
+                tool_preset="read-only",
+                expected_head_sha=None,
+                allow_mismatch=False,
+            )
+        assert "PR head commit is unknown" in str(excinfo.value)
+
+    def test_dirty_worktree_warns_but_proceeds(
+        self, monkeypatch, review_git_repo, capsys
+    ):
+        """Right commit, wrong bytes on disk: same hazard, lesser degree."""
+        from gptme.cli import cmd_review_pr
+
+        monkeypatch.chdir(review_git_repo)
+        head = _head_sha(review_git_repo)
+        (review_git_repo / "file.py").write_text("def foo():\n    return 999\n")
+
+        verified = cmd_review_pr._verify_review_checkout(
+            tool_preset="read-only",
+            expected_head_sha=head,
+            allow_mismatch=False,
+        )
+        assert verified is not None
+        assert "uncommitted changes" in capsys.readouterr().err
+
+    def test_sha_comparison_tolerates_abbreviation(self):
+        from gptme.cli.cmd_review_pr import _sha_matches
+
+        full = "0123456789abcdef0123456789abcdef01234567"
+        assert _sha_matches(full, full)
+        assert _sha_matches(full, full[:12])
+        assert _sha_matches(full[:12], full)
+        assert _sha_matches(full.upper(), full)
+        assert not _sha_matches(full, "f" * 40)
+        # Too short to be meaningful — refuse rather than match loosely.
+        assert not _sha_matches(full, "0123")
+
+    # ------------------------------------------------------------------
+    # CLI integration
+    # ------------------------------------------------------------------
+
+    _DIFF = "--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n-x\n+y\n"
+
+    def _patch_github_mode(self, monkeypatch, head_sha: str) -> list[dict]:
+        """Mock gh metadata/diff and capture _spawn_review_session kwargs."""
+        from gptme.cli import cmd_review_pr
+
+        calls: list[dict] = []
+
+        def fake_spawn(**kwargs):
+            calls.append(kwargs)
+            return (
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": f"{cmd_review_pr._REVIEW_OUTPUT_MARKER}\n"
+                        '```json\n{"findings": []}\n```\n',
+                    }
+                ),
+                {
+                    "exit_reason": "done",
+                    "duration_s": 0.1,
+                    "output_marker": cmd_review_pr._REVIEW_OUTPUT_MARKER,
+                },
+            )
+
+        monkeypatch.setattr(cmd_review_pr.shutil, "which", lambda name: "/usr/bin/gh")
+        monkeypatch.setattr(
+            cmd_review_pr,
+            "_get_pr_metadata",
+            lambda owner, repo, pr: {
+                "title": "T",
+                "body": "",
+                "headRefOid": head_sha,
+                "additions": 1,
+                "deletions": 1,
+                "changedFiles": 1,
+            },
+        )
+        monkeypatch.setattr(
+            cmd_review_pr, "_get_pr_diff", lambda owner, repo, pr: self._DIFF
+        )
+        monkeypatch.setattr(cmd_review_pr, "_spawn_review_session", fake_spawn)
+        return calls
+
+    def test_cli_refuses_read_only_from_wrong_revision(
+        self, monkeypatch, review_git_repo
+    ):
+        calls = self._patch_github_mode(monkeypatch, head_sha="0" * 40)
+        monkeypatch.chdir(review_git_repo)
+
+        result = CliRunner().invoke(
+            util_main,
+            ["review", "pr", "42", "--repo", "o/r", "--tool-preset", "read-only"],
+        )
+        assert result.exit_code != 0
+        assert "Refusing to run a file-reading review" in result.output
+        # Nothing was reviewed: no session, no artifact.
+        assert calls == []
+        assert "Spawning reviewer session" not in result.output
+
+    def test_cli_runs_read_only_from_the_pr_head(self, monkeypatch, review_git_repo):
+        head = _head_sha(review_git_repo)
+        calls = self._patch_github_mode(monkeypatch, head_sha=head)
+        monkeypatch.chdir(review_git_repo)
+
+        result = CliRunner().invoke(
+            util_main,
+            ["review", "pr", "42", "--repo", "o/r", "--tool-preset", "read-only"],
+        )
+        assert result.exit_code == 0, result.output
+        assert len(calls) == 1
+        # The session runs in the directory whose HEAD was verified.
+        assert Path(calls[0]["cwd"]).resolve() == review_git_repo.resolve()
+        assert calls[0]["tool_preset"] == "read-only"
+
+    def test_cli_default_preset_unaffected_by_wrong_revision(
+        self, monkeypatch, review_git_repo
+    ):
+        """Regression guard: the default path must gain no new failure mode."""
+        calls = self._patch_github_mode(monkeypatch, head_sha="0" * 40)
+        monkeypatch.chdir(review_git_repo)
+
+        result = CliRunner().invoke(util_main, ["review", "pr", "42", "--repo", "o/r"])
+        assert result.exit_code == 0, result.output
+        assert len(calls) == 1
+        # No cwd is imposed — byte-identical spawn to before this change.
+        assert calls[0]["cwd"] is None
+        assert "Refusing" not in result.output
+
+    def test_cli_default_preset_works_outside_any_checkout(self, monkeypatch, tmp_path):
+        """The default preset must not require a git checkout at all."""
+        from gptme.cli import cmd_review_pr
+
+        calls = self._patch_github_mode(monkeypatch, head_sha="0" * 40)
+        monkeypatch.setattr(cmd_review_pr, "_checkout_head_sha", lambda: None)
+        plain = tmp_path / "elsewhere"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
+
+        result = CliRunner().invoke(util_main, ["review", "pr", "42", "--repo", "o/r"])
+        assert result.exit_code == 0, result.output
+        assert len(calls) == 1
+
+    def test_cli_diff_mode_refuses_read_only(
+        self, monkeypatch, tmp_path, review_git_repo
+    ):
+        """--diff has no PR head to compare against, so read-only is refused."""
+        from gptme.cli import cmd_review_pr
+
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            cmd_review_pr,
+            "_spawn_review_session",
+            lambda **kwargs: calls.append(kwargs),  # pragma: no cover
+        )
+        diff_file = tmp_path / "pr.diff"
+        diff_file.write_text(self._DIFF)
+        monkeypatch.chdir(review_git_repo)
+
+        result = CliRunner().invoke(
+            util_main,
+            [
+                "review",
+                "pr",
+                "42",
+                "--repo",
+                "o/r",
+                "--diff",
+                str(diff_file),
+                "--tool-preset",
+                "read-only",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "PR head commit is unknown" in result.output
+        assert calls == []
+
+    def test_cli_diff_mode_read_only_with_override_runs(
+        self, monkeypatch, tmp_path, review_git_repo
+    ):
+        from gptme.cli import cmd_review_pr
+
+        calls: list[dict] = []
+
+        def fake_spawn(**kwargs):
+            calls.append(kwargs)
+            return (
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": f"{cmd_review_pr._REVIEW_OUTPUT_MARKER}\n"
+                        '```json\n{"findings": []}\n```\n',
+                    }
+                ),
+                {
+                    "exit_reason": "done",
+                    "duration_s": 0.1,
+                    "output_marker": cmd_review_pr._REVIEW_OUTPUT_MARKER,
+                },
+            )
+
+        monkeypatch.setattr(cmd_review_pr, "_spawn_review_session", fake_spawn)
+        diff_file = tmp_path / "pr.diff"
+        diff_file.write_text(self._DIFF)
+        monkeypatch.chdir(review_git_repo)
+
+        result = CliRunner().invoke(
+            util_main,
+            [
+                "review",
+                "pr",
+                "42",
+                "--repo",
+                "o/r",
+                "--diff",
+                str(diff_file),
+                "--tool-preset",
+                "read-only",
+                "--allow-checkout-mismatch",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert len(calls) == 1
+        assert "UNVERIFIED CHECKOUT" in result.output
+
+    def test_pr_metadata_query_requests_the_head_commit(self, monkeypatch):
+        """The head SHA must actually be fetched, or there is nothing to check."""
+        from gptme.cli import cmd_review_pr
+
+        captured: dict = {}
+
+        def fake_run_gh_json(cmd):
+            captured["cmd"] = cmd
+            return {"title": "T"}
+
+        monkeypatch.setattr(cmd_review_pr, "run_gh_json", fake_run_gh_json)
+        cmd_review_pr._get_pr_metadata("o", "r", 1)
+        fields = captured["cmd"][captured["cmd"].index("--json") + 1]
+        assert "headRefOid" in fields.split(",")
+
+    def test_cli_help_documents_the_override(self):
+        result = CliRunner().invoke(util_main, ["review", "pr", "--help"])
+        assert result.exit_code == 0
+        assert "--allow-checkout-mismatch" in result.output
