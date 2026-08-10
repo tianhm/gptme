@@ -669,7 +669,10 @@ def print_msg(
             skipped_hidden += 1
             continue
         try:
-            console.print(s)
+            # Plain-text formatting intentionally preserves literal Rich syntax.
+            # Disable markup and emoji parsing at the rendering boundary so strings
+            # such as "[/home/runner/run.sh]" and ":warning:" stay unchanged.
+            console.print(s, markup=highlight, emoji=False)
         except Exception:
             # rich can throw errors, if so then print the raw message
             logger.exception("Error printing message")
