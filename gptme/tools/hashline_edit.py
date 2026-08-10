@@ -24,10 +24,17 @@ Edit syntax
     +new line
     PUT >N:         — insert the new content AFTER line N
     +new line
+    PUT N*:         — replace the syntactic block starting at line N
+    +new content
     CUT N.=M        — delete lines N through M (no content block follows)
+    CUT N.=M @r    — delete and save to named register r
+    PUT >N @r       — paste register r content AFTER line N (no content block)
+    PUT <N @r       — paste register r content BEFORE line N (no content block)
+    PUT N.=M: @r    — replace lines N–M with register r content (no content block)
 
 Content lines are prefixed with ``+``.  An operation's content block ends at
-the next operation header or end-of-input.
+the next operation header or end-of-input.  Register-paste operations have no
+content block.
 
 If the live file's hash no longer matches the stored snapshot tag the entire
 edit is rejected with a clear error — no silent corruption.
@@ -63,7 +70,9 @@ class HashlineOp:
     kind: OperationKind
     start: int  # 1-indexed, inclusive
     end: int  # 1-indexed, inclusive (== start for insert ops)
-    text: str | None  # None for delete
+    text: str | None  # None for delete or for register-read ops (resolved before apply)
+    register_name: str | None = None  # for CUT @name (capture) or PUT @name (paste)
+    resolved_register_lines: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +89,14 @@ _RE_PUT_BEFORE = re.compile(r"^PUT\s+<(\d+):\s*$")
 _RE_PUT_AFTER = re.compile(r"^PUT\s+>(\d+):\s*$")
 # CUT N.=M    delete lines N–M (no colon, no content block)
 _RE_CUT_RANGE = re.compile(r"^CUT\s+(\d+)\.=(\d+)\s*$")
+# CUT N.=M @name  delete lines N–M and save to named register
+_RE_CUT_RANGE_REG = re.compile(r"^CUT\s+(\d+)\.=(\d+)\s+@(\w+)\s*$")
+# PUT <N @name    insert register @name content before line N (no inline content)
+_RE_PUT_BEFORE_REG = re.compile(r"^PUT\s+<(\d+)\s+@(\w+)\s*$")
+# PUT >N @name    insert register @name content after line N (no inline content)
+_RE_PUT_AFTER_REG = re.compile(r"^PUT\s+>(\d+)\s+@(\w+)\s*$")
+# PUT N.=M: @name replace lines N–M with register @name content (no inline content)
+_RE_PUT_RANGE_REG = re.compile(r"^PUT\s+(\d+)\.=(\d+):\s+@(\w+)\s*$")
 # Header line [PATH#TAG]
 _RE_HEADER = re.compile(r"^\[(.+)#([0-9A-Fa-f]{8})\]\s*$")
 
@@ -113,11 +130,37 @@ def _parse_operations(code: str) -> tuple[str, str, list[HashlineOp]]:
     while i < len(lines):
         line = lines[i]
 
+        # Register-capture: CUT N.=M @name — delete and save to named register
+        if m := _RE_CUT_RANGE_REG.match(line):
+            start, end, reg = int(m.group(1)), int(m.group(2)), m.group(3)
+            if start > end:
+                raise ParseError(f"CUT range start {start} > end {end}")
+            ops.append(
+                HashlineOp(
+                    kind="delete", start=start, end=end, text=None, register_name=reg
+                )
+            )
+            i += 1
+            continue
+
         if m := _RE_CUT_RANGE.match(line):
             start, end = int(m.group(1)), int(m.group(2))
             if start > end:
                 raise ParseError(f"CUT range start {start} > end {end}")
             ops.append(HashlineOp(kind="delete", start=start, end=end, text=None))
+            i += 1
+            continue
+
+        # Register-paste: PUT N.=M: @name — replace with register content
+        if m := _RE_PUT_RANGE_REG.match(line):
+            start, end, reg = int(m.group(1)), int(m.group(2)), m.group(3)
+            if start > end:
+                raise ParseError(f"PUT range start {start} > end {end}")
+            ops.append(
+                HashlineOp(
+                    kind="replace", start=start, end=end, text=None, register_name=reg
+                )
+            )
             i += 1
             continue
 
@@ -129,10 +172,32 @@ def _parse_operations(code: str) -> tuple[str, str, list[HashlineOp]]:
             ops.append(HashlineOp(kind="replace", start=start, end=end, text=text))
             continue
 
+        # Register-paste: PUT <N @name — insert register content before line N
+        if m := _RE_PUT_BEFORE_REG.match(line):
+            n, reg = int(m.group(1)), m.group(2)
+            ops.append(
+                HashlineOp(
+                    kind="insert_before", start=n, end=n, text=None, register_name=reg
+                )
+            )
+            i += 1
+            continue
+
         if m := _RE_PUT_BEFORE.match(line):
             n = int(m.group(1))
             i, text = _collect_content(lines, i + 1)
             ops.append(HashlineOp(kind="insert_before", start=n, end=n, text=text))
+            continue
+
+        # Register-paste: PUT >N @name — insert register content after line N
+        if m := _RE_PUT_AFTER_REG.match(line):
+            n, reg = int(m.group(1)), m.group(2)
+            ops.append(
+                HashlineOp(
+                    kind="insert_after", start=n, end=n, text=None, register_name=reg
+                )
+            )
+            i += 1
             continue
 
         if m := _RE_PUT_AFTER.match(line):
@@ -164,6 +229,10 @@ def _is_op_header(line: str) -> bool:
         or _RE_PUT_BEFORE.match(line)
         or _RE_PUT_AFTER.match(line)
         or _RE_CUT_RANGE.match(line)
+        or _RE_CUT_RANGE_REG.match(line)
+        or _RE_PUT_BEFORE_REG.match(line)
+        or _RE_PUT_AFTER_REG.match(line)
+        or _RE_PUT_RANGE_REG.match(line)
     )
 
 
@@ -350,23 +419,105 @@ def _apply_operations(content: str, ops: list[HashlineOp]) -> str:
     Line numbers reference the ORIGINAL content.  Operations are applied
     bottom-up so earlier line numbers remain valid after later insertions/deletions.
 
-    Raises :class:`ValueError` on out-of-range line references.
+    Register operations are resolved in two passes:
+    1. Pre-scan: capture lines for all ``CUT @name`` ops (using ORIGINAL lines).
+    2. Resolve: attach the captured lines to matching register PUT operations.
+
+    Raises :class:`ValueError` on out-of-range line references or a missing register.
     """
     had_trailing_newline = content.endswith("\n")
     file_lines = content.splitlines()
     total = len(file_lines)
 
     # Resolve block_replace ops to concrete replace ranges before validation/sorting
-    resolved: list[HashlineOp] = []
+    step1: list[HashlineOp] = []
     for op in ops:
         if op.kind == "block_replace":
             end = _resolve_block_end(file_lines, op.start)
-            resolved.append(
+            step1.append(
                 HashlineOp(kind="replace", start=op.start, end=end, text=op.text)
             )
         else:
-            resolved.append(op)
-    ops = resolved
+            step1.append(op)
+    ops = step1
+
+    # Pre-scan: capture register content from CUT @name ops (original line numbers)
+    registers: dict[str, list[str]] = {}
+    register_sources: dict[str, HashlineOp] = {}
+    for op in ops:
+        if op.kind == "delete" and op.register_name:
+            if op.register_name in registers:
+                raise ValueError(
+                    f"Register @{op.register_name} is captured more than once; "
+                    "use a unique register name for each CUT"
+                )
+            s, e = op.start - 1, op.end  # 0-indexed slice
+            registers[op.register_name] = file_lines[s:e]
+            register_sources[op.register_name] = op
+
+    # Resolve register-read ops by attaching the original captured line list.
+    step2: list[HashlineOp] = []
+    for op in ops:
+        if op.register_name and op.text is None and op.kind != "delete":
+            reg = op.register_name
+            if reg not in registers:
+                raise ValueError(
+                    f"Register @{reg} is not defined — "
+                    "add a 'CUT N.=M @{reg}' operation earlier in the same edit block"
+                )
+            source = register_sources[reg]
+            if op.start <= source.end and source.start <= op.end:
+                raise ValueError(
+                    f"Register @{reg} PUT lines {op.start}-{op.end} overlap "
+                    f"its CUT lines {source.start}-{source.end}; use a destination "
+                    "outside the captured range"
+                )
+            step2.append(
+                HashlineOp(
+                    kind=op.kind,
+                    start=op.start,
+                    end=op.end,
+                    text=None,
+                    resolved_register_lines=registers[reg],
+                )
+            )
+        else:
+            step2.append(op)
+    ops = step2
+
+    # A register paste that shares its start coordinate with another operation
+    # has order-dependent semantics on the mutable line list. Preserve the
+    # existing behavior for same-coordinate ordinary edits.
+    for register_put in (op for op in ops if op.resolved_register_lines is not None):
+        if any(
+            other is not register_put and other.start == register_put.start
+            for other in ops
+        ):
+            raise ValueError(
+                f"Multiple operations start at line {register_put.start}; "
+                "use distinct destination coordinates"
+            )
+
+    # A register paste destination must survive every other mutation, not just
+    # the CUT that supplied its content. Otherwise bottom-up application can
+    # insert content inside a range that a later operation deletes or replaces.
+    for original_op, resolved_op in zip(step1, ops, strict=True):
+        if not (
+            original_op.register_name
+            and original_op.text is None
+            and original_op.kind != "delete"
+        ):
+            continue
+        for other in ops:
+            if other is resolved_op:
+                continue
+            if resolved_op.start <= other.end and other.start <= resolved_op.end:
+                raise ValueError(
+                    f"Register @{original_op.register_name} PUT lines "
+                    f"{resolved_op.start}-{resolved_op.end} overlap "
+                    f"{other.kind} lines {other.start}-{other.end}; use a "
+                    "destination outside other mutation ranges"
+                )
 
     for op in ops:
         # Allow PUT <1 on empty files
@@ -384,14 +535,20 @@ def _apply_operations(content: str, ops: list[HashlineOp]) -> str:
 
         if op.kind == "delete":
             del file_lines[s:e]
-        elif op.kind == "replace":
-            new_lines = op.text.splitlines() if op.text else []
+            continue
+
+        new_lines = (
+            op.resolved_register_lines
+            if op.resolved_register_lines is not None
+            else op.text.splitlines()
+            if op.text
+            else []
+        )
+        if op.kind == "replace":
             file_lines[s:e] = new_lines
         elif op.kind == "insert_before":
-            new_lines = op.text.splitlines() if op.text else []
             file_lines[s:s] = new_lines
         elif op.kind == "insert_after":
-            new_lines = op.text.splitlines() if op.text else []
             file_lines[e:e] = new_lines
 
     result = "\n".join(file_lines)
@@ -428,13 +585,17 @@ Re-read the file with ``read`` to get a new tag and restate your operations.
 
 ### Operations
 
-| Syntax       | Effect                                    |
-|-------------|------------------------------------------|
-| ``PUT N.=M:``| Replace lines N through M with new lines |
-| ``PUT N*:``  | Replace the syntactic block at line N    |
-| ``PUT <N:``  | Insert new lines BEFORE line N           |
-| ``PUT >N:``  | Insert new lines AFTER line N            |
-| ``CUT N.=M`` | Delete lines N through M                 |
+| Syntax            | Effect                                           |
+|-------------------|--------------------------------------------------|
+| ``PUT N.=M:``     | Replace lines N through M with new lines         |
+| ``PUT N*:``       | Replace the syntactic block at line N            |
+| ``PUT <N:``       | Insert new lines BEFORE line N                   |
+| ``PUT >N:``       | Insert new lines AFTER line N                    |
+| ``CUT N.=M``      | Delete lines N through M                         |
+| ``CUT N.=M @r``   | Delete lines N–M and save to register *r*        |
+| ``PUT N.=M: @r``  | Replace lines N–M with content of register *r*   |
+| ``PUT <N @r``     | Insert register *r* content BEFORE line N        |
+| ``PUT >N @r``     | Insert register *r* content AFTER line N         |
 
 ``PUT N*:`` replaces a whole indented construct — point it at the ``def``,
 ``class``, ``if``, ``for``, ``while``, or ``try`` line and the system finds the
@@ -450,8 +611,17 @@ spaces, or a header followed by a same-indentation line that is *not* a
 continuation clause (e.g. a one-line ``if x: y`` body) — for those, fall back to
 ``PUT N.=M:`` with an explicit line range.
 
+**Registers** avoid reproducing unchanged content when moving or copying exact
+lines within one edit call, reducing tokens and transcription mistakes.
+``CUT N.=M @r`` captures deleted lines into register *r* (a short word), then
+``PUT >N @r`` or ``PUT <N @r`` pastes them. Registers are resolved from the
+original file state, so a cut at line 5 and a paste at line 20 work correctly
+regardless of apply order. The PUT destination must be outside the CUT range.
+
 New content lines are prefixed with ``+``.  An empty line ends a content block.
-CUT has no content block.  Line numbers reference the version shown by ``read``.
+CUT (with or without a register) has no content block.  Register-paste operations
+(``PUT ... @r``) also have no content block.  Line numbers reference the version
+shown by ``read``.
 
 ### Example
 
@@ -462,6 +632,14 @@ PUT 2.=3:
 CUT 4.=4
 PUT >5:
 +    return name
+```
+
+### Register example (move a function to the bottom)
+
+```
+[module.py#A1B2C3D4]
+CUT 3.=10 @fn
+PUT >40 @fn
 ```
 """.strip()
 

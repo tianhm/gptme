@@ -20,6 +20,7 @@ from gptme.tools._hashline_snapshot import (
 )
 from gptme.tools.hashline_edit import (
     HashlineOp,
+    OperationKind,
     ParseError,
     _apply_operations,
     _parse_operations,
@@ -244,6 +245,14 @@ class TestApplyOperations:
         ]
         assert _apply_operations(content, ops) == "A\nb\nd\n"
 
+    def test_same_coordinate_ordinary_inserts_remain_supported(self):
+        """Register conflict checks do not reject existing ordinary edits."""
+        ops = [
+            HashlineOp(kind="insert_before", start=1, end=1, text="first"),
+            HashlineOp(kind="insert_before", start=1, end=1, text="second"),
+        ]
+        assert _apply_operations("", ops) == "second\nfirst"
+
     def test_out_of_range_raises(self):
         content = "a\nb\n"
         with pytest.raises(ValueError, match="out of range"):
@@ -254,6 +263,288 @@ class TestApplyOperations:
     def test_empty_ops_returns_original(self):
         content = "alpha\nbeta\n"
         assert _apply_operations(content, []) == content
+
+
+# ---------------------------------------------------------------------------
+# Register operations (CUT @name / PUT @name)
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterOperations:
+    """Tests for CUT @name (capture) and PUT @name (paste) register operations."""
+
+    # ---- Parser tests ----
+
+    def test_parse_cut_with_register(self):
+        block = "[f.py#A1B2C3D4]\nCUT 3.=5 @fn\n"
+        _, _, ops = _parse_operations(block)
+        assert len(ops) == 1
+        assert ops[0].kind == "delete"
+        assert ops[0].start == 3
+        assert ops[0].end == 5
+        assert ops[0].register_name == "fn"
+        assert ops[0].text is None
+
+    def test_parse_put_before_register(self):
+        block = "[f.py#A1B2C3D4]\nPUT <10 @fn\n"
+        _, _, ops = _parse_operations(block)
+        assert len(ops) == 1
+        assert ops[0].kind == "insert_before"
+        assert ops[0].start == 10
+        assert ops[0].register_name == "fn"
+        assert ops[0].text is None
+
+    def test_parse_put_after_register(self):
+        block = "[f.py#A1B2C3D4]\nPUT >20 @fn\n"
+        _, _, ops = _parse_operations(block)
+        assert len(ops) == 1
+        assert ops[0].kind == "insert_after"
+        assert ops[0].start == 20
+        assert ops[0].register_name == "fn"
+        assert ops[0].text is None
+
+    def test_parse_put_range_register(self):
+        block = "[f.py#A1B2C3D4]\nPUT 5.=7: @fn\n"
+        _, _, ops = _parse_operations(block)
+        assert len(ops) == 1
+        assert ops[0].kind == "replace"
+        assert ops[0].start == 5
+        assert ops[0].end == 7
+        assert ops[0].register_name == "fn"
+        assert ops[0].text is None
+
+    # ---- Apply-engine tests ----
+
+    def test_cut_and_paste_after(self):
+        """CUT @r captures lines; PUT >N @r pastes them after the destination."""
+        content = "a\nb\nc\nd\ne\n"
+        ops = [
+            HashlineOp(kind="delete", start=2, end=3, register_name="chunk", text=None),
+            HashlineOp(
+                kind="insert_after", start=5, end=5, register_name="chunk", text=None
+            ),
+        ]
+        # After: lines 2-3 (b,c) deleted; b,c inserted after original line 5 (e)
+        result = _apply_operations(content, ops)
+        assert result == "a\nd\ne\nb\nc\n"
+
+    def test_cut_and_paste_before(self):
+        """CUT @r captures lines; PUT <N @r pastes them before the destination."""
+        content = "a\nb\nc\nd\ne\n"
+        ops = [
+            HashlineOp(kind="delete", start=1, end=1, register_name="x", text=None),
+            HashlineOp(
+                kind="insert_before", start=4, end=4, register_name="x", text=None
+            ),
+        ]
+        # After: line 1 (a) deleted; a inserted before original line 4 (d)
+        result = _apply_operations(content, ops)
+        assert result == "b\nc\na\nd\ne\n"
+
+    def test_cut_and_replace_range(self):
+        """CUT @r captures lines; PUT N.=M: @r replaces a range with the captured content."""
+        content = "old1\nold2\nkeep\nreplace_me\n"
+        ops = [
+            HashlineOp(kind="delete", start=1, end=2, register_name="src", text=None),
+            HashlineOp(kind="replace", start=4, end=4, register_name="src", text=None),
+        ]
+        result = _apply_operations(content, ops)
+        assert result == "keep\nold1\nold2\n"
+
+    @pytest.mark.parametrize(
+        ("content", "start", "end", "destination", "expected"),
+        [
+            # A register containing only one blank line must not become empty.
+            ("a\n\nb", 2, 2, 3, "a\nb\n"),
+            # A trailing blank in a multi-line capture must remain trailing.
+            ("a\nb\n\nc", 1, 3, 4, "c\na\nb\n"),
+        ],
+    )
+    def test_register_preserves_trailing_blank_lines(
+        self,
+        content: str,
+        start: int,
+        end: int,
+        destination: int,
+        expected: str,
+    ):
+        """A register preserves blank lines at the end of its captured range."""
+        ops = [
+            HashlineOp(
+                kind="delete", start=start, end=end, register_name="x", text=None
+            ),
+            HashlineOp(
+                kind="insert_after",
+                start=destination,
+                end=destination,
+                register_name="x",
+                text=None,
+            ),
+        ]
+        assert _apply_operations(content, ops) == expected
+
+    @pytest.mark.parametrize(
+        "put",
+        [
+            HashlineOp(
+                kind="insert_before", start=3, end=3, register_name="chunk", text=None
+            ),
+            HashlineOp(
+                kind="insert_after", start=2, end=2, register_name="chunk", text=None
+            ),
+            HashlineOp(
+                kind="replace", start=3, end=4, register_name="chunk", text=None
+            ),
+        ],
+    )
+    def test_overlapping_register_put_raises(self, put: HashlineOp):
+        """A PUT cannot address coordinates mutated by its register's CUT."""
+        content = "a\nb\nc\nd\ne\n"
+        ops = [
+            HashlineOp(kind="delete", start=2, end=3, register_name="chunk", text=None),
+            put,
+        ]
+        with pytest.raises(ValueError, match="overlap its CUT lines 2-3"):
+            _apply_operations(content, ops)
+
+    def test_duplicate_register_capture_raises(self):
+        """Each register has one unambiguous source range."""
+        content = "a\nb\nc\nd\ne\n"
+        ops = [
+            HashlineOp(kind="delete", start=1, end=1, register_name="x", text=None),
+            HashlineOp(kind="delete", start=4, end=4, register_name="x", text=None),
+            HashlineOp(
+                kind="insert_after", start=2, end=2, register_name="x", text=None
+            ),
+        ]
+        with pytest.raises(ValueError, match="Register @x is captured more than once"):
+            _apply_operations(content, ops)
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            HashlineOp(kind="replace", start=4, end=4, text="replacement"),
+            HashlineOp(kind="delete", start=4, end=4, text=None),
+            HashlineOp(kind="insert_before", start=4, end=4, text="before"),
+            HashlineOp(kind="insert_after", start=4, end=4, text="after"),
+        ],
+    )
+    def test_register_put_with_equal_start_operation_raises(self, other: HashlineOp):
+        """A register PUT cannot share a mutable coordinate with another edit."""
+        content = "a\nb\nc\nd\ne\n"
+        ops = [
+            HashlineOp(kind="delete", start=1, end=1, register_name="x", text=None),
+            HashlineOp(
+                kind="insert_after", start=4, end=4, register_name="x", text=None
+            ),
+            other,
+        ]
+        with pytest.raises(ValueError, match="Multiple operations start at line 4"):
+            _apply_operations(content, ops)
+
+    @pytest.mark.parametrize("kind", ["delete", "replace"])
+    def test_register_put_inside_other_mutation_range_raises(self, kind: OperationKind):
+        """Another range mutation cannot consume a register PUT destination."""
+        content = "a\nb\nc\nd\ne\n"
+        ops = [
+            HashlineOp(kind="delete", start=5, end=5, register_name="x", text=None),
+            HashlineOp(
+                kind="insert_before", start=3, end=3, register_name="x", text=None
+            ),
+            HashlineOp(
+                kind=kind,
+                start=2,
+                end=4,
+                text=None if kind == "delete" else "replacement",
+            ),
+        ]
+        with pytest.raises(ValueError, match=f"PUT lines 3-3 overlap {kind} lines 2-4"):
+            _apply_operations(content, ops)
+
+    @pytest.mark.parametrize(
+        "kind", ["delete", "replace", "insert_before", "insert_after"]
+    )
+    def test_register_put_range_containing_other_mutation_raises(
+        self, kind: OperationKind
+    ):
+        """A register PUT range cannot contain another mutation either."""
+        content = "a\nb\nc\nd\ne\nf\n"
+        ops = [
+            HashlineOp(kind="delete", start=6, end=6, register_name="x", text=None),
+            HashlineOp(kind="replace", start=2, end=4, register_name="x", text=None),
+            HashlineOp(
+                kind=kind,
+                start=3,
+                end=3,
+                text=None if kind == "delete" else "other",
+            ),
+        ]
+        with pytest.raises(ValueError, match=f"PUT lines 2-4 overlap {kind} lines 3-3"):
+            _apply_operations(content, ops)
+
+    def test_undefined_register_raises(self):
+        """Pasting from an undefined register raises ValueError."""
+        content = "a\nb\nc\n"
+        ops = [
+            HashlineOp(
+                kind="insert_after", start=2, end=2, register_name="nope", text=None
+            ),
+        ]
+        with pytest.raises(ValueError, match="@nope"):
+            _apply_operations(content, ops)
+
+    def test_register_captures_original_lines(self):
+        """Register content is based on original line positions, not post-mutation ones."""
+        content = "a\nb\nc\nd\n"
+        # CUT line 1, then paste after line 3 (which will shift to line 2 after cut)
+        # The result should be: b, c, d, a (a moved to end)
+        ops = [
+            HashlineOp(kind="delete", start=1, end=1, register_name="first", text=None),
+            HashlineOp(
+                kind="insert_after", start=4, end=4, register_name="first", text=None
+            ),
+        ]
+        result = _apply_operations(content, ops)
+        assert result == "b\nc\nd\na\n"
+
+    def test_cut_without_register_plain_delete(self):
+        """CUT without @name still works as a plain delete (no register_name)."""
+        content = "a\nb\nc\n"
+        ops = [HashlineOp(kind="delete", start=2, end=2, text=None)]
+        assert _apply_operations(content, ops) == "a\nc\n"
+
+    # ---- Full execution tests ----
+
+    def test_execute_cut_capture_and_paste(self, tmp_path: Path):
+        """End-to-end: CUT @fn to capture function, PUT >N @fn to paste at end."""
+        f = tmp_path / "module.txt"
+        f.write_text("# header\ndef foo():\n    pass\n# footer\n")
+        tag = store_snapshot(str(f.resolve()), f.read_text())
+        block = f"[{f.resolve()}#{tag}]\nCUT 2.=3 @fn\nPUT >4 @fn\n"
+        msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+        assert "applied" in msgs[0].lower(), msgs
+        result = f.read_text()
+        # The function should be moved after the footer
+        assert result == "# header\n# footer\ndef foo():\n    pass\n"
+
+    def test_execute_paste_before_register(self, tmp_path: Path):
+        """End-to-end: CUT @r followed by PUT <N @r (paste before)."""
+        f = tmp_path / "f.txt"
+        f.write_text("a\nb\nc\nd\n")
+        tag = store_snapshot(str(f.resolve()), f.read_text())
+        block = f"[{f.resolve()}#{tag}]\nCUT 1.=1 @first\nPUT <4 @first\n"
+        msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+        assert "applied" in msgs[0].lower(), msgs
+        assert f.read_text() == "b\nc\na\nd\n"
+
+    def test_parse_cut_register_in_mixed_block(self):
+        """Register CUT and plain PUT ops can coexist in the same edit block."""
+        block = "[f.py#A1B2C3D4]\nCUT 3.=5 @fn\nPUT 1.=1:\n+new header\n\nPUT >10 @fn\n"
+        _, _, ops = _parse_operations(block)
+        assert len(ops) == 3
+        assert ops[0].kind == "delete" and ops[0].register_name == "fn"
+        assert ops[1].kind == "replace" and ops[1].register_name is None
+        assert ops[2].kind == "insert_after" and ops[2].register_name == "fn"
 
 
 # ---------------------------------------------------------------------------
