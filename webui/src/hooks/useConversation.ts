@@ -105,6 +105,7 @@ export function useConversation(conversationId: string, serverId?: string) {
       return;
     }
 
+    let cancelled = false;
     const loadAndConnect = async () => {
       try {
         // Check if this is a demo conversation
@@ -169,6 +170,28 @@ export function useConversation(conversationId: string, serverId?: string) {
               description: message,
             });
             return;
+          }
+        } else if (conversation$?.chatConfig?.peek() === undefined) {
+          // Conversations created through createConversationWithPlaceholder()
+          // arrive already hydrated, so the branch above — the only other place
+          // that loads chatConfig on first open — is skipped for them.  The
+          // "ensure chat config is loaded" effect above cannot cover this case
+          // either: it bails on !conversation$.isConnected.peek(), and peek()
+          // does not subscribe, so it never re-runs once the conversation
+          // connects.  Without this fetch chatConfig stays `undefined` forever
+          // and the model selector is stuck on its loading skeleton for the
+          // whole life of every newly created conversation.
+          try {
+            const chatConfig = await api.getChatConfig(conversationId);
+            if (!cancelled) updateConversation(conversationId, { chatConfig });
+          } catch (error) {
+            console.warn(
+              `[useConversation] Failed to load chat config for ${conversationId}:`,
+              error
+            );
+            // null (not undefined) = "fetch attempted, no config", which clears
+            // the skeleton and falls back to the default model.
+            if (!cancelled) updateConversation(conversationId, { chatConfig: null });
           }
         }
 
@@ -485,6 +508,7 @@ export function useConversation(conversationId: string, serverId?: string) {
 
     // Cleanup function - only disconnect if page is being unloaded
     return () => {
+      cancelled = true;
       if (document.hidden) {
         api.closeEventStream(conversationId);
         setConnected(conversationId, false);
