@@ -992,6 +992,26 @@ Reviewed the diff carefully.
 
     _REVIEW_NO_BLOCK = "I reviewed the code and it looks fine."
 
+    # A finding whose body quotes a code fence.  Reviewing any markdown or
+    # codeblock change produces these routinely, and the old ```json ...```
+    # regex ended the block at the ``` *inside* the JSON string, so the whole
+    # review was discarded as unparseable.  Seen live on gptme/gptme#3507.
+    _REVIEW_FENCE_IN_BODY = (
+        "```json\n"
+        "{\n"
+        '  "findings": [\n'
+        "    {\n"
+        '      "body": "Add an unterminated input, e.g. ``` python\\nprint(1)\\n, '
+        'so the test fails without the fix.",\n'
+        '      "file": "tests/test_codeblock.py",\n'
+        '      "line": 1521,\n'
+        '      "severity": "warning"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n"
+    )
+
     @staticmethod
     def _review_jsonl(content: str) -> str:
         from gptme.cli.cmd_review_pr import _REVIEW_OUTPUT_MARKER
@@ -1004,6 +1024,7 @@ Reviewed the diff carefully.
     _SESSION_OUTPUT_WITH_FINDINGS = _review_jsonl(_REVIEW_WITH_FINDINGS)
     _SESSION_OUTPUT_NO_FINDINGS = _review_jsonl(_REVIEW_NO_FINDINGS)
     _SESSION_OUTPUT_NO_BLOCK = _review_jsonl(_REVIEW_NO_BLOCK)
+    _SESSION_OUTPUT_FENCE_IN_BODY = _review_jsonl(_REVIEW_FENCE_IN_BODY)
 
     def _make_spawn_patch(self, monkeypatch, stdout: str) -> list[dict]:
         """Monkeypatch _spawn_review_session to return a fixed stdout."""
@@ -1057,6 +1078,109 @@ Reviewed the diff carefully.
         assert f.file == "gptme/util/review.py"
         assert f.line == 3
         assert f.severity == FindingSeverity.WARNING
+
+    def test_extract_findings_survives_code_fence_inside_body(self):
+        """A ``` inside a finding body must not truncate the block."""
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        findings, validation_errors = _extract_findings_from_output(
+            self._SESSION_OUTPUT_FENCE_IN_BODY
+        )
+        assert findings is not None, "review discarded because its body quoted a fence"
+        assert len(findings) == 1
+        assert validation_errors == 0
+        assert "```" in findings[0].body
+        assert findings[0].file == "tests/test_codeblock.py"
+        assert findings[0].line == 1521
+
+    def test_extract_findings_ignores_json_fence_inside_body(self):
+        """A parseable quoted JSON fence is part of its outer finding."""
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        body = 'The docs quote ```json\n{"findings": []}\n``` as an example.'
+        review = f"```json\n{json.dumps({'findings': [{'body': body}]})}\n```"
+        findings, validation_errors = _extract_findings_from_output(
+            self._review_jsonl(review)
+        )
+
+        assert findings is not None
+        assert [finding.body for finding in findings] == [body]
+        assert validation_errors == 0
+
+    def test_extract_findings_accepts_json_on_opener_line(self):
+        """Compact fenced JSON accepted by the old extractor stays valid."""
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        review = f"```json {json.dumps({'findings': [{'body': 'compact'}]})}```"
+        findings, validation_errors = _extract_findings_from_output(
+            self._review_jsonl(review)
+        )
+
+        assert findings is not None
+        assert [finding.body for finding in findings] == ["compact"]
+        assert validation_errors == 0
+
+    def test_extract_findings_malformed_outer_block_fails_closed(self):
+        """A quoted findings fence must not rescue a malformed outer block.
+
+        When the outer value does not decode, the decoder never advances past
+        it, so a ```json fence quoted *inside* the broken value is no longer
+        shadowed.  If that fragment happens to be a valid findings object the
+        review would be emitted as COMPLETE with zero findings — a broken
+        review masquerading as a clean one.  Fail closed instead.
+        """
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        # Outer object is truncated (missing the closing `}`) and its body
+        # contains raw newlines, so it cannot decode.  The quoted fence below
+        # is a complete, valid findings object.
+        review = (
+            '```json\n{"findings": [{"body": "the reviewer emitted:\n'
+            '```json\n{"findings": []}\n```\nwhich is wrong"}]\n```'
+        )
+        findings, validation_errors = _extract_findings_from_output(
+            self._review_jsonl(review)
+        )
+
+        assert findings is None, (
+            "malformed review rescued by a findings object quoted inside it"
+        )
+        assert validation_errors == 0
+
+    def test_extract_findings_malformed_post_marker_preamble_fails_closed(self):
+        """A malformed block after the marker must fail the review closed."""
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        review = (
+            "The reviewer output included this broken example:\n"
+            "```json\nnot json at all\n```\n\n"
+            f"```json\n{json.dumps({'findings': [{'body': 'a real finding'}]})}\n```\n"
+        )
+        findings, validation_errors = _extract_findings_from_output(
+            self._review_jsonl(review)
+        )
+
+        assert findings is None
+        assert validation_errors == 0
+
+    def test_extract_findings_malformed_outer_with_quoted_fence_fails_closed(self):
+        """A quoted closing fence must not let a clean-looking block escape."""
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        review = (
+            '```json\n{"findings": [{"body": "see below\n'
+            "```\n"
+            "quoted code\n"
+            "```json\n"
+            '{"findings": []}\n'
+            "```\n"
+        )
+        findings, validation_errors = _extract_findings_from_output(
+            self._review_jsonl(review)
+        )
+
+        assert findings is None
+        assert validation_errors == 0
 
     def test_extract_findings_empty_array(self):
         from gptme.cli.cmd_review_pr import _extract_findings_from_output
@@ -1269,6 +1393,18 @@ Reviewed the diff carefully.
         output = self._review_jsonl(
             '```json\n{"findings": []}\n```\n'
             '```json\n{"findings": [{"body": "final bug"}]}\n```'
+        )
+        findings, validation_errors = _extract_findings_from_output(output)
+        assert findings is None
+        assert validation_errors == 0
+
+    def test_extract_findings_rejects_nested_block_in_malformed_outer_json(self):
+        """An indented quoted block cannot salvage a malformed outer review."""
+        from gptme.cli.cmd_review_pr import _extract_findings_from_output
+
+        output = self._review_jsonl(
+            '```json\n{"findings": [{"body": "quotes\n'
+            '    ```json\n{"findings": []}\n```\n'
         )
         findings, validation_errors = _extract_findings_from_output(output)
         assert findings is None

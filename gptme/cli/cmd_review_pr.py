@@ -73,6 +73,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -84,6 +85,9 @@ from ..util.review import (
     ReviewFinding,
     ReviewStatus,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -765,10 +769,54 @@ def _spawn_review_session(
 # Finding extraction
 # ---------------------------------------------------------------------------
 
-_JSON_BLOCK_RE = re.compile(
-    r"```json\s*(.*?)```",
-    re.DOTALL | re.IGNORECASE,
-)
+_JSON_BLOCK_OPEN_RE = re.compile(r"(?im)^```json(?:[ \t]*$|(?=[ \t]))")
+
+
+class _MalformedBlock:
+    """Sentinel yielded by :func:`_json_blocks` for an undecodable fence."""
+
+    __slots__ = ()
+
+
+MALFORMED_BLOCK = _MalformedBlock()
+
+
+def _json_blocks(text: str) -> Iterator[object]:
+    """Yield the JSON value opening each ```json fence in ``text``.
+
+    A regex cannot delimit these blocks: review findings routinely quote code
+    fences (reviewing a markdown or codeblock change all but guarantees it), and
+    a ``` inside a JSON string ends a non-greedy ``` ...``` match early, so the
+    captured text is a truncated, unparseable fragment.  Observed live on
+    gptme/gptme#3507, where a well-formed single-finding review was discarded
+    because its body quoted ```` ``` python ````.
+
+    Decoding with :meth:`json.JSONDecoder.raw_decode` instead lets the JSON
+    grammar decide where the value ends, so fences inside strings are just
+    string content.  The closing fence is not required to be found: the decoder
+    already knows where the value stops.
+
+    An opener that fails to decode yields :data:`MALFORMED_BLOCK` and ends the
+    scan. Skipping to a closing fence is fail-open: that fence may itself be
+    quoted inside the malformed value, allowing a later quoted findings object
+    to be promoted to a top-level block and emitted as a clean review.
+    """
+    decoder = json.JSONDecoder()
+    decoded_until = 0
+    for match in _JSON_BLOCK_OPEN_RE.finditer(text):
+        # A decoded JSON string may itself quote a ```json fence.  That opener
+        # belongs to the outer value, not to a second findings block.
+        if match.start() < decoded_until:
+            continue
+        idx = match.end()
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        try:
+            value, decoded_until = decoder.raw_decode(text, idx)
+        except ValueError:
+            yield MALFORMED_BLOCK
+            return
+        yield value
 
 
 def _assistant_output_from_jsonl(output: str) -> str | None:
@@ -826,13 +874,9 @@ def _extract_findings_from_output(
     # A review must have exactly one parseable findings block after the trusted
     # marker. Multiple blocks are ambiguous, so fail closed instead of choosing.
     parsed_blocks: list[tuple[list[ReviewFinding], int]] = []
-    for match in _JSON_BLOCK_RE.finditer(review_output):
-        raw = match.group(1).strip()
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-
+    for data in _json_blocks(review_output):
+        if data is MALFORMED_BLOCK:
+            return None, 0
         if not isinstance(data, dict) or "findings" not in data:
             continue
 
