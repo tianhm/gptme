@@ -360,3 +360,272 @@ def test_record_selection_trace_preserves_reasoning_suffixed_alias(monkeypatch):
     assert trace.selection.resolution_notes == [
         "resolved model alias for metadata lookup"
     ]
+
+
+# Phase 1 registry bridge tests
+def test_registry_record_set_when_available():
+    """Test that registry_record is populated when a known model is in the registry."""
+    trace = create_selection_trace(
+        requested_model="anthropic/claude-sonnet-4-6",
+        resolved_model="anthropic/claude-sonnet-4-6",
+        source_kind="cli",
+        source_value="anthropic/claude-sonnet-4-6",
+        transport_provider="anthropic",
+        backend_provider="anthropic",
+        registry_record="anthropic-claude-sonnet-4-6-001",
+    )
+    assert trace.identity is not None
+    assert trace.identity.registry_record == "anthropic-claude-sonnet-4-6-001"
+
+
+def test_registry_record_none_when_unknown():
+    """Test that registry_record stays None for unknown models."""
+    trace = create_selection_trace(
+        requested_model="unknown/model",
+        resolved_model="unknown/model",
+        source_kind="cli",
+        source_value="unknown/model",
+        transport_provider="unknown",
+        backend_provider="unknown",
+        registry_record=None,
+    )
+    assert trace.identity is not None
+    assert trace.identity.registry_record is None
+
+
+def test_attestation_level_provider_claim():
+    """Test that attestation_level can be set to provider_claim."""
+    trace = create_selection_trace(
+        requested_model="anthropic/claude-sonnet-4-6",
+        resolved_model="anthropic/claude-sonnet-4-6",
+        source_kind="cli",
+        source_value="anthropic/claude-sonnet-4-6",
+        transport_provider="anthropic",
+        backend_provider="anthropic",
+        registry_record="anthropic-claude-sonnet-4-6-001",
+    )
+    assert trace.identity is not None
+    # Manually set attestation level (as would be done in _record_selection_trace)
+    trace.identity.attestation_level = "provider_claim"
+    assert trace.identity.attestation_level == "provider_claim"
+
+
+def test_catalog_observed_at_set():
+    """Test that catalog_observed_at can be set from registry."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    trace = create_selection_trace(
+        requested_model="anthropic/claude-sonnet-4-6",
+        resolved_model="anthropic/claude-sonnet-4-6",
+        source_kind="cli",
+        source_value="anthropic/claude-sonnet-4-6",
+        transport_provider="anthropic",
+        backend_provider="anthropic",
+        registry_record="anthropic-claude-sonnet-4-6-001",
+    )
+    assert trace.identity is not None
+    # Manually set catalog_observed_at (as would be done in _record_selection_trace)
+    trace.identity.catalog_observed_at = now
+    assert trace.identity.catalog_observed_at == now
+
+
+def test_registry_record_roundtrip_to_dict():
+    """Test that registry_record survives serialization."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    trace = create_selection_trace(
+        requested_model="anthropic/claude-sonnet-4-6",
+        resolved_model="anthropic/claude-sonnet-4-6",
+        source_kind="cli",
+        source_value="anthropic/claude-sonnet-4-6",
+        transport_provider="anthropic",
+        backend_provider="anthropic",
+        registry_record="anthropic-claude-sonnet-4-6-001",
+    )
+    assert trace.identity is not None
+    trace.identity.attestation_level = "provider_claim"
+    trace.identity.catalog_observed_at = now
+
+    # Serialize and deserialize
+    d = trace.to_dict()
+    assert d["identity"]["registry_record"] == "anthropic-claude-sonnet-4-6-001"
+    assert d["identity"]["attestation_level"] == "provider_claim"
+
+    # Round-trip
+    trace2 = ModelSelectionTrace.from_dict(d)
+    assert trace2.identity is not None
+    assert trace2.identity.registry_record == "anthropic-claude-sonnet-4-6-001"
+    assert trace2.identity.attestation_level == "provider_claim"
+    assert trace2.identity.catalog_observed_at is not None
+
+
+# Tests that exercise the actual registry lookup path (not just field assignment)
+def test_record_runtime_selection_with_registry_available(monkeypatch):
+    """Test that record_runtime_selection enriches the trace when registry is available.
+
+    Patches lookup_model on the real module (if installed) or injects a fake module;
+    both paths verify the function correctly reads registry records into the trace.
+    """
+    import sys
+    import types
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    import gptme.model_attestation as ma
+
+    now = datetime.now(timezone.utc)
+    fake_ref = SimpleNamespace(
+        record_id="test-registry-record-001",
+        observed_at=now,
+        verification_status="verified",
+    )
+
+    if (
+        "model_capability_registry" in sys.modules
+        and sys.modules["model_capability_registry"] is not None
+    ):
+        # Real module is installed — patch lookup_model in place so the from-import picks it up
+        monkeypatch.setattr(
+            sys.modules["model_capability_registry"],
+            "lookup_model",
+            lambda model: fake_ref,
+        )
+    else:
+        # Not installed — inject a fake module
+        fake_mod = types.ModuleType("model_capability_registry")
+        fake_mod.lookup_model = lambda model: fake_ref  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "model_capability_registry", fake_mod)
+
+    trace = ma.record_runtime_selection(
+        "anthropic/claude-sonnet-4-6", source_kind="api_request"
+    )
+
+    assert trace.identity is not None
+    assert trace.identity.registry_record == "test-registry-record-001"
+    assert trace.identity.attestation_level == "provider_claim"
+    assert trace.identity.catalog_observed_at == now
+
+
+def test_record_runtime_selection_with_unverified_registry_record(monkeypatch):
+    """Test that a non-verified registry record sets registry_record but not provider_claim."""
+    import sys
+    import types
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    import gptme.model_attestation as ma
+
+    now = datetime.now(timezone.utc)
+    fake_ref = SimpleNamespace(
+        record_id="test-registry-record-unverified",
+        observed_at=now,
+        verification_status="unverified",
+    )
+
+    if (
+        "model_capability_registry" in sys.modules
+        and sys.modules["model_capability_registry"] is not None
+    ):
+        monkeypatch.setattr(
+            sys.modules["model_capability_registry"],
+            "lookup_model",
+            lambda model: fake_ref,
+        )
+    else:
+        fake_mod = types.ModuleType("model_capability_registry")
+        fake_mod.lookup_model = lambda model: fake_ref  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "model_capability_registry", fake_mod)
+
+    trace = ma.record_runtime_selection(
+        "anthropic/claude-sonnet-4-6", source_kind="api_request"
+    )
+
+    assert trace.identity is not None
+    assert trace.identity.registry_record == "test-registry-record-unverified"
+    assert trace.identity.attestation_level == "selection_only"  # not upgraded
+    assert trace.identity.catalog_observed_at == now
+
+
+def test_record_runtime_selection_without_registry(monkeypatch):
+    """Test that record_runtime_selection degrades gracefully when registry is absent."""
+    import sys
+
+    import gptme.model_attestation as ma
+
+    # Remove the real module (if present) and prevent any re-import
+    monkeypatch.setitem(sys.modules, "model_capability_registry", None)
+
+    trace = ma.record_runtime_selection(
+        "anthropic/claude-sonnet-4-6", source_kind="api_request"
+    )
+
+    assert trace.identity is not None
+    assert trace.identity.registry_record is None
+    assert trace.identity.attestation_level == "selection_only"
+
+
+def test_record_selection_trace_init_path_with_registry(monkeypatch):
+    """Test that _record_selection_trace (init.py) enriches the trace when registry is available.
+
+    Exercises the init.py path specifically — alias resolution and resolution_notes
+    are distinct from the model_attestation.py path and could diverge independently.
+    """
+    import sys
+    import types
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from gptme.init import _record_selection_trace
+    from gptme.llm.models import ModelMeta
+    from gptme.model_attestation import get_selection_trace
+
+    now = datetime.now(timezone.utc)
+    fake_ref = SimpleNamespace(
+        record_id="anthropic-claude-sonnet-4-6-001",
+        observed_at=now,
+        verification_status="verified",
+    )
+
+    lookup_keys: list[str] = []
+
+    def capturing_lookup(model: str):
+        lookup_keys.append(model)
+        return fake_ref
+
+    if (
+        "model_capability_registry" in sys.modules
+        and sys.modules["model_capability_registry"] is not None
+    ):
+        monkeypatch.setattr(
+            sys.modules["model_capability_registry"],
+            "lookup_model",
+            capturing_lookup,
+        )
+    else:
+        fake_mod = types.ModuleType("model_capability_registry")
+        fake_mod.lookup_model = capturing_lookup  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "model_capability_registry", fake_mod)
+
+    _record_selection_trace(
+        _config(),
+        "gptme/claude-sonnet-4-6",
+        "gptme/claude-sonnet-4-6",
+        "gptme/anthropic/claude-sonnet-4-6",
+        "gptme",
+        ModelMeta(
+            provider="gptme", model="anthropic/claude-sonnet-4-6", context=200_000
+        ),
+    )
+
+    trace = get_selection_trace()
+    assert trace is not None and trace.identity is not None
+    assert trace.identity.registry_record == "anthropic-claude-sonnet-4-6-001"
+    assert trace.identity.attestation_level == "provider_claim"
+    assert trace.identity.catalog_observed_at == now
+    # The lookup key must be the canonical backend name, not the gptme-prefixed resolved_model.
+    # "gptme/anthropic/claude-sonnet-4-6" would cause lookup_model to return None in practice.
+    assert lookup_keys == ["anthropic/claude-sonnet-4-6"], (
+        f"lookup_model was called with {lookup_keys!r}; expected canonical backend model"
+    )
