@@ -688,27 +688,29 @@ class TestExecuteHashlineEdit:
         assert f.read_text() == edited
 
     def test_live_file_changed_after_snapshot(self, tmp_path: Path):
-        """Edit must be rejected when the live file has changed since read (P1 fix)."""
+        """Phase 2: clean 3-way merge when file changed externally since read."""
         f = tmp_path / "f.txt"
         original = "alpha\nbeta\n"
         f.write_text(original)
         tag = store_snapshot(str(f.resolve()), original)
-        # Externally mutate the file after the snapshot was captured
+        # Externally mutate the file (add a new line that doesn't conflict with the edit)
         f.write_text("alpha\nbeta\nextra-line\n")
-        # The stored tag still matches the provided tag — but the live file differs
+        # Edit targets a different line — merge should be clean
         block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
         msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
-        assert "changed since snapshot" in msgs[0].lower(), msgs
-        # File must be untouched
-        assert f.read_text() == "alpha\nbeta\nextra-line\n"
+        # Phase 2: clean merge succeeds and notes the recovery
+        assert "applied" in msgs[0].lower(), msgs
+        assert "3-way merge" in msgs[0].lower(), msgs
+        # Merged result preserves both the edit and the external change
+        assert f.read_text() == "ALPHA\nbeta\nextra-line\n"
 
-    def test_content_mismatch_rejected_even_with_matching_tag(self, tmp_path: Path):
-        """Full content comparison catches stale content even when truncated tags match.
+    def test_content_mismatch_via_merge_recovery(self, tmp_path: Path):
+        """Phase 2: content mismatch triggers merge; non-conflicting result is written.
 
         Injects the snapshot store directly to simulate a 4-byte SHA-256 prefix
-        collision: the stored tag matches the edit-block tag, but the live file
-        content differs from the captured snapshot content. The old tag-only check
-        would silently accept this; the content comparison correctly rejects it.
+        collision scenario: the stored tag matches the edit-block tag, but the
+        live file content differs from the captured snapshot. Phase 2 attempts a
+        3-way merge rather than rejecting unconditionally.
         """
         from gptme.tools._hashline_snapshot import _store, compute_tag
 
@@ -717,15 +719,15 @@ class TestExecuteHashlineEdit:
         tag = compute_tag(original)
         # Inject the store so tag maps to original content
         _store[str(f.resolve())] = (tag, original)
-        # Write DIFFERENT content to disk (simulates the file changing after read,
-        # or — in the collision scenario — different content sharing the same tag prefix)
+        # Live file has a non-conflicting extra line (different from the edited line)
         changed = "alpha\nbeta\ngamma\n"
         f.write_text(changed)
         block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
         msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
-        # Content comparison catches this; tag-only comparison could miss a collision
-        assert "changed since snapshot" in msgs[0].lower(), msgs
-        assert f.read_text() == changed  # file must be untouched
+        # Phase 2 succeeds via merge (edit targets line 1; external change added line 3)
+        assert "applied" in msgs[0].lower(), msgs
+        assert "3-way merge" in msgs[0].lower(), msgs
+        assert f.read_text() == "ALPHA\nbeta\ngamma\n"
 
 
 # ---------------------------------------------------------------------------
@@ -1055,6 +1057,223 @@ class TestBlockReplace:
         assert result == "if z:\n    do_z()\ndo_c()\n"
         assert "# comment" not in result
         assert "else" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — 3-way merge recovery
+# ---------------------------------------------------------------------------
+
+
+class TestMergeRecovery:
+    """Phase 2: 3-way merge when the live file changed since the snapshot."""
+
+    def test_clean_merge_preserves_concurrent_change(self, tmp_path: Path):
+        """Non-conflicting external change is preserved alongside the model's edit."""
+        f = tmp_path / "code.py"
+        original = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # External change: add a line to bar() — doesn't conflict with our edit
+        f.write_text("def foo():\n    pass\n\ndef bar():\n    return 1\n")
+        # Model edit: replace foo body
+        block = f"[{f.resolve()}#{tag}]\nPUT 2.=2:\n+    return 'foo'\n"
+        msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+        assert "applied" in msgs[0].lower(), msgs
+        assert "3-way merge" in msgs[0].lower(), msgs
+        result = f.read_text()
+        assert "return 'foo'" in result  # our edit applied
+        assert "return 1" in result  # external change preserved
+
+    def test_conflicting_merge_reports_markers(self, tmp_path: Path):
+        """When both sides edit the same lines, conflict markers are reported."""
+        f = tmp_path / "conflict.txt"
+        original = "line1\nline2\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # External change: also modifies line 1
+        f.write_text("EXTERNAL_CHANGE\nline2\n")
+        # Model edit: replace line 1 with something different
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+MODEL_CHANGE\n"
+        msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+        # Conflict is reported
+        assert "conflict" in msgs[0].lower(), msgs
+        # File is left unchanged so the user can resolve manually
+        assert f.read_text() == "EXTERNAL_CHANGE\nline2\n"
+
+    def test_merge_recovery_note_absent_on_clean_apply(self, tmp_path: Path):
+        """When file is unchanged, success message has no merge-recovery note."""
+        f = tmp_path / "f.txt"
+        f.write_text("a\nb\n")
+        tag = store_snapshot(str(f.resolve()), f.read_text())
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+A\n"
+        msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+        assert "applied" in msgs[0].lower(), msgs
+        assert "3-way merge" not in msgs[0].lower()
+
+    def test_merge_snapshot_updated_after_recovery(self, tmp_path: Path):
+        """After a successful merge recovery, the snapshot reflects the new content."""
+        f = tmp_path / "f.txt"
+        original = "a\nb\nc\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # External change at end — non-conflicting
+        f.write_text("a\nb\nc\nextra\n")
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+A\n"
+        msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+        assert "applied" in msgs[0].lower(), msgs
+        new_content = f.read_text()
+        assert new_content == "A\nb\nc\nextra\n"
+        # Snapshot should reflect the merged content
+        new_tag = get_stored_tag(str(f.resolve()))
+        from gptme.tools._hashline_snapshot import compute_tag
+
+        assert new_tag == compute_tag(new_content)
+
+    def test_operational_merge_failure_high_exit_code(self, tmp_path: Path):
+        """git merge-file returning exit > 127 is reported as an operational error."""
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+
+        f = tmp_path / "f.txt"
+        original = "alpha\nbeta\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # Trigger merge-recovery path by changing the live file.
+        f.write_text("alpha\nbeta\nextra\n")
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
+
+        # Simulate git merge-file exiting with 128 (git internal error — e.g. git not
+        # found at runtime, or repository state corruption).  returncode > 127 is the
+        # reliable signal for an operational failure; conflict counts are 1-127.
+        fake_result = CompletedProcess(
+            args=["git", "merge-file", "-p"],
+            returncode=128,
+            stdout="",
+            stderr="error: could not read repository",
+        )
+        with patch("subprocess.run", return_value=fake_result):
+            msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+
+        # The error should be surfaced, not silently treated as a merge conflict.
+        assert any("git merge-file failed" in m or "repository" in m for m in msgs), (
+            msgs
+        )
+
+    def test_conflict_with_stderr_warning_shows_markers(self, tmp_path: Path):
+        """A real conflict that also emits a warning to stderr shows conflict markers, not an error."""
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+
+        f = tmp_path / "f.txt"
+        original = "alpha\nbeta\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # Trigger merge-recovery path.
+        f.write_text("alpha\nbeta\nextra\n")
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
+
+        # Simulate git merge-file finding a conflict (returncode=1 = 1 conflict section)
+        # while also writing a warning to stderr.  git CAN do this in edge cases
+        # (e.g. truncation warnings on very large files).  The old code treated any
+        # stderr as an operational failure, which would suppress the conflict markers.
+        conflict_output = "<<<<<<< your edit (via hashline_edit)\nALPHA\n=======\nalpha\n>>>>>>> current file\nbeta\nextra\n"
+        fake_result = CompletedProcess(
+            args=["git", "merge-file", "-p"],
+            returncode=1,
+            stdout=conflict_output,
+            stderr="warning: too many conflicts",
+        )
+        with patch("subprocess.run", return_value=fake_result):
+            msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+
+        # Conflict markers must be shown — not an error about git failing.
+        assert any("conflict" in m.lower() for m in msgs), msgs
+        assert not any("git merge-file failed" in m for m in msgs), msgs
+        # File should be left untouched so the user can resolve.
+        assert f.read_text() == "alpha\nbeta\nextra\n"
+
+    def test_git_not_found_raises_informative_error(self, tmp_path: Path):
+        """FileNotFoundError from git being absent surfaces a clear diagnostic, not a traceback."""
+        from unittest.mock import patch
+
+        f = tmp_path / "f.txt"
+        original = "alpha\nbeta\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # Trigger merge-recovery path by changing the live file.
+        f.write_text("alpha\nbeta\nextra\n")
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("git not found")):
+            msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+
+        # Should surface a human-readable message, not a raw traceback.
+        assert any("git" in m.lower() or "read" in m.lower() for m in msgs), msgs
+        # File must be left untouched.
+        assert f.read_text() == "alpha\nbeta\nextra\n"
+
+    def test_signal_killed_git_is_treated_as_error(self, tmp_path: Path):
+        """git merge-file killed by a signal (negative returncode) must not write partial output."""
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+
+        f = tmp_path / "f.txt"
+        original = "alpha\nbeta\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # Trigger merge-recovery path by changing the live file.
+        f.write_text("alpha\nbeta\nextra\n")
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
+
+        # Simulate OOM-kill: returncode -9 (SIGKILL), with some partial stdout.
+        # Before the fix, this partial content was written as a "clean" merge.
+        fake_result = CompletedProcess(
+            args=["git", "merge-file", "-p"],
+            returncode=-9,
+            stdout="partial\noutput\n",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=fake_result):
+            msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+
+        # Must surface an error, not silently write the partial content.
+        assert any(
+            "git merge-file failed" in m or "failed" in m.lower() for m in msgs
+        ), msgs
+        # File must be left untouched.
+        assert f.read_text() == "alpha\nbeta\nextra\n"
+
+    def test_edit_confirmation_race_aborts_on_concurrent_change(self, tmp_path: Path):
+        """EDIT confirmation path must abort when the live file changes during the dialog."""
+        from unittest.mock import patch
+
+        from gptme.hooks.confirm import ConfirmationResult
+
+        f = tmp_path / "f.txt"
+        original = "alpha\nbeta\n"
+        f.write_text(original)
+        tag = store_snapshot(str(f.resolve()), original)
+        # Trigger merge recovery: external change at the bottom (non-conflicting)
+        f.write_text("alpha\nbeta\nextra\n")
+        # Model edit: replace alpha (top) — no conflict with the external change
+        block = f"[{f.resolve()}#{tag}]\nPUT 1.=1:\n+ALPHA\n"
+
+        # The confirmation returns EDIT with some edited content.  While the
+        # dialog is "open", a second concurrent process changes the file again.
+        concurrent_content = "CONCURRENT CHANGE\nbeta\nextra\n"
+
+        def fake_confirm(**kwargs):
+            # Simulate another process modifying the file mid-dialog.
+            f.write_text(concurrent_content)
+            return ConfirmationResult.edit("ALPHA\nbeta\nextra\nUSER_EDIT\n")
+
+        with patch("gptme.hooks.get_confirmation", side_effect=fake_confirm):
+            msgs = _msgs(execute_hashline_edit(block, [str(f)], None))
+
+        # The race must be detected; the operation is aborted.
+        assert any("changed" in m.lower() or "read" in m.lower() for m in msgs), msgs
+        # The concurrent write must be preserved (file not overwritten by the edit).
+        assert f.read_text() == concurrent_content
 
 
 # ---------------------------------------------------------------------------
