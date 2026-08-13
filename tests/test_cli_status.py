@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 from click.testing import CliRunner
 
 import gptme.cli.cmd_status as cmd_status
 from gptme.cli.cmd_status import (
+    _pr_queue_display,
     _session_id,
     _strip_markdown,
     build_table_document,
@@ -100,6 +103,167 @@ def test_status_format_table_via_util():
     assert result.exit_code == 0
     assert "| Field | Value |" in result.output
     assert "| session_id |" in result.output
+
+
+def test_status_json(monkeypatch):
+    """Verify --json emits structured status without Markdown."""
+    monkeypatch.setattr(cmd_status, "_is_bob_workspace", lambda: True)
+    monkeypatch.setattr(
+        cmd_status,
+        "_active_tasks",
+        lambda lines=3: [{"_id": "task-1", "title": "First task"}],
+    )
+    monkeypatch.setattr(cmd_status, "_recent_commits", lambda limit=3: ["abc123 Fix"])
+    monkeypatch.setattr(
+        cmd_status,
+        "_pr_queue",
+        lambda _tracked: [{"repo": "gptme/gptme", "count": 2, "cap": None}],
+    )
+    monkeypatch.setattr(
+        cmd_status,
+        "_service_status",
+        lambda: [{"label": "worker", "icon": "✅", "status": "active"}],
+    )
+    monkeypatch.setattr(cmd_status, "_dead_timers", lambda: 0)
+    monkeypatch.setattr(
+        cmd_status,
+        "_blockers",
+        lambda limit=3: [{"id": "blocked", "waiting_for": "review"}],
+    )
+    monkeypatch.setattr(
+        cmd_status,
+        "_ready_tasks",
+        lambda limit=3: [{"id": "ready", "name": "Ready task"}],
+    )
+    monkeypatch.setattr(cmd_status, "_session_id", lambda: "session-1")
+    monkeypatch.setattr(cmd_status, "_git_root", lambda: None)
+    monkeypatch.setattr(cmd_status, "_disk_usage", lambda _root=None: "1G / 2G (50%)")
+    monkeypatch.setattr(cmd_status, "_journal_entries", lambda limit=5: ["entry.md"])
+
+    result = CliRunner().invoke(status, ["--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    # Timestamp is dynamic; validate presence and format separately.
+    assert "timestamp" in data
+    assert "T" in data.pop("timestamp")
+    assert data == {
+        "session_id": "session-1",
+        "active_tasks": [{"id": "task-1", "title": "First task"}],
+        "recent_commits": ["abc123 Fix"],
+        "pr_queue": [{"repo": "gptme/gptme", "count": 2, "cap": None}],
+        "disk_usage": "1G / 2G (50%)",
+        "journal_entries": ["entry.md"],
+        "services": [{"label": "worker", "icon": "✅", "status": "active"}],
+        "dead_timers": 0,
+        "blockers": [{"id": "blocked", "waiting_for": "review"}],
+        "ready_tasks": [{"id": "ready", "name": "Ready task"}],
+    }
+
+
+def test_status_json_via_util(monkeypatch):
+    """Verify gptme-util status exposes the --json flag (deterministic)."""
+    monkeypatch.setattr(cmd_status, "_is_bob_workspace", lambda: False)
+    monkeypatch.setattr(cmd_status, "_active_tasks", lambda lines=3: [])
+    monkeypatch.setattr(cmd_status, "_recent_commits", lambda limit=3: [])
+    monkeypatch.setattr(cmd_status, "_pr_queue", lambda _tracked: [])
+    monkeypatch.setattr(cmd_status, "_session_id", lambda: "session-util")
+    monkeypatch.setattr(cmd_status, "_git_root", lambda: None)
+    monkeypatch.setattr(cmd_status, "_disk_usage", lambda _root=None: "1G / 2G (50%)")
+    monkeypatch.setattr(cmd_status, "_journal_entries", lambda limit=5: [])
+
+    result = CliRunner().invoke(util_main, ["status", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, dict)
+    assert data["session_id"] == "session-util"
+    assert "timestamp" in data
+
+
+def test_status_json_with_output_file(tmp_path, monkeypatch):
+    """Verify --json -o path writes valid JSON with expected schema to a file."""
+    monkeypatch.setattr(cmd_status, "_is_bob_workspace", lambda: False)
+    monkeypatch.setattr(cmd_status, "_active_tasks", lambda lines=3: [])
+    monkeypatch.setattr(cmd_status, "_recent_commits", lambda limit=3: [])
+    monkeypatch.setattr(cmd_status, "_pr_queue", lambda _tracked: [])
+    monkeypatch.setattr(cmd_status, "_session_id", lambda: "session-x")
+    monkeypatch.setattr(cmd_status, "_git_root", lambda: None)
+    monkeypatch.setattr(cmd_status, "_disk_usage", lambda _root=None: "1G / 2G (50%)")
+    monkeypatch.setattr(cmd_status, "_journal_entries", lambda limit=5: [])
+
+    out_file = tmp_path / "status.json"
+    result = CliRunner().invoke(status, ["--json", "-o", str(out_file)])
+
+    assert result.exit_code == 0
+    assert out_file.exists()
+    data = json.loads(out_file.read_text())
+    assert data["session_id"] == "session-x"
+    assert "timestamp" in data
+    assert "active_tasks" in data
+    assert "pr_queue" in data
+    assert "disk_usage" in data
+
+
+def test_status_json_excludes_bob_fields_in_non_bob_workspace(monkeypatch):
+    """Verify Bob-only fields are absent when not in Bob's workspace."""
+    monkeypatch.setattr(cmd_status, "_is_bob_workspace", lambda: False)
+    monkeypatch.setattr(cmd_status, "_active_tasks", lambda lines=3: [])
+    monkeypatch.setattr(cmd_status, "_recent_commits", lambda limit=3: [])
+    monkeypatch.setattr(cmd_status, "_pr_queue", lambda _tracked: [])
+    monkeypatch.setattr(cmd_status, "_session_id", lambda: "session-y")
+    monkeypatch.setattr(cmd_status, "_git_root", lambda: None)
+    monkeypatch.setattr(cmd_status, "_disk_usage", lambda _root=None: "1G / 2G (50%)")
+    monkeypatch.setattr(cmd_status, "_journal_entries", lambda limit=5: [])
+
+    result = CliRunner().invoke(status, ["--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    for bob_key in ("services", "dead_timers", "blockers", "ready_tasks"):
+        assert bob_key not in data, (
+            f"Bob-only field '{bob_key}' present outside Bob workspace"
+        )
+
+
+def test_status_json_write_with_output_path(tmp_path, monkeypatch):
+    """Verify --json --write -o path is accepted and writes JSON (unambiguous destination)."""
+    monkeypatch.setattr(cmd_status, "_is_bob_workspace", lambda: False)
+    monkeypatch.setattr(cmd_status, "_active_tasks", lambda lines=3: [])
+    monkeypatch.setattr(cmd_status, "_recent_commits", lambda limit=3: [])
+    monkeypatch.setattr(cmd_status, "_pr_queue", lambda _tracked: [])
+    monkeypatch.setattr(cmd_status, "_session_id", lambda: "session-w")
+    monkeypatch.setattr(cmd_status, "_git_root", lambda: None)
+    monkeypatch.setattr(cmd_status, "_disk_usage", lambda _root=None: "1G / 2G (50%)")
+    monkeypatch.setattr(cmd_status, "_journal_entries", lambda limit=5: [])
+
+    out_file = tmp_path / "out.json"
+    result = CliRunner().invoke(status, ["--json", "--write", "-o", str(out_file)])
+
+    assert result.exit_code == 0, result.output
+    assert out_file.exists()
+    data = json.loads(out_file.read_text())
+    assert data["session_id"] == "session-w"
+    assert "timestamp" in data
+
+
+def test_status_json_rejects_rendering_options():
+    """Verify JSON cannot be combined with presentation-only options."""
+    runner = CliRunner()
+    for args in (
+        ["--json", "--no-markdown"],
+        ["--json", "--format", "table"],
+        ["--json", "--write"],  # --write without -o is rejected
+    ):
+        result = runner.invoke(status, args)
+        assert result.exit_code == 2
+
+
+def test_pr_queue_display():
+    """Verify _pr_queue_display formats count/cap and at-limit suffix correctly."""
+    assert _pr_queue_display(2, None) == "2"
+    assert _pr_queue_display(2, 10) == "2/10"
+    assert _pr_queue_display(10, 10) == "10/10 ⚠ at limit"
+    assert _pr_queue_display(11, 10) == "11/10 ⚠ at limit"
 
 
 def test_status_format_narrative_is_default():

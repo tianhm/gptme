@@ -17,6 +17,7 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
 import click
 
@@ -38,6 +39,7 @@ def _run(cmd: list[str], *, timeout: int = 10) -> str:
 
 
 def _git_root() -> Path | None:
+    """Return the git root for the current working directory."""
     raw = _run([GIT_CMD, "rev-parse", "--show-toplevel"])
     return Path(raw) if raw else None
 
@@ -80,12 +82,18 @@ def _recent_commits(n: int = 3) -> list[str]:
     return raw.splitlines() if raw else []
 
 
+class _PRQueueRow(TypedDict):
+    repo: str
+    count: int
+    cap: int | None
+
+
 def _pr_queue(
     repos: list[tuple[str, int | None]], author: str | None = None
-) -> list[dict[str, str]]:
+) -> list[_PRQueueRow]:
     if author is None:
         author = _gh_user() or "TimeToBuildBob"
-    rows: list[dict[str, str]] = []
+    rows: list[_PRQueueRow] = []
     for repo, cap in repos:
         prs_json = _run(
             [
@@ -110,14 +118,15 @@ def _pr_queue(
         except json.JSONDecodeError:
             continue
         count = len(prs)
-        cap_str = (
-            f"{count}/{cap}"
-            + (" ⚠ at limit" if cap is not None and count >= cap else "")
-            if cap is not None
-            else str(count)
-        )
-        rows.append({"repo": repo, "count": cap_str})
+        rows.append({"repo": repo, "count": count, "cap": cap})
     return rows
+
+
+def _pr_queue_display(count: int, cap: int | None) -> str:
+    """Format a PR count as a human-readable string with optional cap."""
+    if cap is not None:
+        return f"{count}/{cap}" + (" ⚠ at limit" if count >= cap else "")
+    return str(count)
 
 
 def _service_status() -> list[dict[str, str]]:
@@ -274,17 +283,13 @@ def section_active_work(is_bob: bool = False) -> str:
 
 def section_pr_queue() -> str:
     lines = ["## PR Queue"]
-    tracked = [
-        ("gptme/gptme", 10),
-        ("gptme/gptme-cloud", 3),
-        ("ErikBjare/bob", None),
-        ("gptme/gptme-contrib", None),
-    ]
-    rows = _pr_queue(tracked)
+    rows = _pr_queue(_TRACKED_REPOS)
     if rows:
         lines.append("| Repo | Open |")
         lines.append("|------|------|")
-        lines.extend(f"| {row['repo']} | {row['count']} |" for row in rows)
+        for row in rows:
+            display = _pr_queue_display(row["count"], row["cap"])
+            lines.append(f"| {row['repo']} | {display} |")
     else:
         lines.append("- Unable to fetch PR data")
     return "\n".join(lines)
@@ -329,6 +334,45 @@ def section_ready_next() -> str:
 # ── build ─────────────────────────────────────────────────────────────
 
 
+_TRACKED_REPOS: list[tuple[str, int | None]] = [
+    ("gptme/gptme", 10),
+    ("gptme/gptme-cloud", 3),
+    ("ErikBjare/bob", None),
+    ("gptme/gptme-contrib", None),
+]
+
+
+def _status_data() -> dict[str, object]:
+    """Collect status data shared by JSON and presentation renderers."""
+    is_bob = _is_bob_workspace()
+    root = _git_root()
+    status_data: dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "session_id": _session_id(),
+        "active_tasks": [
+            {"id": task.get("_id", task.get("id", "")), "title": task.get("title", "")}
+            for task in _active_tasks(3)
+        ],
+        "recent_commits": _recent_commits(3),
+        "pr_queue": _pr_queue(_TRACKED_REPOS),
+        "disk_usage": _disk_usage(root),
+        "journal_entries": _journal_entries(5),
+    }
+    if is_bob:
+        status_data.update(
+            services=_service_status(),
+            dead_timers=_dead_timers(),
+            blockers=_blockers(3),
+            ready_tasks=_ready_tasks(3),
+        )
+    return status_data
+
+
+def build_json_status() -> str:
+    """Build the structured JSON status document."""
+    return json.dumps(_status_data(), indent=2)
+
+
 def build_table_document() -> str:
     """Build a machine-readable markdown table of session state."""
     is_bob = _is_bob_workspace()
@@ -345,15 +389,13 @@ def build_table_document() -> str:
     last_commit = commits[0] if commits else "none"
 
     # pending_prs
-    tracked = [
-        ("gptme/gptme", 10),
-        ("gptme/gptme-cloud", 3),
-        ("ErikBjare/bob", None),
-        ("gptme/gptme-contrib", None),
-    ]
-    pr_rows = _pr_queue(tracked)
+    pr_rows = _pr_queue(_TRACKED_REPOS)
     pending_prs = (
-        ", ".join(f"{r['repo']}:{r['count']}" for r in pr_rows) if pr_rows else "none"
+        ", ".join(
+            f"{r['repo']}:{_pr_queue_display(r['count'], r['cap'])}" for r in pr_rows
+        )
+        if pr_rows
+        else "none"
     )
 
     # waiting_for
@@ -448,7 +490,14 @@ def build_document() -> str:
     default="narrative",
     help="Output format: narrative (default) or table.",
 )
-def status(write: bool, output: str | None, markdown: bool, output_format: str):
+@click.option("--json", "as_json", is_flag=True, help="Output status as JSON.")
+def status(
+    write: bool,
+    output: str | None,
+    markdown: bool,
+    output_format: str,
+    as_json: bool,
+) -> None:
     """Generate a portable operator handoff / session-status document.
 
     Produces a compact briefing: active work, PR queue, service health,
@@ -465,9 +514,21 @@ def status(write: bool, output: str | None, markdown: bool, output_format: str):
 
         gptme-util status --no-markdown         # plain-text output
 
-        gptme-util status --format table        # machine-readable table
+        gptme-util status --format table        # compact Markdown table
+
+        gptme-util status --json                # structured JSON
     """
-    if output_format == "table":
+    if as_json and (
+        not markdown or output_format != "narrative" or (write and not output)
+    ):
+        raise click.UsageError(
+            "--json cannot be combined with --no-markdown, --format, or --write"
+            " (use -o/--output to write JSON to a file)"
+        )
+
+    if as_json:
+        doc = build_json_status()
+    elif output_format == "table":
         doc = build_table_document()
     else:
         doc = build_document()
@@ -482,7 +543,7 @@ def status(write: bool, output: str | None, markdown: bool, output_format: str):
         out_path = (root or Path.cwd()) / "status.md"
 
     if out_path:
-        out_path.write_text(doc)
+        out_path.write_text(doc, encoding="utf-8")
         click.echo(f"Written to {out_path}")
     else:
         click.echo(doc)
