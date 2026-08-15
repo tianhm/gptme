@@ -79,6 +79,7 @@ See the `README <https://github.com/gptme/gptme/blob/master/README.md>`_ file fo
 
    design/hook-based-confirmations
    design/elicitation
+   design/ptc-tool-interface
 
 .. toctree::
    :maxdepth: 2
@@ -419,6 +420,75 @@ Common commands:
 - ``/models`` - List available models
 - ``/tokens`` - Show token usage and costs
 - ``/exit`` - Exit the program
+
+.. _usage-conversations:
+
+Managing Conversations
+----------------------
+
+Every gptme interaction is part of a **conversation** — a named history of
+messages persisted on disk. Conversations can be resumed, searched, forked,
+and renamed.
+
+For term definitions (conversation, branch, fork, analytics session), see the :doc:`glossary`.
+
+**Start or resume a named conversation**
+
+Give a conversation an explicit name so you can return to it later:
+
+.. code-block:: bash
+
+    # Start a new named conversation
+    gptme --name my-refactor "let's refactor the auth module"
+
+    # Resume that same conversation in a future session
+    gptme --name my-refactor
+
+    # Resume the most recently modified conversation (any name)
+    gptme -r
+
+Without ``--name``, gptme assigns a random name (e.g. ``hopping-blue-robot``).
+
+**List and search conversations**
+
+.. code-block:: bash
+
+    # List the 20 most recent conversations
+    gptme chats list
+
+    # Show full metadata (model, cost, token counts)
+    gptme chats list --metadata
+
+    # Search conversation content
+    gptme chats search "auth module refactor"
+
+    # Machine-readable JSON output
+    gptme chats list --json
+
+**Fork a conversation to explore an alternate approach**
+
+Forking creates a new independent conversation from messages up to turn N.
+The original conversation is unchanged.
+
+.. code-block:: bash
+
+    # Fork after the third user+assistant exchange
+    gptme-util chats fork my-refactor --at-turn 3
+
+    # Fork with a custom name for the new conversation
+    gptme-util chats fork my-refactor --at-turn 3 --name my-refactor-v2
+
+    # Then resume the fork normally
+    gptme --name my-refactor-v2
+
+Within a running conversation, ``/fork my-experiment`` achieves the same result
+at the current turn (see :doc:`commands`).
+
+.. note::
+
+   ``/fork`` and ``gptme-util chats fork`` both create a **new top-level conversation**,
+   not a branch inside the current one. For workspace rollback before risky changes,
+   use ``/checkpoint`` (committed state) or ``/snapshot`` (any state) instead.
 
 Interfaces
 ----------
@@ -3172,6 +3242,35 @@ Overview
 ^^^^^^^^^^^^^
 
 - `MCP`_ - Discover and connect Model Context Protocol servers
+
+Tool Interface Architecture
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+gptme's default tool interface is **Programmatic Tool Calling (PTC)**: the model
+writes executable code in fenced code blocks, and gptme runs it directly. For the
+default ``markdown`` and ``xml`` formats, no JSON schemas are sent to the model
+and no JSON-structured responses are parsed.
+
+The primary dispatch path is ``"markdown"`` format: a fenced code block whose
+language tag identifies any registered tool name (``python``, ``shell``, ``save``,
+``patch``, and others), and whose content gptme routes to
+``ToolSpec.execute(code, args, kwargs)``. For Python, this means IPython's
+``run_cell()``; for Shell, ``subprocess.Popen`` with a stateful bash shell.
+
+gptme also supports a **provider-native tool mode** (``"tool"`` format) for
+OpenAI and Anthropic APIs, where ``ToolSpec`` parameters are converted to
+JSON-schema definitions and sent to the provider — trading context-rot resilience
+for provider-side tool routing compatibility.
+
+**Why default to PTC?** A 2026 benchmark study (arXiv:2608.06370, *"The Bitter Lesson of
+Tool Calling"*) found that PTC matches or exceeds JSON-schema tool calling on
+11/14 models and — critically — **maintains accuracy under context rot** (long
+sessions with accumulated tool history) while JSON-schema accuracy degrades ~2.3%.
+Autonomous gptme sessions routinely accumulate 50–200 tool calls; this is exactly
+the regime where JSON-schema approaches falter.
+
+See :doc:`design/ptc-tool-interface` for the full architecture documentation and
+2026-08-13 audit of dispatch paths in ``gptme/tools/``.
 
 Combinations
 ^^^^^^^^^^^^
@@ -7077,13 +7176,114 @@ A parsed representation of a tool invocation found in an assistant's response.
 ### Runnable Tool
 A tool that can be executed in the current context. Some tools may be defined but not runnable (e.g., disabled or context-restricted).
 
-## Session Concepts
+## Conversation and Session Concepts
+
+(conversation)=
+### Conversation
+The primary unit of persistence in gptme. A named history of messages exchanged with an LLM,
+stored as a directory on disk. Each conversation has a unique ID (a random adjective-color-animal
+name by default, or a name you supply with `--name`).
+
+**Storage**: `~/.local/share/gptme/logs/<conversation-id>/conversation.jsonl`
+
+**Commands**:
+- Start: `gptme --name my-project "your prompt"` or just `gptme` (auto-names)
+- Resume: `gptme --name my-project` (by name) or `gptme -r` (most recent)
+- List: `gptme chats list`
+- Search: `gptme chats search <query>`
+- Rename: `/rename` in the TUI, or `gptme chats rename <id>`
+- Delete: `/delete` in the TUI
+
+**Disambiguation**: "conversation" is the persistent log on disk. A "run" or "session" (everyday use)
+means launching gptme and working in a conversation — no special object, just a process attached to
+a log. For analytics-tracking sessions, see [Analytics Session](#analytics-session).
+
+(branch)=
+### Branch
+An alternative message thread stored alongside the main thread within the same conversation
+directory. The default branch is named `"main"` and stored as `conversation.jsonl`.
+Named branches are stored as `branches/<branch-name>.jsonl` in the same log directory.
+
+Branches are mainly a **server-side concept**: the `gptme-server` API accepts a `branch` parameter
+on step/tool calls, allowing multiple AI exploration paths in the same conversation simultaneously.
+The TUI's `/fork` command creates a new top-level conversation rather than a branch within
+the current one.
+
+**Storage**: `…/<conversation-id>/branches/<branch-name>.jsonl`
+
+(fork)=
+### Fork
+A new, independent conversation created from a copy of messages 0 through turn N of an
+existing conversation. The original conversation is never modified. Both the TUI command
+and the CLI produce a new conversation directory.
+
+**Usage**:
+```bash
+# Fork at turn 3 (includes turns 0–2, the first 3 user+assistant exchanges)
+gptme-util chats fork my-project --at-turn 3
+
+# Fork with a custom name
+gptme-util chats fork my-project --at-turn 3 --name my-project-v2
+
+# Within a running conversation, fork at the current turn:
+# /fork my-experiment
+```
+
+**Distinction from Branch**: A fork creates a separate conversation ID with its own directory;
+a branch lives inside the original conversation's directory (server-side only).
 
 ### Log / LogManager
 The conversation history and its management system. Stores all messages exchanged in a session.
+`LogManager` handles file locking, branching, and workspace resolution. View reduction lives in
+`gptme/util/reduce.py`; workspace symlink creation happens in `ChatConfig.save()`.
+
+**Code reference**: `gptme/logmanager/manager.py`
 
 ### Workspace
-The directory context in which gptme operates. Tools like file operations are scoped to the workspace.
+The filesystem directory gptme operates in during a conversation. File operations, shell commands,
+and checkpoints are scoped to this directory.
+
+**Storage**: Symlinked at `…/<conversation-id>/workspace/` → the actual directory.
+
+**Set via**: `gptme --workspace <dir>`
+
+### Checkpoint
+A clean git HEAD reference recorded in the workspace's git history. Use to restore the workspace
+to a known good state before large or risky changes. Requires a committed working tree.
+
+**Commands**: `/checkpoint create`, `/checkpoint list`, `/checkpoint diff <id>`, `/checkpoint restore <id>`
+
+**Distinction from Snapshot**: Checkpoints require a committed tree; snapshots capture any state
+including uncommitted changes.
+
+### Snapshot
+A workspace state capture recorded in a side-git shadow repository. Can capture committed
+or uncommitted changes. Created automatically before and after each mutating tool call when
+the `auto_snapshots` plugin is enabled.
+
+**Commands**: `/snapshot create [label]`, `/snapshot list`, `/snapshot restore <sha>`, `/snapshot diff <sha>`
+
+### Backtrack Marker
+A named conversation position persisted to disk (in `conv-checkpoints.jsonl` alongside the log).
+Rewinding with `/backtrack` truncates the conversation log to the saved index and creates a backup
+branch — the log on disk is modified, but workspace files are not.
+
+**Commands**: `/backtrack mark [label]`, `/backtrack list`, `/backtrack <label|N>`
+
+**Distinction**: Unlike `/checkpoint` and `/snapshot`, backtracking does not touch workspace files.
+
+(analytics-session)=
+### Analytics Session
+A completed run record stored by the `gptme-sessions` package. Tracks metadata about a finished
+run: duration, cost, model, category, and quality grades. Cross-harness: records runs from
+gptme, Claude Code, Codex, and other compatible harnesses.
+
+**Storage**: `~/.local/share/gptme-sessions/sessions.jsonl` (configurable)
+
+**Commands**: `gptme sessions query`, `gptme sessions show <id>`, `gptme sessions stats`
+
+**Disambiguation**: Not the same as "starting a session" (everyday usage for launching gptme
+in a conversation). The analytics session is only created *after* the run completes.
 
 ## Configuration
 
@@ -12498,6 +12698,169 @@ def server_elicit_hook(request: ElicitationRequest) -> ElicitationResponse | Non
 | Confirmation | ✅ (tool.confirm) | ✅ | ✅ | ✅ |
 | Server/Web UI | 🚧 (planned) | ✅ | ✅ | ✅ |
 | MCP bridge | 🚧 (planned) | ? | ? | ? |
+
+
+# Design: Programmatic Tool Calling (PTC) Interface
+
+**Date**: 2026-08-13
+**Status**: Stable — this documents the existing architecture
+
+## Summary
+
+gptme's primary tool interface is **Programmatic Tool Calling (PTC)**:
+the model outputs *executable code* in fenced code blocks, and gptme runs it
+directly via Python (IPython) or the shell. For the default `markdown` and `xml`
+formats, no JSON schemas are handed to the model and no JSON-structured tool-call
+responses are parsed.
+
+gptme also supports a **provider-native tool mode** (the `"tool"` format) for
+OpenAI and Anthropic APIs. In this mode, `ToolSpec` parameters are converted to
+JSON-schema tool definitions and sent to the provider; the provider returns
+structured tool calls which gptme parses before dispatching to `ToolSpec.execute`.
+This path trades the context-rot resilience of PTC for compatibility with
+provider-side tool routing.
+
+This matters because gptme's long-running autonomous sessions accumulate 50–200 tool
+calls in a single conversation. JSON-schema tool definitions are verbose and repetitive
+in context; accumulated provider-native tool history crowds out the actual task. PTC
+code blocks are shorter, more compositional, and less sensitive to context length.
+gptme's markdown-first design is architecturally positioned to remain stable in the
+long-context regime where JSON-schema approaches are most likely to degrade.
+
+---
+
+## Dispatch Paths
+
+### Primary: Markdown code blocks (PTC)
+
+The default and primary tool format is `"markdown"`. The model writes:
+
+````
+```python
+print("hello")
+```
+````
+
+gptme parses the fenced code block, identifies the language tag as a tool name
+(`python`, `shell`, `save`, `patch`, …), and calls the registered `ToolSpec.execute`
+function with the block content as `code`. For `python`, this runs the code via
+IPython's `run_cell()`; for `shell`, via `subprocess.Popen` with a stateful bash
+shell. **There is no JSON parsing in this path.** The content is code; it runs as
+code.
+
+### Secondary: XML code blocks
+
+The `"xml"` format wraps the same code in XML tags:
+
+```xml
+<tool-use>
+<python>
+print("hello")
+</python>
+</tool-use>
+```
+
+Dispatch is identical — `tool.execute(content, args, kwargs)` — with the code block
+content passing straight through. Still PTC.
+
+### Tertiary: "tool" format (provider-native tool mode)
+
+The `"tool"` format (`@name(id): {...}`) supports providers that expose a native
+tool-use API (e.g., OpenAI Responses API, Anthropic tool use).
+
+**This is the one path where JSON schemas are sent to the model and structured
+tool-call responses are parsed.** The implementation spans two layers:
+
+- **`gptme/llm/`** (schema → provider): `_spec2tool` in `llm_openai.py` /
+  `llm_anthropic.py` converts each `ToolSpec`'s `.parameters` to a JSON-schema
+  tool definition and sends it to the provider alongside the conversation.
+- **`gptme/tools/base.py`** (provider → dispatch): `ToolUse.iter_from_content`
+  with `active_format == "tool"` parses the `@name(id): {...}` response using
+  `json_repair.loads`, extracts `kwargs`, and yields a `ToolUse` that then calls
+  `ToolSpec.execute`.
+
+The `ToolSpec.execute` interface itself is code-based in all formats; the JSON
+layer is the serialisation envelope for provider-native calls, handled in
+`gptme/llm/` (outbound schemas) and `gptme/tools/base.py` (inbound argument
+parsing).
+
+### MCP adapter
+
+`gptme/tools/mcp_adapter.py` speaks the MCP protocol, which uses JSON Schema to
+describe external MCP server tools. This schema is used to **generate human-readable
+instructions** for the model (not to gate dispatch) and to validate MCP server
+responses. gptme's own tools are never dispatched via JSON schema.
+
+---
+
+## Audit: No JSON-Schema Dispatch Paths in `gptme/tools/`
+
+Audit run 2026-08-13, commit range: `origin/master`.
+
+```bash
+grep -r "json\|schema\|Json\|Schema" gptme/tools/ \
+  --include="*.py" | grep -v __pycache__ | grep -v test
+```
+
+**Findings by file**:
+
+| File | JSON usage | Dispatch path? |
+|------|-----------|----------------|
+| `base.py` | `_to_json`/`_to_params` serialisation + `ToolUse.iter_from_content` "tool"-format JSON parser (`json_repair.loads`) | ⚠️ Part of provider-native path — parses `@name(id): {...}` responses |
+| `mcp_adapter.py` | MCP protocol JSON schema for external server tools | ❌ Not gptme tool dispatch |
+| `patch_anchored.py` | JSON array of edit operations (tool's own content format) | ❌ Not dispatch |
+| `vent.py` | JSONL output to friction ledger | ❌ Not dispatch |
+| `progress.py` | JSONL output to progress log | ❌ Not dispatch |
+| `shell.py` | context-savings JSONL log | ❌ Not dispatch |
+| `restart.py` | `--output-schema` CLI flag for structured subagent output | ❌ Not tool dispatch |
+
+**Verdict**: Two distinct things are worth separating here:
+
+1. **Schema-definition dispatch** (using a JSON schema to *select* which tool to invoke):
+   never occurs in any path. The `@name(id): {...}` format in the provider-native path
+   names the tool directly; the schema is only sent *outbound* to the provider to help
+   it structure its response, not used inbound to route calls.
+
+2. **JSON argument parsing after tool selection**: `base.py` **does** parse JSON from
+   provider responses via `ToolUse.iter_from_content` with `active_format == "tool"`.
+   This `json_repair.loads` call is the trust boundary for untrusted provider data —
+   **security reviewers should treat this as in-scope** even though it is not schema-guided
+   dispatch.
+
+For markdown and XML formats, `ToolSpec.execute(code, args, kwargs)` receives raw code block
+content with no JSON parsing at any layer. The ⚠️ on `base.py` above applies only to the
+`"tool"` format (provider-native mode); the outbound schema half lives in `gptme/llm/`.
+
+---
+
+## Why PTC Favours Long Context (Context Rot Argument)
+
+JSON-schema tool calling sends the full parameter schema for every available tool on
+every turn. In a long autonomous session this adds significant token overhead that
+repeats with every message. PTC code blocks carry no per-turn schema payload: the
+model writes code, gptme runs it — the only context each block occupies is the code
+itself.
+
+The concern compounds under **context rot**: when prior tool-call history accumulates
+(50–200 entries in a typical autonomous run), JSON-schema responses grow proportionally
+because each prior turn's structured `tool_call` / `tool_result` pair is preserved in
+the conversation. PTC history is just markdown code blocks and their output — shorter,
+compositional, and no more repetitive than the code itself.
+
+**Reasoning**: gptme's long-running autonomous sessions sit in the regime most
+sensitive to this effect. The markdown-first PTC interface avoids the per-turn schema
+overhead and the structured-call repetition that makes long JSON-schema contexts
+harder for models to attend through.
+
+---
+
+## References
+
+- `gptme/tools/base.py` — `ToolSpec`, `ToolUse`, dispatch paths, `ToolFormat`
+- `gptme/tools/python.py` — IPython execution backend
+- `gptme/tools/shell.py` — subprocess bash execution backend
+- `gptme/tools/mcp_adapter.py` — MCP protocol bridge (external tool JSON schema)
+- Issue [#3540](https://github.com/gptme/gptme/issues/3540) — audit request
 
 
 Alternatives
