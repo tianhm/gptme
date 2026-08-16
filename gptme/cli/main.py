@@ -410,8 +410,24 @@ def _known_tool_names() -> list[str]:
     --help rendering) — never at module import time.
     """
     from ..tools import get_available_tools
+    from ..tools._allowlist import TOOL_PRESET_NAMES
 
-    return sorted(tool.name for tool in get_available_tools(include_mcp=False))
+    names = {tool.name for tool in get_available_tools(include_mcp=False)}
+    names.update(TOOL_PRESET_NAMES)
+    return sorted(names)
+
+
+def _known_hint_names() -> list[str]:
+    """Hint tags defined across all known built-in tools.
+
+    Imports the tool subsystem, so only call this lazily — never at module import time.
+    """
+    from ..tools import get_available_tools
+
+    hints: set[str] = set()
+    for tool in get_available_tools(include_mcp=False):
+        hints.update(tool.hints)
+    return sorted(hints)
 
 
 docstring = f"""
@@ -426,6 +442,7 @@ Examples:
   gptme "fix TODOs" main.py                  Include file or URL in context
   gptme "review" github.com/org/repo/pull/1  Include a GitHub PR in context
   gptme --tools none "what is 2+2"           No tools, just chat
+  gptme -t read-only "summarize this repo"   Read files only; no writes or execution
   gptme -t patch,save "fix typo" main.py     Only specific tools (comma-separated)
   gptme -t +subagent "plan a refactor"       Default tools + subagent
   gptme -t=-browser "summarize code"         Default tools minus browser
@@ -560,11 +577,14 @@ Run 'gptme-util --help' for all utility commands."""
         # misleading "invalid choice" here. Resolved lazily: tool discovery
         # imports most of gptme and must not run at module import time.
         lambda: _known_tool_names() + ["none"],
-        allow_prefixes=["+", "-"],
-        extra_choices_for_prefix={"-": _known_tool_names},
-        # Only '+' is lenient: plugin tools (added via '+tool') aren't known at
-        # parse time. '-tool' exclusions stay strict against known tools so typos
-        # like '-shel' are caught early instead of being silently ignored.
+        allow_prefixes=["+", "-", "hint:"],
+        extra_choices_for_prefix={
+            "-": _known_tool_names,
+            "hint:": _known_hint_names,
+        },
+        # '+' is lenient: plugin tools (added via '+tool') aren't known at
+        # parse time. '-tool' exclusions and built-in hint tags stay strict so
+        # typos like '-shel' or 'hint:red-only' fail before tool loading.
         lenient_prefixes=["+"],
         metavar="TOOL",
     ),
