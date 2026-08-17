@@ -258,6 +258,39 @@ class TestPromptGptme:
         assert "gptme v" in content
         assert "general-purpose AI assistant" in content
 
+    def test_next_step_guidance_present(self):
+        """The concrete-next-step instruction is in the full prompt."""
+        from gptme.prompts import prompt_gptme
+
+        msgs = list(prompt_gptme(interactive=True))
+        content = msgs[0].content
+        assert "End your response with a concrete next step" in content
+        assert "offer to elaborate" in content
+
+    def test_next_step_guidance_present_when_compact(self):
+        """The instruction applies uniformly — compact prompts get it too."""
+        from gptme.prompts import prompt_gptme
+
+        msgs = list(prompt_gptme(interactive=True, compact=True))
+        content = msgs[0].content
+        assert "End with a concrete next step" in content
+
+    @pytest.mark.parametrize("compact", [False, True])
+    def test_clarifying_question_guidance_only_in_interactive_mode(self, compact):
+        """Non-interactive agents must proceed instead of asking questions."""
+        from gptme.prompts import prompt_gptme
+
+        interactive_content = list(prompt_gptme(interactive=True, compact=compact))[
+            0
+        ].content
+        non_interactive_content = list(
+            prompt_gptme(interactive=False, compact=compact)
+        )[0].content
+
+        assert "Ask a clarifying question only when" in interactive_content
+        assert "Ask a clarifying question only when" not in non_interactive_content
+        assert "concrete next step" in non_interactive_content
+
     def test_thinking_tags_without_reasoning_model(self):
         """Models without native reasoning get <thinking> tag instructions."""
         from gptme.prompts import prompt_gptme
@@ -315,6 +348,9 @@ class TestPromptGptme:
             msgs = list(prompt_gptme(interactive=True))
         content = msgs[0].content
         assert "Custom base prompt for my project." in content
+        # The concrete-next-step instruction must still apply, not silently drop
+        # when a project overrides the base prompt.
+        assert "End your response with a concrete next step" in content
 
     def test_xml_format_wraps_in_role(self):
         """XML format wraps the entire prompt in <role> tags."""
