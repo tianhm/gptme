@@ -519,6 +519,22 @@ def has_tool(tool_name: str) -> bool:
     return any(tool.name == tool_name for tool in _get_loaded_tools())
 
 
+def notify_file_read(path: str, content: str) -> str | None:
+    """Store a hashline snapshot unconditionally; return the tag only when hashline_edit is active.
+
+    Always stores a snapshot so hashline_edit can edit files that were read before
+    the tool was activated (e.g., via load_tool mid-session). Returns the tag only
+    when hashline_edit is loaded so read.py can gate the [path#tag] header.
+
+    This decouples read.py from the hashline_snapshot module: read.py calls this
+    function without importing _hashline_snapshot directly.
+    """
+    from ._hashline_snapshot import store_snapshot
+
+    tag = store_snapshot(path, content)
+    return tag if has_tool("hashline_edit") else None
+
+
 def load_tool(tool_name: str) -> ToolSpec:
     """Load a single tool by name mid-conversation.
 
