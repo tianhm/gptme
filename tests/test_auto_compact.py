@@ -1000,3 +1000,246 @@ def test_resume_via_llm_with_view_branch():
     # Status messages should be hidden
     for msg in results:
         assert msg.hide is True
+
+
+def test_keep_head_protects_head_messages_from_reasoning_strip():
+    """Test that keep_head messages are not modified by reasoning stripping."""
+    messages = [
+        Message(
+            "user",
+            "Original task <think>old reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "assistant",
+            "Reply <think>old reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+        Message(
+            "user", "Later <think>old reasoning</think>", datetime.now(tz=timezone.utc)
+        ),
+        Message(
+            "assistant",
+            "Final <think>old reasoning</think>",
+            datetime.now(tz=timezone.utc),
+        ),
+    ]
+
+    # With keep_head=1, the first message (system prompt / task) must be untouched
+    compacted = list(
+        auto_compact_log(messages, reasoning_strip_age_threshold=0, keep_head=1)
+    )
+
+    # Head message preserved verbatim
+    assert compacted[0].content == messages[0].content
+    assert "<think>" in compacted[0].content
+
+    # Later messages still get reasoning stripped
+    for msg in compacted[1:]:
+        assert "<think>" not in msg.content
+
+
+def test_keep_head_protects_head_messages_from_tool_truncation():
+    """Test that keep_head messages are not truncated even when over the limit."""
+    model = get_default_model() or get_model("gpt-4")
+    # Clamp to at least 2100 so the tail always exceeds max_tool_result_tokens=2000,
+    # ensuring phase-2 truncation fires regardless of the model's context size.
+    target_tokens = max(2100, int(0.85 * model.context))
+
+    words = [f"file_{i}.txt" for i in range(target_tokens // 2)]
+    massive = "\n".join(words)
+    head_content = "HEAD TASK CONTENT that must be preserved verbatim"
+    tail_content = f"Ran command: `find /usr -type f`\n{massive}"
+
+    messages = [
+        Message("system", head_content, datetime.now(tz=timezone.utc)),
+        Message("assistant", "running", datetime.now(tz=timezone.utc)),
+        Message("system", tail_content, datetime.now(tz=timezone.utc)),
+    ]
+
+    compacted = list(auto_compact_log(messages, keep_head=1))
+
+    # Head message preserved verbatim despite massive tail triggering truncation
+    assert compacted[0].content == head_content
+    # Tail was truncated
+    assert "[Large tool output removed" in compacted[2].content
+
+
+def test_keep_head_zero_is_default_behavior():
+    """Test that keep_head=0 (default) gives identical output to no param."""
+    messages = create_test_conversation()
+
+    default = list(auto_compact_log(messages))
+    explicit = list(auto_compact_log(messages, keep_head=0))
+
+    assert default == explicit
+
+
+def test_keep_head_survives_reduce_log_fallback():
+    """Protected head messages must not be touched by the reduce_log fallback.
+
+    Passes a limit of 1 token so all three primary phases are guaranteed to
+    fail to reach the limit and the fallback fires.  The head message must
+    come out identical despite reduce_log being called on the tail.
+    """
+    head_content = "SYSTEM PROMPT — task context that must survive compaction"
+    messages = [
+        Message("system", head_content, datetime.now(tz=timezone.utc)),
+        Message("user", "word " * 500, datetime.now(tz=timezone.utc)),
+        Message("assistant", "word " * 500, datetime.now(tz=timezone.utc)),
+    ]
+
+    # limit=1 guarantees phases 1-3 leave us over-limit, triggering the fallback
+    compacted = list(auto_compact_log(messages, limit=1, keep_head=1))
+
+    # Head message must be yielded verbatim and pinned so downstream reduce_log
+    # (e.g. in prepare_messages) cannot summarize or remove it.
+    assert compacted[0].content == head_content
+    assert compacted[0].pinned, (
+        "head message must be pinned to survive downstream reduce_log"
+    )
+
+
+def test_keep_head_fully_protected_log_yields_verbatim():
+    """When keep_head >= message count, all messages are protected.
+
+    The fallback must yield the entire log verbatim rather than passing it to
+    reduce_log (which has no knowledge of keep_head and would truncate the
+    "protected" head messages).
+    """
+    head1 = "SYSTEM PROMPT — must survive"
+    head2 = "USER TASK — must survive"
+    messages = [
+        Message("system", head1, datetime.now(tz=timezone.utc)),
+        Message("user", head2, datetime.now(tz=timezone.utc)),
+    ]
+
+    # keep_head=2 covers all 2 messages; limit=1 forces the fallback
+    compacted = list(auto_compact_log(messages, limit=1, keep_head=2))
+
+    assert len(compacted) == 2
+    assert compacted[0].content == head1
+    assert compacted[1].content == head2
+    assert compacted[0].pinned, (
+        "head messages must be pinned to survive downstream reduce_log"
+    )
+    assert compacted[1].pinned, (
+        "head messages must be pinned to survive downstream reduce_log"
+    )
+
+
+def test_compact_auto_handler_honors_env_keep_head(monkeypatch):
+    """The /compact auto handler must use _get_keep_head(), not a hardcoded default.
+
+    When GPTME_AUTOCOMPACT_KEEP_HEAD differs from the AutoCompactConfig default,
+    the handler must pass the env value — not the dataclass default — to
+    auto_compact_log.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from gptme.tools.autocompact.handlers import _compact_auto
+
+    # Set up a mock context
+    mock_logdir = MagicMock()
+    mock_ctx = MagicMock()
+    mock_ctx.manager.logdir = mock_logdir
+
+    msgs = [
+        Message("system", "System prompt"),
+        Message("user", "word " * 200),
+        Message("system", "tool result " * 200),
+    ]
+
+    captured_keep_head = {}
+
+    def fake_auto_compact_log(log, logdir=None, keep_head=0, **kw):
+        captured_keep_head["value"] = keep_head
+        yield from log
+
+    with (
+        patch(
+            "gptme.tools.autocompact.handlers.should_auto_compact",
+            return_value="rule_based",
+        ),
+        patch(
+            "gptme.tools.autocompact.handlers.auto_compact_log",
+            side_effect=fake_auto_compact_log,
+        ),
+        patch("gptme.tools.autocompact.handlers.get_default_model", return_value=None),
+        patch("gptme.config.get_config") as mock_get_config,
+    ):
+        # Simulate env var returning "5"
+        mock_cfg = MagicMock()
+        mock_cfg.get_env.return_value = "5"
+        mock_get_config.return_value = mock_cfg
+
+        list(_compact_auto(mock_ctx, msgs))
+
+    assert captured_keep_head.get("value") == 5, (
+        f"Expected keep_head=5 from env override, got {captured_keep_head.get('value')}"
+    )
+
+
+def test_get_keep_head_negative_falls_back_to_default(monkeypatch):
+    """_get_keep_head must treat negative env values as invalid and return the configured default.
+
+    A user setting GPTME_AUTOCOMPACT_KEEP_HEAD=-1 might expect head retention to fall
+    back to the default (2), not to be silently disabled. The old code returned
+    max(0, int(raw)) = 0 for negatives, defeating head protection.
+    """
+    from gptme.tools.autocompact.config import _get_keep_head
+
+    monkeypatch.setenv("GPTME_AUTOCOMPACT_KEEP_HEAD", "-1")
+    result = _get_keep_head()
+
+    assert result == 2, (
+        f"Negative GPTME_AUTOCOMPACT_KEEP_HEAD=-1 should fall back to default 2, got {result}"
+    )
+
+
+def test_keep_head_success_path_pins_head_messages():
+    """keep_head messages must be pinned on ALL yield paths, including early-return and success.
+
+    Two paths previously missed pinning:
+    1. Early-return path (log already fits in budget — no compaction needed).
+    2. Success path (compaction brought final_tokens <= limit).
+
+    Without pinning, a downstream limit_log call (e.g. in prepare_messages)
+    could still drop the protected head messages because limit_log only preserves
+    initial-system and pinned=True messages.
+
+    Fix: pin the first keep_head messages on every yield path.
+    """
+    from gptme.tools.autocompact.engine import auto_compact_log
+
+    model = get_default_model() or get_model("gpt-4")
+    # Build a log with a massive tool result that phase-2 truncates, bringing
+    # final_tokens <= limit so the SUCCESS path fires (not the fallback).
+    target_tokens = max(2100, int(0.85 * model.context))
+    words = [f"file_{i}.txt" for i in range(target_tokens // 2)]
+    massive = "\n".join(words)
+    head1 = "SYSTEM PROMPT — must be pinned"
+    head2 = "USER TASK — must be pinned"
+
+    messages = [
+        Message("system", head1, datetime.now(tz=timezone.utc)),
+        Message("user", head2, datetime.now(tz=timezone.utc)),
+        Message("assistant", "running", datetime.now(tz=timezone.utc)),
+        Message("system", massive, datetime.now(tz=timezone.utc)),
+    ]
+
+    # Phase-2 truncates the massive tail; final_tokens <= limit → success path
+    compacted = list(auto_compact_log(messages, keep_head=2))
+
+    assert len(compacted) >= 2
+    assert compacted[0].content == head1
+    assert compacted[1].content == head2
+    assert compacted[0].pinned, (
+        "head[0] must be pinned so downstream limit_log skips it"
+    )
+    assert compacted[1].pinned, (
+        "head[1] must be pinned so downstream limit_log skips it"
+    )
+    # Non-head messages must NOT be pinned
+    for m in compacted[2:]:
+        assert not m.pinned, f"non-head message should not be pinned: {m.content[:30]}"
