@@ -53,6 +53,12 @@ from gptme.llm.models import (
     set_default_model,
 )
 from gptme.llm.models.types import is_custom_provider
+from gptme.llm.validate import (
+    VALIDATION_CONNECTION_ERROR,
+    VALIDATION_PROVIDER_ERROR_PREFIX,
+    VALIDATION_TIMEOUT_ERROR,
+    validate_api_key,
+)
 from gptme.prompts import get_prompt
 
 from ..commands import handle_cmd
@@ -3070,13 +3076,19 @@ def api_user():
     description=(
         "Persist a provider API key into the user's global gptme config. "
         "The key is checked against the provider before it is written, so an "
-        "invalid key is rejected with 400 rather than saved. "
+        "invalid key is rejected with 422 rather than saved; "
+        "provider connectivity failures return 502. "
         "Intended for first-run onboarding flows; callers should restart the "
         "server after a successful write if they need the running process to "
         "pick the key up immediately."
     ),
     request_body=UserApiKeySaveRequest,
-    responses={200: UserApiKeySaveResponse, 400: ErrorResponse},
+    responses={
+        200: UserApiKeySaveResponse,
+        400: ErrorResponse,
+        422: ErrorResponse,
+        502: ErrorResponse,
+    },
     tags=["user"],
 )
 def api_user_api_key():
@@ -3090,6 +3102,7 @@ def api_user_api_key():
     provider = req_json.get("provider")
     api_key = req_json.get("api_key")
     model = req_json.get("model")
+    skip_validation = req_json.get("skip_validation", False)
     if not isinstance(provider, str):
         return flask.jsonify({"error": "provider must be a string"}), 400
     if not isinstance(api_key, str):
@@ -3100,6 +3113,8 @@ def api_user_api_key():
                 "error": "model must be a string (e.g. 'gpt-4', 'claude-sonnet-4-5-20250929')"
             }
         ), 400
+    if not isinstance(skip_validation, bool):
+        return flask.jsonify({"error": "skip_validation must be a boolean"}), 400
     if provider not in PROVIDER_API_KEYS:
         return flask.jsonify({"error": f"Unknown provider: {provider}"}), 400
 
@@ -3114,16 +3129,26 @@ def api_user_api_key():
         return flask.jsonify({"error": str(exc)}), 400
 
     # Check the key with the provider before writing it. `/account setup` has always
-    # done this (gptme/commands/account.py); this endpoint did not, so onboarding
-    # accepted a bad key, reported "status": "ok", and the user only found out when
-    # the first generation came back with a raw provider auth error. Same validator,
-    # so both onboarding paths agree on what "valid" means: a rate-limited or
-    # quota-exhausted key is valid, and providers without a check are skipped.
-    from ..llm.validate import validate_api_key  # fmt: skip
-
-    is_valid, validation_error = validate_api_key(trimmed_api_key, provider)
-    if not is_valid:
-        return flask.jsonify({"error": validation_error}), 400
+    # done this (gptme/commands/account.py); this endpoint did not. Same validator, so
+    # both paths agree on what "valid" means: rate-limited or quota-exhausted keys are
+    # valid, and providers without a check (azure, nvidia, local) are skipped.
+    # skip_validation=True is for offline/test use where live network calls aren't available.
+    key_warning: str | None = None
+    if not skip_validation:
+        try:
+            is_valid, validation_msg = validate_api_key(trimmed_api_key, provider)
+        except Exception:
+            logger.exception("Unexpected error validating %s API key", provider)
+            return flask.jsonify({"error": "Provider validation failed"}), 502
+        if not is_valid:
+            if validation_msg in {
+                VALIDATION_TIMEOUT_ERROR,
+                VALIDATION_CONNECTION_ERROR,
+            } or validation_msg.startswith(VALIDATION_PROVIDER_ERROR_PREFIX):
+                return flask.jsonify({"error": validation_msg}), 502
+            return flask.jsonify({"error": validation_msg}), 422
+        if validation_msg:
+            key_warning = validation_msg
 
     env_var = PROVIDER_API_KEYS[provider]
     set_config_value(f"env.{env_var}", trimmed_api_key, reload=False, local=True)
@@ -3140,14 +3165,15 @@ def api_user_api_key():
     logger.info(
         "Saved %s to user config via /api/v2/user/api-key (applied live)", env_var
     )
-    return flask.jsonify(
-        {
-            "status": "ok",
-            "provider": provider,
-            "env_var": env_var,
-            "restart_required": False,
-        }
-    )
+    resp: dict = {
+        "status": "ok",
+        "provider": provider,
+        "env_var": env_var,
+        "restart_required": False,
+    }
+    if key_warning:
+        resp["warning"] = key_warning
+    return flask.jsonify(resp)
 
 
 @v2_api.route("/api/v2/user/default-model", methods=["POST"])

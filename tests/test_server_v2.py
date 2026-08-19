@@ -361,9 +361,10 @@ def stub_key_validation(monkeypatch, *, valid: bool = True, message: str = ""):
 
     The endpoint checks the key with the provider before persisting it, so
     every save test has to say what the provider would answer.
+    Patch at the api_v2 import site so the function uses the stub.
     """
     monkeypatch.setattr(
-        "gptme.llm.validate.validate_api_key",
+        "gptme.server.api_v2.validate_api_key",
         lambda api_key, provider, timeout=10: (valid, message),
     )
 
@@ -380,7 +381,11 @@ def test_v2_user_api_key_persists_env_entry(client: FlaskClient, tmp_path, monke
 
     response = client.post(
         "/api/v2/user/api-key",
-        json={"provider": "anthropic", "api_key": "  sk-ant-test-key  "},
+        json={
+            "provider": "anthropic",
+            "api_key": "  sk-ant-test-key  ",
+            "skip_validation": True,
+        },
     )
 
     assert response.status_code == 200
@@ -413,7 +418,11 @@ def test_v2_user_api_key_applies_to_env_immediately(
 
     response = client.post(
         "/api/v2/user/api-key",
-        json={"provider": "anthropic", "api_key": "sk-ant-live-key"},
+        json={
+            "provider": "anthropic",
+            "api_key": "sk-ant-live-key",
+            "skip_validation": True,
+        },
     )
 
     assert response.status_code == 200
@@ -440,6 +449,7 @@ def test_v2_user_api_key_persists_default_model(
             "provider": "anthropic",
             "api_key": "sk-ant-test-key",
             "model": "anthropic/claude-sonnet-4-7",
+            "skip_validation": True,
         },
     )
 
@@ -488,7 +498,7 @@ def test_v2_user_api_key_rejects_invalid_key(
         json={"provider": "anthropic", "api_key": "sk-ant-bad-key"},
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert response.get_json() == {
         "error": "Invalid API key. Please check your key and try again."
     }
@@ -521,12 +531,11 @@ def test_v2_user_api_key_saves_when_validation_is_non_fatal(
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {
-        "status": "ok",
-        "provider": "anthropic",
-        "env_var": "ANTHROPIC_API_KEY",
-        "restart_required": False,
-    }
+    data = response.get_json()
+    assert data["status"] == "ok"
+    assert data["provider"] == "anthropic"
+    assert data["env_var"] == "ANTHROPIC_API_KEY"
+    assert data["restart_required"] is False
 
     saved = tomlkit.loads((tmp_path / "config.local.toml").read_text()).unwrap()
     assert saved["env"]["ANTHROPIC_API_KEY"] == "sk-ant-out-of-credit"
@@ -541,6 +550,211 @@ def test_v2_user_api_key_rejects_unknown_provider(client: FlaskClient):
     assert response.status_code == 400
     data = response.get_json()
     assert data == {"error": "Unknown provider: bogus"}
+
+
+def test_v2_user_api_key_rejects_invalid_key_via_provider(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """An invalid provider key should return 422 before persisting anything."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "gptme.server.api_v2.validate_api_key",
+        lambda key, provider, **kw: (
+            False,
+            "Invalid API key. Please check your key and try again.",
+        ),
+    )
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={"provider": "anthropic", "api_key": "sk-ant-INVALID"},
+    )
+
+    assert response.status_code == 422
+    data = response.get_json()
+    assert "error" in data
+    assert "Invalid API key" in data["error"]
+
+    # Nothing should have been written to disk
+    local_file = tmp_path / "config.local.toml"
+    assert not local_file.exists()
+
+
+@pytest.mark.parametrize(
+    "validation_error",
+    [
+        "Request timed out. Please check your network connection.",
+        "Could not connect to the API. Please check your network.",
+        "Validation failed: provider returned malformed response",
+        # 5xx provider responses now produce this prefix too — must be 502, not 422
+        "Validation failed: Provider unavailable (HTTP 500)",
+    ],
+)
+def test_v2_user_api_key_returns_bad_gateway_when_provider_unreachable(
+    client: FlaskClient, tmp_path, monkeypatch, validation_error
+):
+    """Connectivity failures should return 502 without persisting the key."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+    monkeypatch.setattr(
+        "gptme.server.api_v2.validate_api_key",
+        lambda key, provider: (False, validation_error),
+    )
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={"provider": "anthropic", "api_key": "sk-ant-test"},
+    )
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": validation_error}
+    assert not (tmp_path / "config.local.toml").exists()
+
+
+def test_v2_user_api_key_handles_validator_exception(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """A provider outage should return JSON without persisting the key."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+
+    def raise_provider_error(key, provider):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr("gptme.server.api_v2.validate_api_key", raise_provider_error)
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={"provider": "anthropic", "api_key": "sk-ant-test"},
+    )
+
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "Provider validation failed"}
+    assert not (tmp_path / "config.local.toml").exists()
+
+
+def test_v2_user_api_key_accepts_valid_key_via_provider(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """A key that passes live validation should be persisted normally."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "gptme.server.api_v2.validate_api_key",
+        lambda key, provider, **kw: (True, ""),
+    )
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={"provider": "anthropic", "api_key": "sk-ant-VALID"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "ok"
+    assert "warning" not in data or data["warning"] is None
+
+    local_file = tmp_path / "config.local.toml"
+    saved = tomlkit.loads(local_file.read_text()).unwrap()
+    assert saved["env"]["ANTHROPIC_API_KEY"] == "sk-ant-VALID"
+
+
+def test_v2_user_api_key_warns_on_quota_exhausted(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """A valid but quota-exhausted key should be saved with a warning in the response."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "gptme.server.api_v2.validate_api_key",
+        lambda key, provider, **kw: (True, "API quota exhausted — resets in 3 days"),
+    )
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={"provider": "anthropic", "api_key": "sk-ant-QUOTA"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "ok"
+    assert data.get("warning") is not None
+    assert "quota" in data["warning"].lower() or "exhausted" in data["warning"].lower()
+
+
+def test_v2_user_api_key_azure_surfaces_no_validation_warning(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """Azure keys are accepted but a warning must surface — validation is a no-op there."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={"provider": "azure", "api_key": "garbage-azure-key"},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "ok"
+    # Key is accepted, but a warning must be present so the UI can inform the user
+    assert data.get("warning") is not None
+    assert data["warning"] != ""
+
+
+def test_v2_user_api_key_skip_validation_bypasses_live_check(
+    client: FlaskClient, tmp_path, monkeypatch
+):
+    """skip_validation=True should persist the key without calling the live validator."""
+    import gptme.config.user as user_mod
+
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(user_mod, "config_path", str(config_file))
+    monkeypatch.setattr("gptme.config.core.reload_config", lambda: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    called = []
+
+    def fake_validate(key, provider, **kw):
+        called.append((key, provider))
+        return (False, "Invalid API key")  # would fail if called
+
+    monkeypatch.setattr("gptme.server.api_v2.validate_api_key", fake_validate)
+
+    response = client.post(
+        "/api/v2/user/api-key",
+        json={
+            "provider": "anthropic",
+            "api_key": "sk-ant-ANY",
+            "skip_validation": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert called == []  # validator was never invoked
 
 
 def test_v2_user_default_model_persists_and_applies(
