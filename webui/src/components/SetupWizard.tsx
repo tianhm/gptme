@@ -460,12 +460,37 @@ export function SetupWizard() {
     }
   };
 
-  const handleCloudLogin = () => {
+  const handleCloudLogin = async () => {
     // Open the cloud auth URL — the deep-link flow (gptme://) or URL fragment
     // will handle the callback and connect automatically.
-    window.open(CLOUD_AUTH_URL, '_blank');
     setConnectError(null);
     setCloudLoginStarted(true);
+
+    // In Tauri, hand the URL to the OS browser via the opener plugin instead of
+    // window.open(). On Android, wry's WebView has no multiple-window support,
+    // so `window.open(url, '_blank')` navigates the *app's own* WebView to the
+    // auth page: the SPA that has to receive the callback is unloaded, and the
+    // final gptme:// redirect lands in a WebView that cannot dispatch it (the
+    // deep-link plugin only listens for Intents). Opening externally keeps the
+    // app alive and brings the callback back as a gptme:// Intent.
+    if (isTauri) {
+      try {
+        await invokeTauri('plugin:opener|open_url', { url: CLOUD_AUTH_URL });
+      } catch (error) {
+        // Do NOT fall back to window.open() here: that is the exact in-WebView
+        // navigation this branch exists to avoid, and on Android it unloads the
+        // SPA that has to receive the callback. Surface a recoverable error
+        // with the URL so the user can open it manually and retry instead.
+        console.warn('Failed to open cloud auth URL externally', error);
+        setCloudLoginStarted(false);
+        setConnectError(
+          `Could not open the browser automatically. Open ${CLOUD_AUTH_URL} manually to sign in, then return to the app.`
+        );
+      }
+      return;
+    }
+
+    window.open(CLOUD_AUTH_URL, '_blank');
   };
 
   const handleRemoteSetup = async () => {

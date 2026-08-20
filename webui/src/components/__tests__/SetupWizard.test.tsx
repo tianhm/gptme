@@ -718,10 +718,57 @@ describe('SetupWizard', () => {
     expect(screen.queryByText(/not ready on this mobile build yet/i)).not.toBeInTheDocument();
 
     fireEvent.click(cloudButton);
+    mockInvokeTauri.mockResolvedValue(undefined);
     fireEvent.click(screen.getByRole('button', { name: /sign in to gptme.ai/i }));
 
-    expect(mockOpen).toHaveBeenCalledWith(CLOUD_AUTH_URL, '_blank');
+    // Must go through the opener plugin, not window.open: on Android the
+    // in-WebView navigation would unload the SPA that handles the callback.
+    await waitFor(() =>
+      expect(mockInvokeTauri).toHaveBeenCalledWith('plugin:opener|open_url', {
+        url: CLOUD_AUTH_URL,
+      })
+    );
+    expect(mockOpen).not.toHaveBeenCalled();
     expect(screen.getByText(/waiting for sign-in to complete/i)).toBeInTheDocument();
+  });
+
+  it('surfaces a recoverable error when the tauri opener plugin fails', async () => {
+    mockIsTauriEnvironment.mockReturnValue(true);
+    mockUseTauriServerStatus.mockReturnValue({
+      isLoading: false,
+      managesLocalServer: false,
+      serverStatus: {
+        running: false,
+        port: 5700,
+        port_available: false,
+        manages_local_server: false,
+      },
+    });
+    mockInvokeTauri.mockRejectedValue(new Error('opener unavailable'));
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    render(
+      <SettingsProvider>
+        <SetupWizard />
+      </SettingsProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /get started/i }));
+    fireEvent.click(screen.getByRole('button', { name: /cloud/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sign in to gptme.ai/i }));
+
+    // Falling back to window.open() would re-enter the in-WebView navigation
+    // this branch exists to avoid, so the user gets an actionable error instead.
+    await waitFor(() =>
+      expect(screen.getByText(/could not open the browser automatically/i)).toBeInTheDocument()
+    );
+    // The error must name the URL so the user can open it manually.
+    expect(screen.getByText(/could not open the browser automatically/i)).toHaveTextContent(
+      CLOUD_AUTH_URL
+    );
+    expect(mockOpen).not.toHaveBeenCalled();
+    expect(screen.queryByText(/waiting for sign-in to complete/i)).not.toBeInTheDocument();
+    warnSpy.mockRestore();
   });
 
   it('connects to a remote server during tauri mobile setup', async () => {
