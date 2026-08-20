@@ -25,7 +25,15 @@ from gptme.__version__ import __version__
 # Increment CONTRACT_REVISION for additive (backward-compatible) changes;
 # increment API_VERSION and update the URL prefix for breaking changes.
 API_VERSION = 2
-CONTRACT_REVISION = 1
+# Revision 2 — BYOK warn-not-block: the /user/api-key endpoint now returns 200
+# with an optional "warning" field for UNREACHABLE providers instead of 502.
+# This is CONTRACT_REVISION (not API_VERSION) because:
+#   - HTTP success/failure semantics are preserved: 200 = save accepted, 4xx = rejected.
+#   - The "warning" field is optional and additive; existing clients that do not read
+#     it continue to work (they just lose the UNREACHABLE notification).
+#   - The 502 path was itself new in revision 1 (PR #3555) and had no stable consumers
+#     outside the SetupWizard, which is updated in this PR to handle the new field.
+CONTRACT_REVISION = 2
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +257,7 @@ class UserApiKeySaveResponse(BaseModel):
     )
     warning: str | None = Field(
         None,
-        description="Optional non-fatal warning (e.g. quota exhausted but key is valid)",
+        description="Non-blocking warning when the key was saved but could not be verified (e.g. provider unreachable)",
     )
 
 

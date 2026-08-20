@@ -3,16 +3,19 @@
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 
 from gptme.llm.validate import (
     PROVIDER_DOCS,
     VALIDATION_PROVIDER_ERROR_PREFIX,
+    ApiKeyValidationStatus,
     _validate_anthropic,
     _validate_google,
     _validate_openai,
     _validate_openai_compatible,
     _validate_openrouter,
     validate_api_key,
+    validate_api_key_status,
 )
 
 
@@ -61,6 +64,17 @@ class TestValidateApiKey:
         mock_validate.assert_called_once_with(
             "moonshot-test", 10, "https://api.moonshot.ai/v1"
         )
+
+    @patch("gptme.llm.validate._validate_openai", side_effect=requests.ConnectionError)
+    def test_unreachable_provider_returns_true(self, mock_validate):
+        """UNREACHABLE must map to True in the boolean wrapper.
+
+        A transient network blip must not lock a CLI user out of saving a key
+        they know is good — the same policy the server BYOK endpoint applies.
+        """
+        is_valid, message = validate_api_key("sk-ok", "openai")
+        assert is_valid, "UNREACHABLE should allow save (warn but not block)"
+        assert "network" in message.lower() or "connect" in message.lower()
 
 
 class TestValidateOpenAI:
@@ -111,12 +125,13 @@ class TestValidateGoogle:
         assert error == ""
 
     @patch("gptme.llm.validate.requests.get")
-    def test_provider_unavailable_returns_502_prefix(self, mock_get):
-        """5xx responses should return provider-unavailable prefix, not auth failure."""
-        mock_get.return_value = Mock(status_code=500)
-        is_valid, error = _validate_google("some-key", 10)
-        assert not is_valid
-        assert VALIDATION_PROVIDER_ERROR_PREFIX in error
+    def test_provider_unavailable_raises_http_error(self, mock_get):
+        """5xx responses raise HTTPError so the tri-state wrapper maps them to UNREACHABLE."""
+        mock_response = Mock(status_code=500)
+        mock_response.raise_for_status.side_effect = requests.HTTPError()
+        mock_get.return_value = mock_response
+        with pytest.raises(requests.HTTPError):
+            _validate_google("some-key", 10)
 
 
 class TestValidateAnthropic:
@@ -280,9 +295,6 @@ class TestValidateOpenAICompatible:
             (401, False, "Invalid API key"),
             (403, False, "forbidden"),
             (429, True, ""),
-            # 5xx → provider-unavailable error, not a credential failure
-            (500, False, VALIDATION_PROVIDER_ERROR_PREFIX),
-            (503, False, VALIDATION_PROVIDER_ERROR_PREFIX),
         ],
     )
     @patch("gptme.llm.validate.requests.get")
@@ -301,6 +313,15 @@ class TestValidateOpenAICompatible:
             headers={"Authorization": "Bearer test-key"},
             timeout=10,
         )
+
+    @patch("gptme.llm.validate.requests.get")
+    def test_5xx_raises_http_error(self, mock_get):
+        """A 5xx must raise HTTPError so the tri-state wrapper maps it to UNREACHABLE."""
+        mock_response = Mock(status_code=503)
+        mock_response.raise_for_status.side_effect = requests.HTTPError()
+        mock_get.return_value = mock_response
+        with pytest.raises(requests.HTTPError):
+            _validate_openai_compatible("test-key", 10, "https://example.com/v1/")
 
 
 class TestUnvalidatableProviders:
@@ -349,3 +370,77 @@ class TestProviderDocs:
         for provider in expected_providers:
             assert provider in PROVIDER_DOCS
             assert PROVIDER_DOCS[provider].startswith("https://")
+
+
+class TestValidateApiKeyStatus:
+    """Tests for the tri-state validate_api_key_status function."""
+
+    @patch("gptme.llm.validate._validate_openai")
+    def test_valid_returns_valid_status(self, mock_validate):
+        """A valid key should map to the VALID status."""
+        mock_validate.return_value = (True, "")
+        status, message = validate_api_key_status("sk-ok", "openai")
+        assert status is ApiKeyValidationStatus.VALID
+        assert message == ""
+
+    @patch("gptme.llm.validate._validate_openai")
+    def test_invalid_returns_invalid_status(self, mock_validate):
+        """A provider-rejected key should map to the INVALID status."""
+        mock_validate.return_value = (False, "Invalid API key. Please check your key.")
+        status, message = validate_api_key_status("sk-bad", "openai")
+        assert status is ApiKeyValidationStatus.INVALID
+        assert "Invalid API key" in message
+
+    @patch("gptme.llm.validate._validate_openai", side_effect=requests.ConnectionError)
+    def test_connection_error_returns_unreachable(self, mock_validate):
+        """A network failure should map to UNREACHABLE, not INVALID."""
+        status, _ = validate_api_key_status("sk-key", "openai")
+        assert status is ApiKeyValidationStatus.UNREACHABLE
+
+    @patch("gptme.llm.validate._validate_openai", side_effect=requests.Timeout)
+    def test_timeout_returns_unreachable(self, mock_validate):
+        """A request timeout should map to UNREACHABLE, not INVALID."""
+        status, _ = validate_api_key_status("sk-key", "openai")
+        assert status is ApiKeyValidationStatus.UNREACHABLE
+
+    def test_unsupported_provider_returns_unsupported(self):
+        """Providers without validation should map to UNSUPPORTED."""
+        status, _ = validate_api_key_status("some-key", "azure")
+        assert status is ApiKeyValidationStatus.UNSUPPORTED
+
+    @patch("gptme.llm.validate._validate_openai")
+    def test_408_request_timeout_returns_unreachable(self, mock_validate):
+        """HTTP 408 (Request Timeout) must map to UNREACHABLE, not INVALID.
+
+        A server-side timeout is a transient condition — it does not mean the
+        key is bad.  Without this fix, 408 fell through the status branches and
+        returned False → INVALID, blocking the save with a 400 error.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 408
+        mock_validate.side_effect = requests.HTTPError(response=mock_response)
+        status, message = validate_api_key_status("sk-key", "openai")
+        assert status is ApiKeyValidationStatus.UNREACHABLE
+        assert message.startswith(VALIDATION_PROVIDER_ERROR_PREFIX)
+        assert "408" in message
+
+    @patch("gptme.llm.validate._validate_openai")
+    def test_server_error_returns_unreachable(self, mock_validate):
+        """A 5xx from the provider should map to UNREACHABLE, not INVALID.
+
+        A provider outage is not proof that the key is bad — the save must not
+        be blocked.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 503
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            response=mock_response
+        )
+        # The helper calls raise_for_status() and propagates HTTPError;
+        # side_effect makes the mock raise directly (return_value is unused
+        # when side_effect is set, so only side_effect is configured here).
+        mock_validate.side_effect = requests.HTTPError(response=mock_response)
+        status, message = validate_api_key_status("sk-key", "openai")
+        assert status is ApiKeyValidationStatus.UNREACHABLE
+        assert message.startswith(VALIDATION_PROVIDER_ERROR_PREFIX)
+        assert "503" in message
