@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -177,6 +178,112 @@ def wrap_shell_cmd(config: SandboxConfig, cmd: list[str]) -> list[str]:
     if config.backend == "bwrap":
         return _bwrap_cmd(config, cmd)
     return cmd
+
+
+def _parse_size(value: str) -> int:
+    """Parse a human-readable size string into bytes.
+
+    Accepts a plain integer (bytes) or an integer with a binary unit suffix
+    (``K``/``M``/``G``/``T``, case-insensitive), e.g. ``"512M"`` → 536870912.
+    """
+    value = value.strip()
+    if not value:
+        raise ValueError("empty size")
+    units = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    suffix = value[-1].upper()
+    factor = units.get(suffix, 1)
+    number = value[:-1] if suffix in units else value
+    try:
+        result = int(number) * factor
+    except ValueError as exc:
+        raise ValueError(f"invalid size: {value!r}") from exc
+    if result <= 0:
+        raise ValueError(f"size must be positive: {value!r}")
+    return result
+
+
+def apply_memory_limit(cmd: list[str], limit: int | None) -> list[str]:
+    """Cap the address space of a bash invocation via ``ulimit -v``.
+
+    ``limit`` is in bytes (``None`` → no limit, returns ``cmd`` unchanged).
+    POSIX-only: ``ulimit`` is a bash builtin, so callers skip this on Windows.
+
+    Composes with the sandbox wrapper: apply it to the *inner* bash command
+    before ``wrap_shell_cmd`` so firejail/bwrap run the limited shell inside
+    the sandbox rather than limiting the sandbox launcher itself.
+
+    Both forms are prefixed with ``env -u BASH_ENV`` so that bash starts with
+    ``BASH_ENV`` unset in its process environment.  This prevents any user
+    startup script referenced by ``$BASH_ENV`` from running *before* the
+    ``ulimit -v`` command in the ``-c`` script, which would otherwise allow the
+    startup code to execute outside the configured ceiling.
+
+    Two forms are supported:
+      - ``["bash"]``            → ``["env", "-u", "BASH_ENV", "bash", "-c",
+                                    "ulimit -v N && BASH_ENV='' exec bash"]``
+      - ``["bash", "-c", "..."]`` → ``["env", "-u", "BASH_ENV", "bash", "-c",
+                                       "ulimit -v N && { ...; }"]``
+
+    The persistent shell form additionally clears ``BASH_ENV`` inline before
+    exec so the replacement shell also inherits a clean environment (belt and
+    suspenders: env handles the outer shell, the inline assignment handles the
+    exec'd shell).
+    """
+    if limit is None or not cmd:
+        return cmd
+    kib = max(
+        1, (limit + 1023) // 1024
+    )  # ulimit -v is in KiB; ceil so applied limit ≥ requested
+    # Set both the hard and soft RLIMIT_AS so subprocesses cannot raise the
+    # soft limit back to unlimited via `ulimit -v unlimited`.  The hard limit
+    # is lowered first (best-effort; suppressed if it is already below kib, in
+    # which case verify_memory_limit will have caught the unsatisfiable config
+    # before we get here).  The soft limit is then set to the same value and
+    # gates the user command via &&.
+    prefix = f"ulimit -H -v {kib} 2>/dev/null; ulimit -v {kib} && "
+    # Prepend `env -u BASH_ENV` so bash starts with BASH_ENV unset at the
+    # process-environment level.  Bash sources BASH_ENV before executing any
+    # -c script, so without this, startup code in $BASH_ENV would run before
+    # ulimit is installed and could allocate memory outside the ceiling.
+    env_prefix = ["env", "-u", "BASH_ENV"]
+    if len(cmd) >= 3 and cmd[1] == "-c":
+        # Wrap in a group so && gates the entire user script, not just its first
+        # statement (shell parses `ulimit -v N && a; b` as `(ulimit && a); b`).
+        # Use a newline before } so a trailing # comment in cmd[2] doesn't
+        # comment out the closing brace.
+        return [*env_prefix, cmd[0], cmd[1], prefix + "{ " + cmd[2] + "\n}", *cmd[3:]]
+    # Persistent shell form: re-exec the shell so the limit applies to it and
+    # every child it spawns.  Clear BASH_ENV inline before exec as well so the
+    # replacement shell also has no BASH_ENV to source on startup.
+    # Preserve all original arguments (e.g. --norc) in the exec'd shell so the
+    # function honours its contract for any future caller that passes extra flags.
+    exec_cmd = " ".join(shlex.quote(a) for a in cmd)
+    return [*env_prefix, cmd[0], "-c", f"{prefix}BASH_ENV='' exec {exec_cmd}"]
+
+
+def verify_memory_limit(limit: int) -> None:
+    """Verify that both the hard and soft ``ulimit -v`` can be applied on this system.
+
+    Sets the hard limit first (best-effort) then the soft limit so the check
+    mirrors the actual prefix used in ``apply_memory_limit``.  Raises
+    ``ValueError`` if either step fails — for example, if *limit* exceeds the
+    current system hard limit and we cannot lower it.  Call this before
+    spawning a shell so failures surface at the Python level — an informative
+    error — rather than silently leaving the shell unrestricted.
+    """
+    kib = max(1, (limit + 1023) // 1024)
+    result = subprocess.run(
+        ["bash", "-c", f"ulimit -H -v {kib} 2>/dev/null; ulimit -v {kib}"],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"GPTME_SHELL_MEMORY_LIMIT cannot be enforced: "
+            f"'ulimit -v {kib}' exited {result.returncode}. "
+            f"Check your system's ulimit hard limit or reduce the configured value."
+        )
 
 
 def build_env(config: SandboxConfig) -> dict[str, str] | None:

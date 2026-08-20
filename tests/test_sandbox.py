@@ -15,9 +15,12 @@ from gptme.sandbox import (
     _bwrap_cmd,
     _ensure_python_wasm,
     _firejail_cmd,
+    _parse_size,
+    apply_memory_limit,
     build_env,
     sandbox_exec_python,
     sandbox_exec_wasmtime,
+    verify_memory_limit,
     wrap_shell_cmd,
 )
 
@@ -872,3 +875,227 @@ class TestWasmtimeExecUnit:
 
         assert (stdout, rc) == ("", 1)
         assert "Wasmtime error" in stderr
+
+
+# ---------------------------------------------------------------------------
+# _parse_size
+# ---------------------------------------------------------------------------
+
+
+class TestParseSize:
+    def test_plain_bytes(self):
+        assert _parse_size("1024") == 1024
+
+    def test_kilobytes_suffix(self):
+        assert _parse_size("4K") == 4 * 1024
+
+    def test_megabytes_suffix(self):
+        assert _parse_size("512M") == 512 * 1024**2
+
+    def test_gigabytes_suffix_case_insensitive(self):
+        assert _parse_size("1g") == 1024**3
+
+    def test_terabytes_suffix(self):
+        assert _parse_size("2T") == 2 * 1024**4
+
+    def test_strips_whitespace(self):
+        assert _parse_size("  8M ") == 8 * 1024**2
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="empty size"):
+            _parse_size("")
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError, match="invalid size"):
+            _parse_size("abc")
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError, match="positive"):
+            _parse_size("0")
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="positive"):
+            _parse_size("-1")
+
+
+# ---------------------------------------------------------------------------
+# apply_memory_limit
+# ---------------------------------------------------------------------------
+
+
+class TestApplyMemoryLimit:
+    # apply_memory_limit now prepends ["env", "-u", "BASH_ENV"] to every
+    # returned command so that bash starts with BASH_ENV unset at the
+    # process-environment level.  The returned list is always:
+    #   ["env", "-u", "BASH_ENV", <bash>, "-c", <script>, ...]
+    # so result[0:3] == ["env", "-u", "BASH_ENV"], result[3] is the bash
+    # binary, result[4] == "-c", and result[5] (or result[-1]) is the script.
+    ENV_PREFIX = ["env", "-u", "BASH_ENV"]
+
+    def test_none_limit_returns_unchanged(self):
+        cmd = ["bash"]
+        assert apply_memory_limit(cmd, None) is cmd
+
+    def test_persistent_shell_form(self):
+        # 512 MiB → 524288 KiB; hard-gate (&&) so a failed ulimit aborts the shell.
+        # Result: ["env", "-u", "BASH_ENV", "bash", "-c", "ulimit -v 524288 && BASH_ENV='' exec bash"]
+        result = apply_memory_limit(["bash"], 512 * 1024**2)
+        assert result[:3] == self.ENV_PREFIX
+        assert result[3] == "bash"
+        assert result[4] == "-c"
+        script = result[5]
+        assert "ulimit -v 524288" in script
+        assert "exec bash" in script
+
+    def test_command_form_prepends_ulimit(self):
+        # Result: ["env", "-u", "BASH_ENV", "bash", "-c", "ulimit -v 1024 && { echo hi\n}"]
+        result = apply_memory_limit(["bash", "-c", "echo hi"], 1024 * 1024)
+        assert result[:3] == self.ENV_PREFIX
+        assert result[3] == "bash"
+        assert result[4] == "-c"
+        script = result[5]
+        assert "ulimit -v 1024" in script
+        assert "echo hi" in script
+        # Script must be wrapped in a group so && gates the entire script, not
+        # just its first statement (e.g. `ulimit && a; b` runs b even if ulimit fails).
+        assert "{ echo hi" in script
+        assert script.endswith("}")
+
+    def test_command_form_trailing_comment_not_swallowed(self):
+        # A script ending with a # comment must not comment out the closing }.
+        # Before fix: `{ echo hi  # note; }` → `; }` commented out, bash error.
+        # After fix:  `{ echo hi  # note\n}` → } on its own line, always executes.
+        result = apply_memory_limit(
+            ["bash", "-c", "echo hi  # trailing comment"], 1024 * 1024
+        )
+        script = result[-1]
+        assert "# trailing comment" in script
+        # The closing brace must be on its own line, not on the comment line.
+        lines = script.splitlines()
+        assert lines[-1].strip() == "}"
+
+    def test_empty_cmd_returns_unchanged(self):
+        assert apply_memory_limit([], 1024) == []
+
+    def test_small_limit_rounds_up_to_one_kib(self):
+        result = apply_memory_limit(["bash"], 1)
+        script = result[-1]
+        assert "ulimit -v 1" in script
+        assert "exec bash" in script
+
+    def test_non_kib_aligned_limit_rounds_up(self):
+        # 2000 bytes is not KiB-aligned; floor gives 1 KiB (under-allocates),
+        # ceiling gives 2 KiB (at least the requested amount).
+        result = apply_memory_limit(["bash"], 2000)
+        script = result[-1]
+        assert "ulimit -v 2" in script
+        assert "exec bash" in script
+
+    def test_uses_hard_gate_not_soft_fallback(self):
+        # The prefix must use && so a failed ulimit aborts the shell rather than
+        # running it unrestricted.  verify_memory_limit() surfaces failures at
+        # the Python level before the shell is spawned.
+        result = apply_memory_limit(["bash"], 512 * 1024**2)
+        script = result[-1]
+        assert " && " in script and "exec" in script
+
+    def test_both_forms_use_env_u_bash_env(self):
+        # Both forms must prepend env -u BASH_ENV so that bash starts with
+        # BASH_ENV unset at the OS-environment level.  Bash sources BASH_ENV
+        # before executing any -c script; without this, startup code in
+        # $BASH_ENV runs before ulimit is installed.
+        persistent = apply_memory_limit(["bash"], 512 * 1024**2)
+        one_shot = apply_memory_limit(["bash", "-c", "echo hi"], 512 * 1024**2)
+        assert persistent[:3] == self.ENV_PREFIX, (
+            "persistent form missing env -u BASH_ENV prefix"
+        )
+        assert one_shot[:3] == self.ENV_PREFIX, (
+            "one-shot form missing env -u BASH_ENV prefix"
+        )
+
+    def test_hard_limit_set_before_soft_limit(self):
+        # Both forms must set the hard limit (ulimit -H -v) before the soft
+        # limit so subprocesses cannot raise the soft limit back to unlimited
+        # via `ulimit -v unlimited`.  Hard-limit lowering is best-effort
+        # (suppressed with 2>/dev/null) so pre-existing lower hard limits are
+        # respected; the soft-limit command still fails fast if kib > hard.
+        persistent = apply_memory_limit(["bash"], 512 * 1024**2)
+        one_shot = apply_memory_limit(["bash", "-c", "echo hi"], 512 * 1024**2)
+        for name, result in (("persistent", persistent), ("one-shot", one_shot)):
+            script = result[-1]
+            hard_pos = script.index("ulimit -H -v ")
+            soft_pos = script.index("ulimit -v ", hard_pos + 1)
+            assert hard_pos < soft_pos, (
+                f"{name} form: hard-limit command must precede soft-limit command"
+            )
+            # Hard limit is best-effort (2>/dev/null) so a pre-existing lower
+            # hard limit doesn't crash the shell; the soft ulimit gates the &&.
+            assert "2>/dev/null" in script[hard_pos:soft_pos], (
+                f"{name} form: ulimit -H -v must be followed by 2>/dev/null"
+            )
+
+    def test_persistent_form_clears_bash_env(self):
+        # The -c script must also clear BASH_ENV inline before exec so the
+        # replacement shell inherits a clean environment (belt-and-suspenders:
+        # env handles the outer shell, the inline assignment handles the exec'd
+        # shell which may have started with its own environment).
+        result = apply_memory_limit(["bash"], 512 * 1024**2)
+        script = result[-1]
+        # BASH_ENV='' must appear between ulimit and exec
+        ulimit_pos = script.index("ulimit")
+        bash_env_pos = script.index("BASH_ENV=''")
+        exec_pos = script.index("exec")
+        assert ulimit_pos < bash_env_pos < exec_pos
+
+    def test_persistent_form_preserves_extra_flags(self):
+        # apply_memory_limit(["bash", "--norc"], N) must not drop --norc so the
+        # function honours its contract for callers that pass startup flags.
+        result = apply_memory_limit(["bash", "--norc"], 512 * 1024**2)
+        assert result[:3] == self.ENV_PREFIX
+        assert result[3] == "bash"
+        assert result[4] == "-c"
+        assert "exec bash --norc" in result[-1]
+
+
+# ---------------------------------------------------------------------------
+# verify_memory_limit
+# ---------------------------------------------------------------------------
+
+
+class TestGetMemoryLimitWindowsGuard:
+    """_get_memory_limit() must return None on Windows without calling the verifier."""
+
+    def test_returns_none_on_windows_without_calling_verifier(self, monkeypatch):
+        """When _is_windows is True the function exits early; verify_memory_limit
+        is never called, so FileNotFoundError from missing bash never surfaces."""
+        monkeypatch.setenv("GPTME_SHELL_MEMORY_LIMIT", "256M")
+        with (
+            patch("gptme.tools.shell._is_windows", True),
+            patch("gptme.tools.shell.verify_memory_limit") as mock_verify,
+        ):
+            from gptme.tools.shell import _get_memory_limit
+
+            result = _get_memory_limit()
+        assert result is None
+        mock_verify.assert_not_called()
+
+
+class TestVerifyMemoryLimit:
+    def test_raises_when_ulimit_fails(self):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.returncode = 1
+        with (
+            patch("gptme.sandbox.subprocess.run", return_value=result),
+            pytest.raises(ValueError, match="cannot be enforced"),
+        ):
+            verify_memory_limit(512 * 1024**2)
+
+    def test_succeeds_when_ulimit_works(self):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.returncode = 0
+        with patch("gptme.sandbox.subprocess.run", return_value=result):
+            verify_memory_limit(512 * 1024**2)  # should not raise
