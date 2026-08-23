@@ -453,3 +453,371 @@ def test_model_newline_rejected(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0, "newline in model must be rejected"
     assert not (tmp_path / "systemd4" / "modelagent.service").exists()
+
+
+def test_model_newline_rejected_on_macos(tmp_path: Path) -> None:
+    """A model with a newline must be rejected on macOS just as on Linux."""
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "modelagent",
+            "--model",
+            "gpt-4o-mini\nEnvironment=GPTME_MALICIOUS=1",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+        ],
+    )
+    assert result.exit_code != 0, "newline in model must be rejected on macOS too"
+    assert not (out_dir / "com.gptme.modelagent.plist").exists()
+
+
+def test_detect_platform_unsupported_raises(tmp_path: Path) -> None:
+    """Running with --platform auto on an unsupported OS must raise a usage error."""
+    from unittest.mock import patch
+
+    runner = CliRunner()
+    with patch("gptme.cli.cmd_service.platform.system", return_value="Windows"):
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--name",
+                "agent",
+                "--work-dir",
+                str(tmp_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--platform",
+                "auto",
+            ],
+        )
+    assert result.exit_code != 0, "unsupported platform must produce a non-zero exit"
+    assert "not supported" in (result.output + str(result.exception)).lower()
+
+
+def test_macos_autodetect_emits_warning(tmp_path: Path) -> None:
+    """Auto-detecting macOS should print a note about launchd vs systemd.
+
+    The note is only emitted when --output-dir is NOT passed (output_dir is None),
+    so we must NOT pass --output-dir here or the note path is never reached.
+    """
+    from unittest.mock import patch
+
+    runner = CliRunner()
+    with patch("gptme.cli.cmd_service.platform.system", return_value="Darwin"):
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--name",
+                "agent",
+                "--work-dir",
+                str(tmp_path),
+                # no --output-dir: note fires only when output_dir is None
+                "--platform",
+                "auto",
+            ],
+            env={"HOME": str(tmp_path)},  # redirect ~/Library/LaunchAgents to tmp
+        )
+    assert result.exit_code == 0, f"should succeed; got: {result.output}"
+    # CliRunner mixes stderr into .output by default.
+    # The note specifically mentions "launchd plist" — check for that phrase
+    # to ensure the actual warning path was exercised (not just the scaffold line).
+    assert "launchd plist" in result.output.lower(), (
+        "expected the launchd-plist note in output (fires only when output_dir is None)"
+    )
+
+
+def test_launchd_plist_generated_on_macos_platform(tmp_path: Path) -> None:
+    """When --platform=macos, a launchd plist should be generated instead of systemd files."""
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    work = tmp_path
+
+    # launchd plist should be generated
+    plist_file = out_dir / "com.gptme.testagent.plist"
+    assert plist_file.exists(), "should generate com.gptme.{name}.plist"
+    assert "com.gptme.testagent" in result.output
+
+    # NO systemd files
+    assert not (out_dir / "testagent.service").exists()
+    assert not (out_dir / "testagent.timer").exists()
+
+    # Workspace files still generated
+    assert (work / "gptme.toml").exists()
+    assert (work / "AGENTS.md").exists()
+    assert (work / "gptme-agent-run.sh").exists()
+
+
+def test_launchd_plist_is_valid_xml(tmp_path: Path) -> None:
+    """The generated launchd plist should be valid XML that can be parsed."""
+    import xml.etree.ElementTree as ET
+
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    plist_file = out_dir / "com.gptme.testagent.plist"
+    plist_text = plist_file.read_text()
+
+    # Should parse as valid XML
+    tree = ET.fromstring(plist_text)
+    assert tree.tag == "plist"
+
+    # Should have proper structure
+    root_dict = tree.find("dict")
+    assert root_dict is not None
+
+
+def test_launchd_plist_contains_agent_variables(tmp_path: Path) -> None:
+    """The generated launchd plist should contain proper agent env variables."""
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--model",
+            "gpt-4o-mini",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    plist_file = out_dir / "com.gptme.testagent.plist"
+    plist_text = plist_file.read_text()
+
+    # Check key environment variables are present
+    assert "GPTME_AGENT_NAME" in plist_text
+    assert "testagent" in plist_text
+    assert "GPTME_AGENT_MODEL" in plist_text
+    assert "gpt-4o-mini" in plist_text
+    assert "GPTME_NON_INTERACTIVE" in plist_text
+
+
+def test_launchd_plist_daily_schedule(tmp_path: Path) -> None:
+    """launchd plist with daily schedule should include StartInterval."""
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+            "--timer-schedule",
+            "daily",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    plist_file = out_dir / "com.gptme.testagent.plist"
+    plist_text = plist_file.read_text()
+
+    # Daily schedule = 86400 seconds (1 day)
+    assert "StartInterval" in plist_text
+    assert "86400" in plist_text  # daily interval in seconds
+
+
+def test_launchd_plist_on_demand_no_schedule(tmp_path: Path) -> None:
+    """launchd plist with on-demand should have RunAtLoad=false and no StartInterval."""
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+            "--timer-schedule",
+            "on-demand",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    plist_file = out_dir / "com.gptme.testagent.plist"
+    plist_text = plist_file.read_text()
+
+    assert "<false/>" in plist_text  # RunAtLoad=false for on-demand (manual start only)
+    assert "StartInterval" not in plist_text  # no periodic schedule
+
+
+def test_launchd_logs_directory_created(tmp_path: Path) -> None:
+    """launchd scaffolding should create a logs directory for plist output redirection."""
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    logs_dir = tmp_path / "logs"
+    assert logs_dir.exists() and logs_dir.is_dir(), "logs/ directory should be created"
+
+
+def test_launchd_model_with_forbidden_chars_rejected(tmp_path: Path) -> None:
+    """Model identifiers containing XML 1.0-forbidden chars must be rejected on macOS.
+
+    Silently stripping them would cause the agent to run with a different model
+    than the user requested. Validation is the correct response.
+    """
+    from unittest.mock import patch
+
+    special_work = tmp_path / "work"
+    special_work.mkdir()
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    # Inject control chars (\x01, \x0B) and a lone surrogate (\uD800) into the model
+    with patch(
+        "gptme.cli.cmd_service._resolve_work_dir",
+        return_value=special_work,
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--name",
+                "testagent",
+                "--model",
+                "gpt-4o\x01mini\x0b\ud800",
+                "--work-dir",
+                str(special_work),
+                "--output-dir",
+                str(out_dir),
+                "--platform",
+                "macos",
+            ],
+        )
+    assert result.exit_code != 0, (
+        "macOS scaffolding must reject model containing XML-forbidden control chars"
+    )
+
+
+def test_launchd_work_dir_with_forbidden_chars_rejected(tmp_path: Path) -> None:
+    """Work-dir containing XML 1.0-forbidden chars must be rejected on macOS.
+
+    Silently sanitizing the path in the plist would cause launchd to look for a
+    nonexistent directory/script. Validation is the correct response.
+    """
+    from unittest.mock import patch
+
+    special_work = tmp_path / "work\x01dir"
+    special_work.mkdir()
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    with patch(
+        "gptme.cli.cmd_service._resolve_work_dir",
+        return_value=special_work,
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                "--name",
+                "testagent",
+                "--work-dir",
+                str(special_work),
+                "--output-dir",
+                str(out_dir),
+                "--platform",
+                "macos",
+            ],
+        )
+    assert result.exit_code != 0, (
+        "macOS scaffolding must reject work-dir containing XML-forbidden control chars"
+    )
+
+
+def test_macos_path_with_systemd_invalid_chars_accepted(tmp_path: Path) -> None:
+    """Paths with apostrophes/backslashes are valid on macOS and must not be
+    rejected by systemd-specific escaping when --platform macos is used."""
+    # Create a subdir whose name contains a character systemd forbids but
+    # launchd allows (apostrophe), then scaffold into it.
+    special_work = tmp_path / "user's workspace"
+    special_work.mkdir()
+    out_dir = tmp_path / "launchd"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(special_work),
+            "--output-dir",
+            str(out_dir),
+            "--platform",
+            "macos",
+        ],
+    )
+    assert result.exit_code == 0, (
+        f"macOS scaffolding should accept apostrophes in work-dir; got: {result.output}"
+    )

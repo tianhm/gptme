@@ -1,33 +1,55 @@
 """
-Scaffold a persistent headless gptme agent as a systemd user service.
+Scaffold a persistent headless gptme agent as a systemd user service (Linux) or
+launchd agent (macOS).
 
-Generates the systemd unit(s), startup script, and skeleton config needed to
+Generates the unit file(s), startup script, and skeleton config needed to
 run a gptme agent on a timer — the pattern Bob uses for autonomous sessions —
 without reverse-engineering an existing agent workspace.
 
+For the full agent workspace template with examples and best practices, see:
+https://github.com/gptme/gptme-agent-template
+
 Usage:
     gptme service init --name myagent --model gpt-4o-mini --work-dir ~/gptme-agent
-    gptme service init --name myagent --timer-schedule hourly
-    gptme service init --name myagent --output-dir ~/.config/systemd/user
+    gptme service init --name myagent --timer-schedule hourly --platform linux
+    gptme service init --name myagent --output-dir ~/.config/systemd/user --platform linux
+    gptme service init --name myagent --output-dir ~/Library/LaunchAgents --platform macos
 
 The command writes files only; it does not install or start the service.
-After generation, run:
+After generation (Linux), run:
 
     systemctl --user daemon-reload
     systemctl --user enable --now myagent.service   # or myagent.timer
+
+After generation (macOS), run:
+
+    launchctl load ~/Library/LaunchAgents/com.gptme.myagent.plist
 """
 
 from __future__ import annotations
 
 import logging
+import platform
 import re
 import shlex
 import subprocess
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
+
+# XML 1.0 permits only #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
+# Strip control characters and lone UTF-16 surrogates — both survive saxutils.escape unchanged
+# and cause launchctl to reject the generated plist.
+_XML10_FORBIDDEN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]")
+
+
+def _xml_safe(value: str) -> str:
+    """Strip XML 1.0-forbidden control characters, then XML-escape special chars."""
+    return _xml_escape(_XML10_FORBIDDEN.sub("", value))
+
 
 import click
 
-# Allowed characters for the agent name: matches systemd unit-name conventions.
+# Allowed characters for the agent name: matches systemd/launchd unit-name conventions.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 logger = logging.getLogger(__name__)
@@ -101,6 +123,52 @@ SCHEDULES: dict[str, str] = {
     "hourly": "*-*-* *:00:00",
     "daily": "*-*-* 00:00:00",
     "weekly": "Mon *-*-* 00:00:00",
+}
+
+LAUNCHD_PLIST_TEMPLATE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.gptme.{name}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>{work_dir}/gptme-agent-run.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>{work_dir}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>GPTME_AGENT_NAME</key>
+		<string>{name}</string>
+		<key>GPTME_AGENT_MODEL</key>
+		<string>{model}</string>
+		<key>GPTME_NON_INTERACTIVE</key>
+		<string>1</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>{work_dir}/logs/stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>{work_dir}/logs/stderr.log</string>
+	<key>RunAtLoad</key>
+	<{run_at_load}/>
+	{schedule_section}
+</dict>
+</plist>
+"""
+
+# launchd schedule templates
+LAUNCHD_SCHEDULE_SECTION = """\
+	<key>StartInterval</key>
+	<integer>{interval_seconds}</integer>
+"""
+
+LAUNCHD_SCHEDULE_INTERVALS: dict[str, int] = {
+    "hourly": 3600,
+    "daily": 86400,
+    "weekly": 604800,
 }
 
 STARTUP_SCRIPT_TEMPLATE = """\
@@ -181,10 +249,8 @@ Never modify historical entries.
 
 
 def _resolve_work_dir(work_dir: str) -> Path:
-    """Resolve the agent work directory, creating it if needed."""
-    path = Path(work_dir).expanduser().resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    """Resolve the agent work directory path (does not create it)."""
+    return Path(work_dir).expanduser().resolve()
 
 
 def _write_file(path: Path, content: str, force: bool = False) -> bool:
@@ -198,6 +264,48 @@ def _write_file(path: Path, content: str, force: bool = False) -> bool:
     path.write_text(content)
     click.echo(f"  Created {path}")
     return True
+
+
+def _detect_platform() -> str:
+    """Detect the current platform: 'macos' or 'linux'.
+
+    Raises UsageError for platforms where neither systemd nor launchd applies
+    (e.g. Windows, FreeBSD). Use --platform explicitly on those systems.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        return "macos"
+    if system == "Linux":
+        return "linux"
+    raise click.UsageError(
+        f"Platform {system!r} is not supported by 'gptme service init'. "
+        "Use --platform linux or --platform macos to generate service files "
+        "for a supported platform."
+    )
+
+
+def _generate_launchd_plist(
+    name: str,
+    model: str,
+    work_dir: str,
+    timer_schedule: str,
+) -> str:
+    """Generate a launchd .plist file for macOS agents."""
+    schedule_section = ""
+    if timer_schedule != "on-demand":
+        interval = LAUNCHD_SCHEDULE_INTERVALS.get(timer_schedule, 86400)
+        schedule_section = LAUNCHD_SCHEDULE_SECTION.format(interval_seconds=interval)
+
+    # on-demand = manual start only (RunAtLoad=false); scheduled = start on load too
+    run_at_load = "false" if timer_schedule == "on-demand" else "true"
+
+    return LAUNCHD_PLIST_TEMPLATE.format(
+        name=_xml_safe(name),
+        model=_xml_escape(model),
+        work_dir=_xml_escape(work_dir),
+        schedule_section=schedule_section,
+        run_at_load=run_at_load,
+    )
 
 
 @click.group(
@@ -215,7 +323,7 @@ def cli() -> None:
 
 @cli.command(
     name="init",
-    help="Scaffold a systemd user service for a headless gptme agent.",
+    help="Scaffold a persistent service for a headless gptme agent.",
 )
 @click.option(
     "--name",
@@ -244,9 +352,8 @@ def cli() -> None:
     "--output-dir",
     "-o",
     type=str,
-    default="~/.config/systemd/user",
-    show_default=True,
-    help="Directory to write systemd units (usually ~/.config/systemd/user).",
+    default=None,
+    help="Directory to write service files. Defaults to ~/.config/systemd/user (Linux) or ~/Library/LaunchAgents (macOS).",
 )
 @click.option(
     "--timer-schedule",
@@ -254,6 +361,14 @@ def cli() -> None:
     default="daily",
     show_default=True,
     help="Timer schedule. 'on-demand' writes no timer (manual start only).",
+)
+@click.option(
+    "--platform",
+    "platform_choice",
+    type=click.Choice(["linux", "macos", "auto"]),
+    default="auto",
+    show_default=True,
+    help="Target platform. 'auto' detects the current system.",
 )
 @click.option(
     "--force",
@@ -264,27 +379,40 @@ def init(
     name: str,
     model: str,
     work_dir: str,
-    output_dir: str,
+    output_dir: str | None,
     timer_schedule: str,
+    platform_choice: str,
     force: bool,
 ) -> None:
-    """Scaffold a systemd user service for a headless gptme agent.
+    """Scaffold a persistent service for a headless gptme agent.
 
     Generates, in the agent work directory:
 
         gptme.toml, AGENTS.md, gptme-agent-run.sh
 
-    and, in the systemd output directory:
+    and, in the service output directory:
 
-        {name}.service             # main service unit
-        {name}.timer               # optional periodic timer
+        Linux (systemd):
+            {name}.service             # main service unit
+            {name}.timer               # optional periodic timer
 
-    Example:
+        macOS (launchd):
+            com.gptme.{name}.plist     # launchd property list
+
+    Examples:
 
         \b
+        # Linux (systemd)
         gptme service init --name myagent --model gpt-4o-mini --work-dir ~/gptme-agent
         systemctl --user daemon-reload
         systemctl --user enable --now myagent.timer
+
+        # macOS (launchd)
+        gptme service init --name myagent --platform macos --work-dir ~/gptme-agent
+        launchctl load ~/Library/LaunchAgents/com.gptme.myagent.plist
+
+    For the full agent workspace template, see:
+    https://github.com/gptme/gptme-agent-template
     """
     if not _NAME_RE.match(name):
         raise click.BadParameter(
@@ -293,83 +421,179 @@ def init(
             param_hint="'--name'",
         )
 
+    # Resolve platform (auto-detect if needed)
+    if platform_choice == "auto":
+        platform_choice = _detect_platform()
+        if platform_choice == "macos" and output_dir is None:
+            # Inform users explicitly: on macOS we now default to launchd
+            # instead of the old systemd default, so anyone with scripts
+            # expecting ~/.config/systemd/user gets a clear heads-up.
+            click.echo(
+                "Note: macOS detected — generating a launchd plist in "
+                "~/Library/LaunchAgents instead of a systemd unit. "
+                "Pass --platform linux to generate systemd units for a "
+                "Linux target.",
+                err=True,
+            )
+
+    # Set default output directory based on platform
+    if output_dir is None:
+        if platform_choice == "macos":
+            output_dir = "~/Library/LaunchAgents"
+        else:
+            output_dir = "~/.config/systemd/user"
+
+    # Validate model consistently across platforms BEFORE creating any directories.
+    # systemd rejects newlines/quotes/backslashes; launchd must too (else the same
+    # input is silently truncated on macOS but rejected on Linux, which is confusing
+    # and allows injection attempts to go unnoticed on macOS).
+    if "\n" in model or "\r" in model:
+        raise click.BadParameter(
+            f"{model!r} must not contain newlines",
+            param_hint="'--model'",
+        )
+    if any(ch in model for ch in ("\\", '"', "'")):
+        raise click.BadParameter(
+            f"{model!r} must not contain quotes or backslashes",
+            param_hint="'--model'",
+        )
+
+    # Resolve work dir path for validation (no mkdir yet — avoid leaving behind
+    # side-effect directories when subsequent validation raises BadParameter).
     work = _resolve_work_dir(work_dir)
+
+    # Platform-specific service generation
+    if platform_choice == "macos":
+        # Reject model identifiers that contain XML 1.0-forbidden characters.
+        # Silently stripping them would cause the agent to run with a different
+        # (or nonexistent) model than the user requested.
+        if _XML10_FORBIDDEN.search(model):
+            raise click.BadParameter(
+                f"Model {model!r} contains XML 1.0-forbidden characters "
+                "(control characters or lone surrogates) that cannot be "
+                "represented in a launchd plist. Use a valid model identifier.",
+                param_hint="'--model'",
+            )
+        # Reject paths that contain XML 1.0-forbidden characters BEFORE creating dirs.
+        # The work-dir path must match the one written to disk — silently sanitizing
+        # it in the plist would cause launchd to reference a nonexistent directory.
+        resolved_work = str(work)
+        if _XML10_FORBIDDEN.search(resolved_work):
+            raise click.BadParameter(
+                f"Work directory {resolved_work!r} contains XML 1.0-forbidden "
+                "characters that cannot be represented in a launchd plist. "
+                "Use a path without control characters.",
+                param_hint="'--work-dir'",
+            )
+    else:
+        # Validate the work-dir for systemd BEFORE creating dirs — _escape_systemd_value
+        # raises BadParameter for quotes/backslashes/newlines, and we must not leave
+        # a stray empty directory behind when that validation fires.
+        _escape_systemd_value(str(work))
+
+    # All validation passed — now create directories and generate files.
+    work.mkdir(parents=True, exist_ok=True)
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    escaped_work_dir = _escape_systemd_value(str(work))
-    escaped_exec_work_dir = _escape_systemd_exec_value(str(work))
-    escaped_model = _escape_systemd_value(model)
 
-    click.echo(f"Scaffolding headless agent '{name}'...")
+    click.echo(f"Scaffolding headless agent '{name}' ({platform_choice})...")
 
-    # Service unit
-    _write_file(
-        out_dir / f"{name}.service",
-        SYSTEMD_SERVICE_TEMPLATE.format(
-            name=name,
-            model=escaped_model,
-            work_dir=escaped_work_dir,
-            exec_work_dir=escaped_exec_work_dir,
-        ),
-        force=force,
-    )
+    if platform_choice == "macos":
+        # launchd: create logs directory and plist
+        logs_dir = work / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Timer (skip for on-demand; remove stale timer only with --force)
-    if timer_schedule == "on-demand":
-        stale_timer = out_dir / f"{name}.timer"
-        if stale_timer.exists():
-            if force:
-                # Disable the unit BEFORE removing the file so systemd can
-                # resolve and stop the unit while the file is still present.
-                click.echo(
-                    f"  Disabling loaded timer unit {name}.timer (on-demand mode, --force)"
-                )
-                try:
-                    result = subprocess.run(
-                        ["systemctl", "--user", "disable", "--now", f"{name}.timer"],
-                        check=False,  # best-effort; unit may not be enabled
-                        timeout=_SYSTEMCTL_TIMEOUT_SEC,
-                    )
-                except OSError as exc:
+        plist_name = f"com.gptme.{name}.plist"
+        _write_file(
+            out_dir / plist_name,
+            _generate_launchd_plist(
+                name=name,
+                model=model,
+                work_dir=str(work),
+                timer_schedule=timer_schedule,
+            ),
+            force=force,
+        )
+    else:
+        # systemd: service unit + optional timer
+        # Apply systemd-specific escaping only in this branch — these chars
+        # are forbidden in systemd unit values but are valid in launchd plists.
+        escaped_work_dir = _escape_systemd_value(str(work))
+        escaped_exec_work_dir = _escape_systemd_exec_value(str(work))
+        escaped_model = _escape_systemd_value(model)
+        _write_file(
+            out_dir / f"{name}.service",
+            SYSTEMD_SERVICE_TEMPLATE.format(
+                name=name,
+                model=escaped_model,
+                work_dir=escaped_work_dir,
+                exec_work_dir=escaped_exec_work_dir,
+            ),
+            force=force,
+        )
+
+        # Timer (skip for on-demand; remove stale timer only with --force)
+        if timer_schedule == "on-demand":
+            stale_timer = out_dir / f"{name}.timer"
+            if stale_timer.exists():
+                if force:
+                    # Disable the unit BEFORE removing the file so systemd can
+                    # resolve and stop the unit while the file is still present.
                     click.echo(
-                        f"  Warning: cannot run systemctl to disable {name}.timer: "
-                        f"{exc}. Remove the timer file manually and run "
-                        "'systemctl --user daemon-reload' to clear the unit.",
-                        err=True,
+                        f"  Disabling loaded timer unit {name}.timer (on-demand mode, --force)"
                     )
-                except subprocess.TimeoutExpired:
-                    click.echo(
-                        f"  Warning: systemctl --user disable --now {name}.timer "
-                        f"timed out after {_SYSTEMCTL_TIMEOUT_SEC}s; leaving the "
-                        "timer file in place. Disable it manually.",
-                        err=True,
-                    )
-                else:
-                    if result.returncode != 0:
+                    try:
+                        result = subprocess.run(
+                            [
+                                "systemctl",
+                                "--user",
+                                "disable",
+                                "--now",
+                                f"{name}.timer",
+                            ],
+                            check=False,  # best-effort; unit may not be enabled
+                            timeout=_SYSTEMCTL_TIMEOUT_SEC,
+                        )
+                    except OSError as exc:
                         click.echo(
-                            f"  Warning: could not disable {name}.timer "
-                            "(unit may not be enabled/loaded). "
-                            "Periodic runs may continue until the next daemon-reload.",
+                            f"  Warning: cannot run systemctl to disable {name}.timer: "
+                            f"{exc}. Remove the timer file manually and run "
+                            "'systemctl --user daemon-reload' to clear the unit.",
+                            err=True,
+                        )
+                    except subprocess.TimeoutExpired:
+                        click.echo(
+                            f"  Warning: systemctl --user disable --now {name}.timer "
+                            f"timed out after {_SYSTEMCTL_TIMEOUT_SEC}s; leaving the "
+                            "timer file in place. Disable it manually.",
                             err=True,
                         )
                     else:
-                        stale_timer.unlink()
-                        click.echo(f"  Removed stale timer file {stale_timer}")
-            else:
-                click.echo(
-                    f"  Warning: existing timer {stale_timer} preserved (use --force to remove)."
-                )
-                click.echo(
-                    "  The scheduled runs remain active until you disable the timer:"
-                )
-                click.echo(f"    systemctl --user disable --now {name}.timer")
-    else:
-        schedule = SCHEDULES.get(timer_schedule, SCHEDULES["daily"])
-        _write_file(
-            out_dir / f"{name}.timer",
-            SYSTEMD_TIMER_TEMPLATE.format(name=name, schedule=schedule),
-            force=force,
-        )
+                        if result.returncode != 0:
+                            click.echo(
+                                f"  Warning: could not disable {name}.timer "
+                                "(unit may not be enabled/loaded). "
+                                "Periodic runs may continue until the next daemon-reload.",
+                                err=True,
+                            )
+                        else:
+                            stale_timer.unlink()
+                            click.echo(f"  Removed stale timer file {stale_timer}")
+                else:
+                    click.echo(
+                        f"  Warning: existing timer {stale_timer} preserved (use --force to remove)."
+                    )
+                    click.echo(
+                        "  The scheduled runs remain active until you disable the timer:"
+                    )
+                    click.echo(f"    systemctl --user disable --now {name}.timer")
+        else:
+            schedule = SCHEDULES.get(timer_schedule, SCHEDULES["daily"])
+            _write_file(
+                out_dir / f"{name}.timer",
+                SYSTEMD_TIMER_TEMPLATE.format(name=name, schedule=schedule),
+                force=force,
+            )
 
     # Work directory contents
     _write_file(
@@ -396,11 +620,24 @@ def init(
     click.echo(f"✅ Initialized headless agent '{name}'")
     click.echo()
     click.echo("Next steps:")
-    click.echo("  systemctl --user daemon-reload")
-    if timer_schedule != "on-demand":
-        click.echo(f"  systemctl --user enable --now {name}.timer")
-    click.echo(f"  systemctl --user start {name}.service   # first run")
-    click.echo(f"  journalctl --user -u {name}.service -f  # follow logs")
+
+    if platform_choice == "macos":
+        plist_file = out_dir / f"com.gptme.{name}.plist"
+        click.echo(f'  launchctl load "{plist_file}"')
+        click.echo(f"  launchctl start com.gptme.{name}")
+        click.echo(
+            f"  log stream --predicate 'eventMessage contains[cd] \"{name}\"'  # follow logs"
+        )
+    else:
+        click.echo("  systemctl --user daemon-reload")
+        if timer_schedule != "on-demand":
+            click.echo(f"  systemctl --user enable --now {name}.timer")
+        click.echo(f"  systemctl --user start {name}.service   # first run")
+        click.echo(f"  journalctl --user -u {name}.service -f  # follow logs")
+
+    click.echo()
+    click.echo("For the full agent workspace template with examples, see:")
+    click.echo("  https://github.com/gptme/gptme-agent-template")
 
 
 main = cli
