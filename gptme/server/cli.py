@@ -5,6 +5,7 @@ import signal
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote as urlquote
 
 # Re-entrance guard: SIGTERM can fire while a previous invocation is still
 # running (e.g. during a buffered write).  A module-level flag lets the
@@ -364,7 +365,18 @@ def serve(
     click.echo("Initialization complete, starting server")
 
     # Initialize authentication and display token
-    init_auth(host=host, display=True)
+    token = init_auth(host=host, display=True)
+    if token:
+        # Fragment (not query) so the token is not sent to the server or logged
+        # as a request URL. The bundled UI reads #userToken= and then strips it.
+        # Echo (not logger) so the URL is copyable on one line.
+        display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        # IPv6 literals need square brackets in URLs (e.g. ::1 → [::1])
+        if ":" in display_host:
+            display_host = f"[{display_host}]"
+        click.echo(
+            f"Open the UI: http://{display_host}:{port}/#userToken={urlquote(token, safe='')}"
+        )
 
     app = create_app(
         cors_origin=cors_origin,

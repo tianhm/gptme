@@ -592,6 +592,41 @@ export class ApiClient {
         return false;
       }
 
+      // /api/v2 is intentionally unauthenticated (version/capability discovery).
+      // After gptme#3430 a live local server still 200s that probe without a
+      // bearer token, then 401-loops on conversations. Confirm auth against a
+      // protected route before reporting connected.
+      const authUrl = `${this.baseUrl}/api/v2/conversations?limit=1`;
+      const authResponse = await this.fetchWithTimeout(authUrl, {}, 3000);
+      if (this._probeNonce !== nonce) return false;
+      if (authResponse.status === 401) {
+        console.error('API accepted the root probe but rejected authenticated routes:', 401);
+        this.isConnected$.set(false);
+        this.compatibilityWarning$.set(null);
+        this.lastConnectionResult$.set({
+          ok: false,
+          url: authUrl,
+          reason: 'http_error',
+          status: 401,
+          message:
+            'Server is running but requires a bearer token. Paste the token printed by gptme-server.',
+        });
+        return false;
+      }
+      if (!authResponse.ok) {
+        console.error('Protected probe failed with status:', authResponse.status);
+        this.isConnected$.set(false);
+        this.compatibilityWarning$.set(null);
+        this.lastConnectionResult$.set({
+          ok: false,
+          url: authUrl,
+          reason: 'http_error',
+          status: authResponse.status,
+          message: `Server returned ${authResponse.status} on the authenticated probe.`,
+        });
+        return false;
+      }
+
       this.isConnected$.set(true);
       this.lastConnectionResult$.set({ ok: true, url });
       return true;
