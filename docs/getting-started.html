@@ -213,7 +213,10 @@
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
 <li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
-<li class="toctree-l1"><a class="reference internal" href="skills.html">Skills</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="skills.html">Skills</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="skills-gallery.html">Skills Gallery</a></li>
+</ul>
+</details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="nav bd-sidenav">
@@ -591,6 +594,9 @@ gptme<span class="w"> </span>-r
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install Ollama (see https://ollama.com), then pull a model</span>
 ollama<span class="w"> </span>pull<span class="w"> </span>llama3.2:1b
 ollama<span class="w"> </span>serve<span class="w">  </span><span class="c1"># run in background or separate terminal</span>
+
+<span class="c1"># Check that gptme can see the local server (probes /v1/models)</span>
+gptme<span class="w"> </span>providers<span class="w"> </span>list
 
 <span class="c1"># Use with gptme (OPENAI_BASE_URL is required by the local provider)</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_BASE_URL</span><span class="o">=</span><span class="s2">&quot;http://127.0.0.1:11434/v1&quot;</span>

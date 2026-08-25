@@ -568,7 +568,10 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="mcp.html">MCP</a></li>
 <li class="toctree-l1"><a class="reference internal" href="acp.html">ACP (Agent Client Protocol)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="lessons.html">Lessons</a></li>
-<li class="toctree-l1"><a class="reference internal" href="skills.html">Skills</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="skills.html">Skills</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="skills-gallery.html">Skills Gallery</a></li>
+</ul>
+</details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
 <ul class="nav bd-sidenav">
@@ -936,6 +939,13 @@ document.write(`
 </li>
       </ul></li>
       <li>
+    --discover
+
+      <ul>
+        <li><a href="cli.html#cmdoption-gptme-util-providers-list-discover">gptme-util-providers-list command line option</a>
+</li>
+      </ul></li>
+      <li>
     --editor-model
 
       <ul>
@@ -1009,6 +1019,8 @@ document.write(`
         <li><a href="cli.html#cmdoption-gptme-util-models-list-json">gptme-util-models-list command line option</a>
 </li>
         <li><a href="cli.html#cmdoption-gptme-util-models-test-json">gptme-util-models-test command line option</a>
+</li>
+        <li><a href="cli.html#cmdoption-gptme-util-providers-list-json">gptme-util-providers-list command line option</a>
 </li>
         <li><a href="cli.html#cmdoption-gptme-util-tools-info-json">gptme-util-tools-info command line option</a>
 </li>
@@ -1108,6 +1120,13 @@ document.write(`
 </li>
       </ul></li>
       <li>
+    --no-discover
+
+      <ul>
+        <li><a href="cli.html#cmdoption-gptme-util-providers-list-discover">gptme-util-providers-list command line option</a>
+</li>
+      </ul></li>
+      <li>
     --no-examples
 
       <ul>
@@ -1165,6 +1184,8 @@ document.write(`
         <li><a href="cli.html#cmdoption-gptme-n">gptme command line option</a>
 </li>
       </ul></li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li>
     --output
 
@@ -1172,8 +1193,6 @@ document.write(`
         <li><a href="cli.html#cmdoption-gptme-server-openapi-o">gptme-server-openapi command line option</a>
 </li>
       </ul></li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li>
     --output-format
 
@@ -2115,6 +2134,17 @@ document.write(`
 
       <ul>
         <li><a href="cli.html#cmdoption-gptme-util-prompts-expand-arg-PROMPT">PROMPT</a>
+</li>
+      </ul></li>
+      <li>
+    gptme-util-providers-list command line option
+
+      <ul>
+        <li><a href="cli.html#cmdoption-gptme-util-providers-list-discover">--discover</a>
+</li>
+        <li><a href="cli.html#cmdoption-gptme-util-providers-list-json">--json</a>
+</li>
+        <li><a href="cli.html#cmdoption-gptme-util-providers-list-discover">--no-discover</a>
 </li>
       </ul></li>
       <li>
