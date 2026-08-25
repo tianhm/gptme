@@ -638,6 +638,7 @@ def step(
     branch: str = "main",
     auto_confirm: bool = False,
     stream: bool = True,
+    step_seq: int | None = None,
 ) -> None:
     """
     Generate a response and detect tools.
@@ -657,6 +658,9 @@ def step(
         branch: Branch to use (default: "main")
         auto_confirm: Whether to auto-confirm tools (default: False)
         stream: Whether to stream the response (default: True)
+        step_seq: The epoch this step owns, captured under step_lock by the caller.
+            Used in finally to detect whether the continuation has taken ownership.
+            If None, falls back to sampling session.step_seq at entry (racy on delay).
     """
 
     # Load chat config and prepare execution environment
@@ -675,6 +679,17 @@ def step(
         lock=False,
     )
 
+    # Snapshot the step sequence at the earliest possible point — before any
+    # early-exit path that might clear `generating`. All generating=False clears
+    # below (workspace missing, no messages, and the main finally block) use
+    # compare-and-clear against this value so that a descheduled thread waking
+    # up in the setup phase cannot erase a newer step's reservation.
+    # Use the epoch passed by the caller (captured under step_lock before thread
+    # spawn) rather than sampling session.step_seq here. A thread delayed before
+    # this line could see the epoch of a replacement step if interrupt + /step
+    # ran while the thread was descheduled.
+    my_step_seq = step_seq if step_seq is not None else session.step_seq
+
     # Fail cleanly if the configured workspace is missing (e.g. an external
     # symlinked workspace that was moved/deleted). step() runs in a daemon
     # thread, so an uncaught error here would silently leave the session stuck
@@ -687,8 +702,10 @@ def step(
         _persist_generation_error(manager, session, str(e))
         SessionManager.add_event(conversation_id, ws_error_event)
         session.last_error = str(e)
-        session.generating = False
-        session.generating_since = None
+        with session.step_lock:
+            if session.step_seq == my_step_seq:
+                session.generating = False
+                session.generating_since = None
         return
 
     # Set the model as default before triggering hooks
@@ -771,8 +788,10 @@ def step(
             "error": "No messages to process",
         }
         SessionManager.add_event(conversation_id, error_event)
-        session.generating = False
-        session.generating_since = None
+        with session.step_lock:
+            if session.step_seq == my_step_seq:
+                session.generating = False
+                session.generating_since = None
         return
 
     # Notify clients about generation status
@@ -970,8 +989,24 @@ def step(
             conversation_id, {"type": "error", "error": error_message}
         )
     finally:
-        session.generating = False
-        session.generating_since = None
+        # Only release generating if this step still owns the reservation.
+        # A fast tool may finish, increment step_seq, set generating=True for
+        # the continuation, and return BEFORE we reach here. If we clear
+        # unconditionally we erase the continuation's reservation (Race 5).
+        # The tool worker increments step_seq inside step_lock before handing
+        # off, so the compare-and-clear below is atomic with respect to that
+        # handoff.
+        with session.step_lock:
+            if session.step_seq == my_step_seq:
+                session.generating = False
+                session.generating_since = None
+            else:
+                logger.debug(
+                    "step() finally: skipping generating=False — "
+                    "reservation transferred to continuation (seq %d→%d)",
+                    my_step_seq,
+                    session.step_seq,
+                )
 
 
 def start_tool_execution(
@@ -1235,6 +1270,12 @@ def start_tool_execution(
                         not SessionManager.conversation_generating(conversation_id)
                         and not SessionManager.command_is_active(conversation_id)
                     ):
+                        # Advance step_seq BEFORE setting generating=True (Race 5).
+                        # The originating step() finally block snapshots
+                        # my_step_seq at entry; incrementing here signals
+                        # ownership transferred to the continuation so that
+                        # finally skips the clear instead of erasing this
+                        # reservation.
                         session.step_seq += 1
                         continuation_seq = session.step_seq
                         session.generating = True
@@ -1253,6 +1294,7 @@ def start_tool_execution(
                         chat_config.workspace,
                         branch=branch,
                         reserved=True,
+                        step_seq=continuation_seq,
                     )
                 except Exception:
                     # Dispatch failed after ownership transfer. Release that new
@@ -1268,7 +1310,17 @@ def start_tool_execution(
             )
             if reserved:
                 with session.step_lock:
-                    if session.step_seq == my_seq:
+                    # If the election block advanced step_seq (setting
+                    # continuation_seq) but an exception prevented
+                    # start_continuation from being set to True, the
+                    # reservation is at continuation_seq, not my_seq.
+                    # Release whichever epoch we actually own.
+                    release_seq = (
+                        continuation_seq
+                        if continuation_seq is not None and not start_continuation
+                        else my_seq
+                    )
+                    if session.step_seq == release_seq:
                         session.generating = False
                         session.generating_since = None
             raise
@@ -1299,8 +1351,16 @@ def _start_step_thread(
     stream: bool = True,
     *,
     reserved: bool = False,
+    step_seq: int | None = None,
 ) -> bool:
-    """Start a step unless another operation has already reserved it."""
+    """Start a step unless another operation has already reserved it.
+
+    ``step_seq`` should be the epoch captured under ``step_lock`` by the caller
+    (e.g. the value stored after incrementing ``session.step_seq`` in the /step
+    route). It is passed into ``step()`` so the finally block's compare-and-clear
+    uses the epoch sampled under the lock rather than inside the spawned thread
+    (where a delay could cause it to see a later epoch).
+    """
 
     # Direct callers (tool continuations and A2A) share /step's atomic
     # check-and-reserve protocol. The /step route reserves before setup and
@@ -1313,6 +1373,11 @@ def _start_step_thread(
                 return False
             session.generating = True
             session.generating_since = datetime.now(tz=timezone.utc)
+            # Capture the epoch under the lock so step() doesn't need to sample
+            # session.step_seq inside the thread (where a delay could give it
+            # a stale or replacement epoch).
+            if step_seq is None:
+                step_seq = session.step_seq
     session.last_error = None
 
     def step_thread() -> None:
@@ -1331,6 +1396,7 @@ def _start_step_thread(
             branch=branch,
             auto_confirm=auto_confirm,
             stream=stream,
+            step_seq=step_seq,
         )
 
     # Propagate ContextVars (model, config) from the caller into the step thread.
@@ -1343,9 +1409,14 @@ def _start_step_thread(
     except Exception:
         # A reserved caller owns this slot; release it if dispatch itself fails.
         # Non-reserved callers reserved above and need the same rollback.
+        # Compare-and-clear: only release if no newer step has taken ownership.
+        # An interrupt + replacement /step increments step_seq under step_lock
+        # before setting generating=True; if our epoch is stale we must not
+        # clear the replacement's reservation.
         with session.step_lock:
-            session.generating = False
-            session.generating_since = None
+            if step_seq is None or session.step_seq == step_seq:
+                session.generating = False
+                session.generating_since = None
         raise
     return True
 

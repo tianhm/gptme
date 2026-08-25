@@ -634,6 +634,201 @@ class TestInterruptEndpoint:
         assert session.interrupted is False
         assert session.step_seq == initial_seq
 
+    def test_continuation_reservation_not_cleared_by_originating_step(
+        self, conv, tmp_path, monkeypatch
+    ):
+        """Race 5: step() finally must not clear generating when a continuation reserved it.
+
+        The tool worker increments step_seq (inside step_lock) before setting
+        generating=True for the continuation. The originating step()'s finally
+        captures step_seq at entry; a mismatch means the continuation took over
+        and we must not clear its reservation.
+        """
+        # step() calls os.chdir(workspace) when user_messages <= 1; use monkeypatch so
+        # the cwd change is scoped to this test and doesn't bleed into siblings.
+        monkeypatch.chdir(tmp_path)
+
+        from gptme.message import Message
+        from gptme.server.session_step import step
+
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+
+        # step_seq=1 is the value set by the /step API handler before step() runs.
+        # step() will snapshot my_step_seq=1 at entry.
+        session.step_seq = 1
+        session.generating = True
+
+        def advance_seq_then_return(*args, **kwargs):
+            """Simulate: tool continuation advanced step_seq to 2 inside step_lock."""
+            with session.step_lock:
+                session.step_seq += 1  # 1 → 2
+            return iter([])  # no tokens; step() finds no tools, exits normally
+
+        with (
+            patch(
+                "gptme.server.session_step._stream", side_effect=advance_seq_then_return
+            ),
+            patch("gptme.server.session_step.require_workspace_exists"),
+            patch("gptme.server.session_step.prepare_execution_environment"),
+            patch("gptme.server.session_step.trigger_hook", return_value=[]),
+            patch(
+                "gptme.server.session_step.prepare_messages",
+                return_value=[Message("user", "test")],
+            ),
+            patch("gptme.server.session_step._try_auto_name_and_notify"),
+            patch("gptme.server.session_step.set_workspace_cwd"),
+            patch(
+                "gptme.server.session_step.ChatConfig.load_or_create",
+                return_value=MagicMock(
+                    tool_format="markdown",
+                    tools=None,
+                    workspace=tmp_path,
+                    max_tokens=None,
+                    temperature=None,
+                    top_p=None,
+                ),
+            ),
+            patch("gptme.llm.models.set_default_model"),
+            patch("gptme.model_attestation.record_runtime_selection"),
+        ):
+            step(
+                conversation_id=conv["conversation_id"],
+                session=session,
+                model="mock/model",
+                workspace=tmp_path,
+            )
+
+        # step() captured my_step_seq=1 at entry; advance_seq_then_return bumped to 2.
+        # The finally block must have seen 2 != 1 and skipped clearing generating.
+        assert session.generating is True, (
+            "Race 5: originating step() finally must not clear the "
+            "continuation's generating reservation when step_seq advanced"
+        )
+        assert session.step_seq == 2
+
+    def test_step_seq_passed_by_caller_not_sampled_in_thread(
+        self, conv, tmp_path, monkeypatch
+    ):
+        """step() must use the caller-supplied step_seq, not sample session.step_seq.
+
+        Race: a thread delayed between spawn and step_seq snapshot can see the epoch
+        of a replacement step (if interrupt + /step ran while it was descheduled).
+        The fix passes the epoch from the caller (captured under step_lock before
+        dispatch) so the finally compare-and-clear uses the original epoch, not
+        the replacement's.
+
+        Scenario:
+        - Route handler increments step_seq to 1 and spawns step() with step_seq=1.
+        - Thread is delayed; interrupt fires (step_seq → 2), new /step starts (→ 3).
+        - Thread finally runs step() with the passed step_seq=1.
+        - session.step_seq is now 3; step() must NOT clear generating (3 != 1).
+        """
+        monkeypatch.chdir(tmp_path)
+
+        from gptme.message import Message
+        from gptme.server.session_step import step
+
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+
+        # Simulate the state AFTER interrupt+replacement: step_seq advanced to 3,
+        # generating=True is held by the replacement step.
+        session.step_seq = 3
+        session.generating = True
+
+        with (
+            patch("gptme.server.session_step._stream", return_value=iter([])),
+            patch("gptme.server.session_step.require_workspace_exists"),
+            patch("gptme.server.session_step.prepare_execution_environment"),
+            patch("gptme.server.session_step.trigger_hook", return_value=[]),
+            patch(
+                "gptme.server.session_step.prepare_messages",
+                return_value=[Message("user", "test")],
+            ),
+            patch("gptme.server.session_step._try_auto_name_and_notify"),
+            patch("gptme.server.session_step.set_workspace_cwd"),
+            patch(
+                "gptme.server.session_step.ChatConfig.load_or_create",
+                return_value=MagicMock(
+                    tool_format="markdown",
+                    tools=None,
+                    workspace=tmp_path,
+                    max_tokens=None,
+                    temperature=None,
+                    top_p=None,
+                ),
+            ),
+            patch("gptme.llm.models.set_default_model"),
+            patch("gptme.model_attestation.record_runtime_selection"),
+        ):
+            # Pass step_seq=1: the original epoch captured under step_lock by the
+            # route handler. The thread sees session.step_seq=3 (replacement), but
+            # must use 1 as my_step_seq for the finally compare-and-clear.
+            step(
+                conversation_id=conv["conversation_id"],
+                session=session,
+                model="mock/model",
+                workspace=tmp_path,
+                step_seq=1,
+            )
+
+        # finally: session.step_seq (3) != my_step_seq (1) → must NOT clear generating.
+        # Without the fix (step() sampled session.step_seq=3 inside the thread),
+        # my_step_seq would have been 3 and generating would be False here.
+        assert session.generating is True, (
+            "Delayed-thread race: step() finally must not clear the replacement "
+            "step's generating reservation when step_seq passed from caller != current"
+        )
+        assert session.step_seq == 3
+
+    def test_setup_exit_does_not_clear_newer_reservation(
+        self, conv, tmp_path, monkeypatch
+    ):
+        """Early-exit paths (workspace missing, no messages) must not clear a newer step's reservation.
+
+        Race: step A is spawned (step_seq=1), descheduled during setup,
+        step B interrupts + starts (step_seq=3, generating=True). When step A's
+        thread wakes up and hits an early exit (e.g. workspace missing), it must
+        compare step_seq before clearing generating, so it does not erase B's
+        reservation.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        from gptme.server.session_step import step
+
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+
+        # Simulate: replacement step B has taken over (step_seq=3, generating=True).
+        session.step_seq = 3
+        session.generating = True
+
+        with (
+            patch(
+                "gptme.server.session_step.require_workspace_exists",
+                side_effect=FileNotFoundError("workspace missing"),
+            ),
+            patch("gptme.server.session_step.prepare_execution_environment"),
+            patch("gptme.server.session_step._persist_generation_error"),
+            patch("gptme.server.session_step.SessionManager.add_event"),
+        ):
+            # Old step A calls step() with its original epoch (1).
+            step(
+                conversation_id=conv["conversation_id"],
+                session=session,
+                model="mock/model",
+                workspace=tmp_path,
+                step_seq=1,
+            )
+
+        # step_seq (3) != my_step_seq (1) → early exit must NOT have cleared generating.
+        assert session.generating is True, (
+            "Setup exit: step() workspace-missing early exit must not clear "
+            "a newer step's generating reservation when step_seq advanced"
+        )
+        assert session.step_seq == 3
+
 
 # --- Tool confirm endpoint tests ---
 
@@ -890,7 +1085,54 @@ class TestToolConfirmEndpoint:
         resolve.assert_called_once_with(tool_id, "skip", None)
         assert start_step.call_count == 1
         assert start_step.call_args.args[:2] == (conv["conversation_id"], session)
-        assert start_step.call_args.kwargs == {"branch": "main", "reserved": True}
+        assert start_step.call_args.kwargs == {
+            "branch": "main",
+            "reserved": True,
+            "step_seq": session.step_seq,
+        }
+
+    def test_skip_increments_step_seq_to_invalidate_stale_workers(
+        self, conv, client: FlaskClient
+    ):
+        """Skip must advance step_seq so concurrent tool workers stand down.
+
+        A concurrent auto-confirm tool worker captures my_seq at start_tool_execution
+        time. If skip does NOT increment step_seq, the worker's owns_reservation check
+        (session.step_seq == my_seq) still holds after skip fires, and the worker elects
+        its own continuation — producing duplicate LLM turns alongside the skip
+        continuation.
+        """
+        session = SessionManager.get_session(conv["session_id"])
+        assert session is not None
+        initial_step_seq = session.step_seq
+        tool_id = str(uuid.uuid4())
+        tool_exec = ToolExecution(
+            tool_id=tool_id,
+            tooluse=ToolUse("bash", [], "echo hi"),
+        )
+        session.pending_tools[tool_id] = tool_exec
+
+        with (
+            patch("gptme.server.api_v2_sessions._append_and_notify"),
+            patch("gptme.server.api_v2_sessions._start_step_thread", return_value=True),
+            patch("gptme.server.api_v2_sessions.resolve_hook_confirmation"),
+        ):
+            response = client.post(
+                f"/api/v2/conversations/{conv['conversation_id']}/tool/confirm",
+                json={
+                    "session_id": conv["session_id"],
+                    "tool_id": tool_id,
+                    "action": "skip",
+                },
+            )
+
+        assert response.status_code == 200
+        # step_seq must have advanced so any stale tool worker with the old
+        # my_seq sees a mismatch and releases its reservation instead of
+        # electing a duplicate continuation.
+        assert session.step_seq == initial_step_seq + 1, (
+            "skip must increment step_seq to invalidate stale concurrent workers"
+        )
 
     def test_skip_preserves_tool_when_step_reserved_generation(
         self, conv, client: FlaskClient

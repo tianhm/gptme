@@ -506,6 +506,7 @@ def api_conversation_step(conversation_id: str):
                 auto_confirm=auto_confirm_enabled,
                 stream=stream,
                 reserved=True,
+                step_seq=step_seq,
             )
         _step_dispatched = True
     finally:
@@ -726,6 +727,12 @@ def api_conversation_tool_confirm(conversation_id: str):
 
             session.generating = True
             session.generating_since = datetime.now(tz=timezone.utc)
+            # Advance step_seq before capturing the epoch so that any
+            # concurrent tool worker whose my_seq equals the pre-skip value
+            # sees a mismatch and stands down (same protocol as /step and
+            # /interrupt + rerun).
+            session.step_seq += 1
+            skip_step_seq = session.step_seq
             try:
                 current_tool.status = ToolStatus.SKIPPED
                 session.pending_tools.pop(tool_id)
@@ -751,6 +758,7 @@ def api_conversation_tool_confirm(conversation_id: str):
                     chat_config.workspace,
                     branch=current_tool.branch,
                     reserved=True,
+                    step_seq=skip_step_seq,
                 )
             finally:
                 if not continuation_dispatched:
