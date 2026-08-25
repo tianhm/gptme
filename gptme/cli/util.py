@@ -145,9 +145,40 @@ def providers():
 
 
 @providers.command("list")
-def providers_list():
-    """List configured custom OpenAI-compatible providers."""
+@click.option(
+    "--discover/--no-discover",
+    default=True,
+    help="Probe well-known local OpenAI-compatible endpoints (Ollama :11434, LM Studio :1234).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def providers_list(discover: bool = True, as_json: bool = False):
+    """List configured and auto-discovered local OpenAI-compatible providers.
+
+    Configured ``[[providers]]`` entries are listed first. Then gptme probes
+    Ollama (``http://127.0.0.1:11434/v1/models``) and LM Studio
+    (``http://127.0.0.1:1234/v1/models``) and reports each candidate — live
+    servers and the reason a probe did not count as available. Discovery never
+    writes config; use ``gptme providers add`` to persist a provider.
+    """
     config = get_config()
+    discovered = []
+    if discover:
+        from ..llm.local_discovery import (  # fmt: skip
+            discover_local_providers,
+            local_discovery_disabled,
+        )
+
+        discovered = discover_local_providers(configured=config.user.providers)
+
+    if as_json:
+        _env_disabled = discover and local_discovery_disabled()
+        payload = {
+            "configured": [_configured_provider_dict(p) for p in config.user.providers],
+            "discovered": [r.to_dict() for r in discovered],
+            "discovery_disabled": not discover or _env_disabled,
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
 
     if not config.user.providers:
         click.echo("📭 No custom providers configured")
@@ -160,29 +191,110 @@ def providers_list():
         click.echo('base_url = "http://localhost:8000/v1"')
         click.echo('api_key_env = "MY_PROVIDER_API_KEY"')
         click.echo('default_model = "my-model"')
+        click.echo()
+    else:
+        click.echo(f"🔌 Found {len(config.user.providers)} custom provider(s):")
+        click.echo()
+
+        for provider in config.user.providers:
+            click.echo(f"📡 {provider.name}")
+            click.echo(f"   Base URL: {provider.base_url}")
+
+            # Show API key source (but not the actual key)
+            if provider.api_key:
+                click.echo("   API Key: (configured directly)")
+            elif provider.api_key_env:
+                click.echo(f"   API Key: ${provider.api_key_env}")
+            else:
+                click.echo(
+                    f"   API Key: ${provider.name.upper().replace('-', '_')}_API_KEY (default)"
+                )
+
+            if provider.default_model:
+                click.echo(f"   Default Model: {provider.default_model}")
+
+            click.echo()
+
+    if not discover:
         return
 
-    click.echo(f"🔌 Found {len(config.user.providers)} custom provider(s):")
-    click.echo()
-
-    for provider in config.user.providers:
-        click.echo(f"📡 {provider.name}")
-        click.echo(f"   Base URL: {provider.base_url}")
-
-        # Show API key source (but not the actual key)
-        if provider.api_key:
-            click.echo("   API Key: (configured directly)")
-        elif provider.api_key_env:
-            click.echo(f"   API Key: ${provider.api_key_env}")
+    click.echo("🔍 Local auto-discovery")
+    if not discovered:
+        if local_discovery_disabled():
+            click.echo("   (disabled via GPTME_NO_LOCAL_DISCOVERY)")
         else:
-            click.echo(
-                f"   API Key: ${provider.name.upper().replace('-', '_')}_API_KEY (default)"
+            click.echo("   (no local providers found)")
+        return
+
+    for result in discovered:
+        _print_discovery_result(result)
+
+
+def _configured_provider_dict(provider) -> dict:
+    return {
+        "name": provider.name,
+        "base_url": provider.base_url,
+        "api_key_env": provider.api_key_env,
+        "default_model": provider.default_model,
+        "api_key_configured": bool(provider.api_key),
+    }
+
+
+def _strip_controls(s: str) -> str:
+    """Strip C0/C1 terminal control characters from untrusted probe output."""
+    import re
+
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", s)
+
+
+def _print_discovery_result(result) -> None:
+    from ..llm.local_discovery import DiscoveryResult  # fmt: skip
+
+    if not isinstance(result, DiscoveryResult):
+        raise TypeError(f"expected DiscoveryResult, got {type(result).__name__}")
+    cand = result.candidate
+    status_icon = {
+        "up": "✅",
+        "down": "⚪",
+        "incompatible": "❌",
+        "auth_required": "🔒",
+        "error": "❌",
+    }.get(result.status, "⚪")
+    click.echo(f"   {status_icon} {cand.display_name}  {cand.base_url}")
+    click.echo(f"      probe: {cand.models_url}")
+    if result.status == "up":
+        if result.models:
+            safe_models = [_strip_controls(m) for m in result.models]
+            shown = ", ".join(safe_models[:8])
+            extra = (
+                f" (+{len(result.models) - 8} more)" if len(result.models) > 8 else ""
             )
-
-        if provider.default_model:
-            click.echo(f"   Default Model: {provider.default_model}")
-
-        click.echo()
+            click.echo(f"      models ({len(result.models)}): {shown}{extra}")
+        else:
+            click.echo("      models: (none listed — server is up)")
+        if result.configured_as:
+            click.echo(f"      already configured as '{result.configured_as}'")
+        else:
+            example = next(
+                (s for m in result.models if (s := _strip_controls(m))), "<model>"
+            )
+            click.echo("      not in config — persist with `gptme providers add`, or:")
+            click.echo(
+                f"      OPENAI_BASE_URL={cand.base_url} gptme -m local/{example}"
+            )
+    else:
+        click.echo(f"      {_strip_controls(result.reason)}")
+        if result.status == "down":
+            click.echo(f"      hint: {cand.hint}")
+        if result.configured_as:
+            if result.status == "down":
+                click.echo(
+                    f"      configured as '{result.configured_as}' but the endpoint is not reachable"
+                )
+            else:
+                click.echo(
+                    f"      configured as '{result.configured_as}' but did not respond as expected"
+                )
 
 
 @providers.command("test")
