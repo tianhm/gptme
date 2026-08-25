@@ -22,11 +22,17 @@ def _startup_sigterm_handler(signum: int, frame: object) -> None:
     raise KeyboardInterrupt
 
 
-# Guard against non-main-thread imports: signal.signal() raises ValueError
-# if called from a worker thread (e.g. a library that imports cli.py to
-# call main() programmatically).  The handler is only needed — and only
-# safe — on the main thread.
-if threading.current_thread() is threading.main_thread():
+# Guard against non-main-thread imports (signal.signal raises ValueError
+# from a worker thread) and against overriding a *callable* handler the host
+# process may have installed (e.g. an embedder that sets its own graceful
+# shutdown handler before importing gptme.server.cli).  We install over
+# SIG_DFL (the OS default) and SIG_IGN — the latter may be inherited from a
+# parent process (e.g. a test runner or daemon supervisor) and does not
+# indicate a deliberate embedder choice.  Only an explicit callable handler
+# from the current process is left intact (gptme/gptme#3597).
+if threading.current_thread() is threading.main_thread() and not callable(
+    signal.getsignal(signal.SIGTERM)
+):
     signal.signal(signal.SIGTERM, _startup_sigterm_handler)
 
 import click
@@ -139,7 +145,19 @@ def _install_sigterm_handler() -> None:
 
     Signal handlers can only be installed from the main thread; this is called
     from the ``serve`` command, which runs there.
+
+    Only upgrades our own startup handler, the OS default (SIG_DFL), or an
+    inherited SIG_IGN.  A *callable* handler installed by an embedder before
+    calling ``serve()`` is left intact (gptme/gptme#3597).  SIG_IGN is treated
+    like SIG_DFL because it can be inherited from a parent process (daemon
+    supervisor, test runner) and does not indicate a deliberate embedder choice
+    — refusing to upgrade it would silently disable graceful shutdown for servers
+    started under such supervisors.
     """
+    current = signal.getsignal(signal.SIGTERM)
+    if callable(current) and current is not _startup_sigterm_handler:
+        # An embedder installed a custom callable handler; don't override it.
+        return
 
     def _handle_sigterm(signum, frame):
         # Write directly to stderr and flush before using the logger — Rich's

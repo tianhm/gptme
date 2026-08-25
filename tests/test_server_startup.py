@@ -117,8 +117,8 @@ def test_server_responds_to_api_root(server_process):
         pytest.fail(f"HTTP request to {url} failed: {exc}")
 
 
-def test_sigterm_during_init_produces_output(tmp_path):
-    """SIGTERM must produce diagnostic output at any point during the server lifecycle.
+def test_sigterm_produces_diagnostic_output(tmp_path):
+    """SIGTERM must produce diagnostic output — not silently terminate.
 
     Regression for gptme/gptme#3589: before the fix, SIGTERM arriving while
     model/telemetry init was running used Python's default handler (immediate
@@ -127,9 +127,9 @@ def test_sigterm_during_init_produces_output(tmp_path):
     Click routes to an Aborted message.
 
     We wait for the server to bind before sending SIGTERM so the test is
-    deterministic on both fast and slow CI runners.  The handler is guaranteed
-    to be active throughout the process lifetime once it is installed at import
-    time, so a post-startup SIGTERM is equally valid as a regression guard.
+    deterministic on both fast and slow CI runners.  The early-install property
+    (handler active before any heavy imports) is verified by the companion test
+    test_startup_sigterm_handler_installed_at_import.
     """
     env = os.environ.copy()
     env["GPTME_DISABLE_AUTH"] = "1"
@@ -246,4 +246,54 @@ def test_server_exits_nonzero_on_bad_webui_dir(tmp_path):
     combined = (result.stdout + result.stderr).decode(errors="replace")
     assert combined.strip(), (
         "Server exited non-zero but produced NO output — silent failure!"
+    )
+
+
+def test_import_does_not_override_custom_callable_handler():
+    """Importing gptme.server.cli must leave a pre-installed callable handler intact.
+
+    An embedder may install its own graceful-shutdown handler before importing
+    the CLI module.  That callable handler must not be overridden.
+
+    Regression guard for the gptme/gptme#3597 P2 (module-level guard must not
+    unconditionally override every existing disposition).  Note: SIG_IGN is
+    intentionally treated like SIG_DFL (the startup handler is installed over
+    it) because SIG_IGN can be *inherited* from a parent process such as a
+    test runner or daemon supervisor — it does not reliably indicate a
+    deliberate embedder choice, and refusing to install over it broke CI.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_root + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import signal, sys;"
+                # Simulate an embedder that installs a real callable handler.
+                "embedder_handler = lambda s, f: None;"
+                "signal.signal(signal.SIGTERM, embedder_handler);"
+                "import gptme.server.cli as cli;"
+                "h = signal.getsignal(signal.SIGTERM);"
+                # The exact embedder callable must still be installed — not
+                # merely a callable whose name lacks 'startup' (that would
+                # pass vacuously for any replacement handler).
+                "sys.exit(0 if h is embedder_handler else 1)"
+            ),
+        ],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        cwd=repo_root,
+        env=env,
+    )
+    assert result.returncode == 0, (
+        "Expected a pre-installed callable SIGTERM handler to survive "
+        "gptme.server.cli import, but the module-level install overrode it "
+        "(gptme/gptme#3597 P2).\n"
+        f"stdout: {result.stdout.decode(errors='replace')}\n"
+        f"stderr: {result.stderr.decode(errors='replace')}"
     )
