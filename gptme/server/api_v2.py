@@ -77,6 +77,7 @@ from ..logmanager import (
 )
 from ..logmanager import conversations as conversations_module
 from ..message import Message
+from ..prompt_queue import drain_prompt_queue
 from ..tools import get_toolchain, get_tools, init_tools
 from ..util.content import is_message_command
 from ..util.uri import URI, FilePath, is_uri, parse_file_reference
@@ -1912,29 +1913,68 @@ def api_conversation_post(conversation_id: str):
 
     # Append and execute a command under its reservation, not the conversation lock.
     # The reservation is always cleared, including when handle_cmd raises.
+    from ..lessons.skill_commands import is_skill_command  # fmt: skip
+
     responses: list[Message] = []
     try:
         log.append(msg)
-        SessionManager.add_event(
-            conversation_id,
-            {
-                "type": "message_added",
-                "message": msg2dict(msg, log.workspace, log.logdir),
-            },
-        )
+        _len_after_cmd_append = len(log.log.messages)
+
+        def _emit(m: Message) -> None:
+            log.append(m)
+            responses.append(m)
+            SessionManager.add_event(
+                conversation_id,
+                {
+                    "type": "message_added",
+                    "message": msg2dict(m, log.workspace, log.logdir),
+                },
+            )
+
+        # Determine whether the command is a skill command. Skill handlers call
+        # undo(1) to remove the /skill:<name> message from the log and replace
+        # it with the skill prompt, so we defer their message_added event until
+        # after handle_cmd to avoid emitting a phantom message the client can
+        # never reconcile. Regular commands yield responses, so the event must
+        # arrive FIRST (user message → response is the expected SSE order).
+        _cmd_name = msg.content.strip().split()[0].lstrip("/")
+        _is_skill = is_skill_command(_cmd_name)
+        if not _is_skill:
+            SessionManager.add_event(
+                conversation_id,
+                {
+                    "type": "message_added",
+                    "message": msg2dict(msg, log.workspace, log.logdir),
+                },
+            )
+
         try:
             for resp in handle_cmd(msg.content, log):
-                log.append(resp)
-                responses.append(resp)
+                _emit(resp)
+            # For skill commands: emit only when the handler did not undo the
+            # message (log length stayed at or above the pre-responses baseline).
+            if _is_skill and len(log.log.messages) >= _len_after_cmd_append:
                 SessionManager.add_event(
                     conversation_id,
                     {
                         "type": "message_added",
-                        "message": msg2dict(resp, log.workspace, log.logdir),
+                        "message": msg2dict(msg, log.workspace, log.logdir),
                     },
                 )
+            # Skill commands (and any other handler using queue_prompt) write
+            # a follow-up user prompt to the durable queue instead of yielding.
+            # The CLI drains that queue at the top of its chat loop; drain
+            # here so the next /step sees the prompt as a normal user message.
+            for queued in drain_prompt_queue(log.logdir):
+                _emit(queued)
         except Exception as e:
             logger.exception("Error executing command: %s", msg.content)
+            # Discard any prompt queued by a handler that raised, so stale
+            # prompts don't leak into the next command's conversation turn.
+            try:
+                list(drain_prompt_queue(log.logdir))
+            except Exception:
+                pass
             error_msg = Message("system", f"Command error: {e}")
             log.append(error_msg)
             responses.append(error_msg)
