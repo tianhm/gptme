@@ -81,19 +81,31 @@ SYSTEMD_SERVICE_TEMPLATE = """\
 Description=gptme Autonomous Agent: {name}
 Documentation=https://github.com/gptme/gptme#headless
 After=network-online.target
+# A session is one-shot, so a persistent failure (bad API key, exhausted quota,
+# unusable prompt) would otherwise retry forever against a paid API. Give up
+# after 3 failures in 10 minutes and let the timer try again on schedule.
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=simple
 WorkingDirectory={work_dir}
 Environment=GPTME_AGENT_NAME={name}
 Environment="GPTME_AGENT_MODEL={model}"
-Environment=GPTME_NON_INTERACTIVE=1
 ExecStart=:"{exec_work_dir}/gptme-agent-run.sh"
 StandardOutput=journal
 StandardError=journal
 Restart=on-failure
+# RestartSteps is required for RestartMaxDelaySec to apply at all; without it
+# systemd logs "has RestartMaxDelaySec= but no RestartSteps=. Ignoring" and
+# retries at a flat RestartSec forever.
 RestartSec=5
+RestartSteps=5
 RestartMaxDelaySec=60
+# Kill the service if it runs longer than this. Prevents a hung LLM connection
+# from keeping the unit active forever (blocking timer-triggered reruns).
+# Adjust to your expected maximum session length.
+RuntimeMaxSec=3600
 
 [Install]
 WantedBy=default.target
@@ -138,8 +150,6 @@ LAUNCHD_PLIST_TEMPLATE = """\
 		<string>{name}</string>
 		<key>GPTME_AGENT_MODEL</key>
 		<string>{model}</string>
-		<key>GPTME_NON_INTERACTIVE</key>
-		<string>1</string>
 	</dict>
 	<key>StandardOutPath</key>
 	<string>{work_dir}/logs/stdout.log</string>
@@ -173,13 +183,12 @@ set -euo pipefail
 AGENT_NAME="{name}"
 WORK_DIR={work_dir}
 JOURNAL_DIR="$WORK_DIR/journal/$(date +%Y-%m-%d)"
+PROMPT_FILE="$WORK_DIR/prompt.md"
 
-mkdir -p "$JOURNAL_DIR"
-SESSION_ID=$(date +%Y%m%d-%H%M%S)
+mkdir -p "$JOURNAL_DIR" || {{ echo "gptme agent $AGENT_NAME: cannot create journal dir $JOURNAL_DIR" >&2; exit 1; }}
+SESSION_ID=$(date +%Y%m%d-%H%M%S)-$$-$RANDOM
 SESSION_LOG="$JOURNAL_DIR/session-$SESSION_ID.md"
 
-# Durable session record placeholder. Replace the loop body with your
-# agent's real work loop (CASCADE selector + task executor, etc.).
 {{
   echo "# Session $SESSION_ID"
   echo
@@ -188,7 +197,86 @@ SESSION_LOG="$JOURNAL_DIR/session-$SESSION_ID.md"
   echo
 }} > "$SESSION_LOG"
 
-echo "gptme agent {name}: wrote session log $SESSION_LOG"
+if ! command -v gptme >/dev/null 2>&1; then
+  echo "gptme agent $AGENT_NAME: 'gptme' not found on PATH" >&2
+  echo "gptme not found on PATH; install gptme or set PATH in the service unit." \
+    >> "$SESSION_LOG"
+  exit 127
+fi
+
+if [ ! -f "$PROMPT_FILE" ]; then
+  echo "gptme agent $AGENT_NAME: missing prompt file $PROMPT_FILE" >&2
+  echo "Missing prompt file $PROMPT_FILE." >> "$SESSION_LOG"
+  exit 66
+fi
+if [ ! -r "$PROMPT_FILE" ]; then
+  echo "gptme agent $AGENT_NAME: prompt file $PROMPT_FILE is not readable" >&2
+  echo "Prompt file not readable: $PROMPT_FILE (check permissions)." >> "$SESSION_LOG"
+  exit 66
+fi
+if [ ! -s "$PROMPT_FILE" ]; then
+  echo "gptme agent $AGENT_NAME: prompt file $PROMPT_FILE is empty" >&2
+  echo "Prompt file is empty: $PROMPT_FILE (add your agent instructions)." >> "$SESSION_LOG"
+  exit 66
+fi
+# Reject prompts whose first content line is a gptme in-chat command.
+# _group_prompt_args strips the leading-newline guard before the chat loop
+# dispatch: /shell, /python, /log, etc. as the first line would be dispatched
+# as a command rather than sent to the model. /path/to/file-style strings are
+# safe because their first word contains more than one slash.
+_prompt_fw=$(grep -m1 '[^[:space:]]' "$PROMPT_FILE" | python3 -c "import sys; w=sys.stdin.read().split(); print(w[0] if w else '')")
+if [ "${{_prompt_fw#/}}" != "$_prompt_fw" ] \
+   && [ "$(printf '%s' "$_prompt_fw" | awk -F'/' '{{print NF-1}}')" -eq 1 ]; then
+  echo "gptme agent $AGENT_NAME: prompt.md starts with '$_prompt_fw', a gptme in-chat command; it would be dispatched rather than sent to the model." >&2
+  echo "Begin prompt.md with a description or heading (e.g. '# Task')." >&2
+  echo "Prompt starts with in-chat command '$_prompt_fw'." >> "$SESSION_LOG"
+  exit 66
+fi
+unset _prompt_fw
+
+# Run one non-interactive gptme session. --non-interactive is passed as a flag
+# because gptme reads the flag, not GPTME_NON_INTERACTIVE.
+gptme_args=(--non-interactive --no-confirm --workspace "$WORK_DIR")
+gptme_args+=(--name "$AGENT_NAME-$SESSION_ID")
+if [ -n "${{GPTME_AGENT_MODEL:-}}" ]; then
+  gptme_args+=(--model "$GPTME_AGENT_MODEL")
+fi
+
+echo "## Output" >> "$SESSION_LOG"
+echo >> "$SESSION_LOG"
+
+cd "$WORK_DIR"
+# Prefix a newline so the raw CLI argument never matches a gptme-util subcommand
+# or plugin name (checked before _group_prompt_args runs). _group_prompt_args
+# strips leading whitespace, so the LLM receives the file content as-is.
+# Single-slash commands (e.g. /shell) are rejected above before we reach here.
+prompt_arg=$'\\n'"$(cat "$PROMPT_FILE")"
+exit_code=0
+gptme "${{gptme_args[@]}}" "$prompt_arg" >> "$SESSION_LOG" 2>&1 || exit_code=$?
+
+{{
+  echo
+  echo "Finished: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "Exit code: $exit_code"
+}} >> "$SESSION_LOG"
+
+echo "gptme agent {name}: session $SESSION_ID exited $exit_code (log: $SESSION_LOG)"
+exit "$exit_code"
+"""
+
+PROMPT_MD_TEMPLATE = """\
+# {name} — session prompt
+
+This is the instruction {name} receives at the start of every headless session.
+Edit it to describe the work the agent should do on each run.
+
+Keep it short and concrete. A headless session has no human to ask, so state the
+goal, where to look, and what "done" means.
+
+## Task
+
+Review the notes in this workspace and summarize anything that needs attention.
+Write findings to `journal/` and stop.
 """
 
 GPTME_TOML_TEMPLATE = """\
@@ -609,6 +697,11 @@ def init(
         AGENTS_MD_TEMPLATE.format(name=name),
         force=force,
     )
+    _write_file(
+        work / "prompt.md",
+        PROMPT_MD_TEMPLATE.format(name=name),
+        force=force,
+    )
 
     # Startup script
     startup = work / "gptme-agent-run.sh"
@@ -623,6 +716,7 @@ def init(
     click.echo(f"✅ Initialized headless agent '{name}'")
     click.echo()
     click.echo("Next steps:")
+    click.echo(f"  $EDITOR {work / 'prompt.md'}   # what the agent does each run")
 
     if platform_choice == "macos":
         plist_file = out_dir / f"com.gptme.{name}.plist"

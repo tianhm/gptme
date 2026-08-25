@@ -6,6 +6,7 @@ parse), and the on-demand (no-timer) path.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
@@ -665,7 +666,10 @@ def test_launchd_plist_contains_agent_variables(tmp_path: Path) -> None:
     assert "testagent" in plist_text
     assert "GPTME_AGENT_MODEL" in plist_text
     assert "gpt-4o-mini" in plist_text
-    assert "GPTME_NON_INTERACTIVE" in plist_text
+    # GPTME_NON_INTERACTIVE is deliberately absent: gptme never reads it (the
+    # startup script passes --non-interactive as a flag), so shipping it in the
+    # plist advertised a control that does nothing.
+    assert "GPTME_NON_INTERACTIVE" not in plist_text
 
 
 def test_launchd_plist_daily_schedule(tmp_path: Path) -> None:
@@ -849,4 +853,316 @@ def test_macos_path_with_systemd_invalid_chars_accepted(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, (
         f"macOS scaffolding should accept apostrophes in work-dir; got: {result.output}"
+    )
+
+
+def test_startup_script_actually_invokes_gptme(tmp_path: Path) -> None:
+    """The scaffolded service must run a gptme session, not just write a log stub.
+
+    Regression: the original template wrote a session-log header and exited, so
+    `systemctl start <name>.service` produced an empty journal file and never
+    started an agent.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    assert 'gptme "${gptme_args[@]}"' in startup
+    assert "--non-interactive" in startup
+    assert '--workspace "$WORK_DIR"' in startup
+    assert 'exit "$exit_code"' in startup
+
+
+def test_startup_script_passes_non_interactive_as_a_flag(tmp_path: Path) -> None:
+    """GPTME_NON_INTERACTIVE is not read by gptme; the flag must be explicit."""
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    # The env var alone must never be the only thing standing between a headless
+    # unit and an interactive prompt.
+    assert "gptme_args=(--non-interactive" in startup
+
+
+def test_startup_script_forwards_configured_model(tmp_path: Path) -> None:
+    """The model chosen at init time reaches gptme via GPTME_AGENT_MODEL."""
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    assert 'if [ -n "${GPTME_AGENT_MODEL:-}" ]; then' in startup
+    assert 'gptme_args+=(--model "$GPTME_AGENT_MODEL")' in startup
+
+
+def test_prompt_file_is_generated(tmp_path: Path) -> None:
+    """A prompt.md scaffold ships so the first run has something to execute."""
+    _run_init(tmp_path)
+    prompt = tmp_path / "prompt.md"
+
+    assert prompt.exists()
+    assert prompt.read_text().strip()
+
+
+def test_startup_script_fails_loudly_without_prompt(tmp_path: Path) -> None:
+    """A missing prompt file must fail the unit, not silently produce nothing."""
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    assert 'if [ ! -f "$PROMPT_FILE" ]; then' in startup
+    assert "exit 66" in startup
+    assert "command -v gptme" in startup
+    assert "exit 127" in startup
+
+
+def test_startup_script_session_id_is_collision_resistant(tmp_path: Path) -> None:
+    """Session IDs must be unique even when two runs start within the same second.
+
+    Regression: the original template used date +%%Y%%m%%d-%%H%%M%%S alone, so
+    two service restarts within a second would produce identical SESSION_ID
+    values, causing the later run to truncate the earlier journal entry and
+    reuse the same gptme conversation.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    # PID suffix ($$ in bash) + $RANDOM guards against PID reuse within the
+    # same second on rapid restarts.
+    assert "SESSION_ID=$(date +%Y%m%d-%H%M%S)-$$-$RANDOM" in startup
+
+
+def test_startup_script_prompt_bypasses_command_routing(tmp_path: Path) -> None:
+    """The prompt must not trigger gptme's subcommand dispatch.
+
+    Regression: passing "$(cat prompt.md)" as the first positional argument lets
+    gptme's dispatch logic (which checks prompts[0] for exact matches against
+    gptme-util subcommands and gptme-* plugins) route a single-word prompt like
+    'context', 'status', or 'tools' to a utility subcommand instead of starting
+    an agent session. A leading newline prevents the exact-match while
+    _group_prompt_args strips it before the LLM receives the message.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    # In the generated bash file, $'\n' is ANSI-C quoting for a newline; the
+    # backslash is a literal \ in the file content, so Python sees it as \n.
+    assert r"prompt_arg=$'\n'" in startup
+    assert '"$prompt_arg"' in startup
+
+
+def test_startup_script_checks_prompt_readability(tmp_path: Path) -> None:
+    """A prompt file that exists but is unreadable must fail loudly (exit 66).
+
+    Regression: the original template only checked [ ! -f "$PROMPT_FILE" ] for
+    existence. An unreadable file passes that check, then `cat "$PROMPT_FILE"`
+    fails silently (or with a confusing cat error), causing gptme to run with an
+    empty prompt and exit 0 — appearing successful while doing nothing useful.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    assert '[ ! -r "$PROMPT_FILE" ]' in startup
+
+
+def test_startup_script_checks_prompt_nonempty(tmp_path: Path) -> None:
+    """An empty prompt file must fail loudly (exit 66), not run gptme silently.
+
+    Regression: the original template only checked existence and readability.
+    An empty prompt.md passes both checks, but `cat prompt.md` yields nothing,
+    so gptme runs with an effective empty prompt, wastes an API call, and exits 0
+    — appearing successful while doing nothing useful.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    assert '[ ! -s "$PROMPT_FILE" ]' in startup
+
+
+def test_startup_script_rejects_slash_command_prompt(tmp_path: Path) -> None:
+    """A prompt.md starting with a gptme in-chat command must be rejected (exit 66).
+
+    Regression: the leading-newline guard ($'\\n') prevents CLI-level subcommand
+    dispatch, but gptme's _group_prompt_args strips the newline before the chat
+    loop dispatch. A first line like /shell or /python would be executed as an
+    in-chat command rather than sent to the model. /path/to/file-style strings
+    are safe because their first word has more than one slash.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    # The check must extract the first word and count its slashes.
+    assert "_prompt_fw" in startup
+    # Single-slash first words that match gptme's in-chat command pattern must
+    # be rejected before gptme is invoked.
+    assert "in-chat command" in startup
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="bash not available")
+def test_startup_script_rejects_slash_command_with_leading_whitespace(
+    tmp_path: Path,
+) -> None:
+    """A prompt.md whose first content line is TAB+/shell must be rejected (exit 66).
+
+    Regression: the original guard used `${_prompt_fw%% *}` to extract the first
+    word, which retains a leading tab — so `\\t/shell` passed the startswith-/
+    check unchanged and was not caught. _group_prompt_args would then strip the
+    tab and expose /shell to the in-chat dispatcher.
+    Using `awk '{print $1}'` strips leading whitespace before extracting the word.
+    """
+    _run_init(tmp_path)
+    startup = tmp_path / "gptme-agent-run.sh"
+    (tmp_path / "prompt.md").write_text("\t/shell echo pwned\n")
+
+    proc = subprocess.run(
+        ["bash", str(startup)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 66, (
+        f"Expected exit 66 for tab-prefixed slash command; got {proc.returncode}\n"
+        f"stderr: {proc.stderr}"
+    )
+    assert "in-chat command" in proc.stderr
+
+
+def test_startup_script_rejects_slash_command_with_unicode_whitespace(
+    tmp_path: Path,
+) -> None:
+    """A prompt.md whose first content line starts with unicode whitespace then /shell
+    must be rejected (exit 66).
+
+    Regression: awk '{print $1}' only splits on ASCII whitespace. A non-breaking
+    space (U+00A0) before /shell keeps it as the first awk token, bypassing the guard.
+    Python's str.split() strips all Unicode whitespace, so \\u00a0/shell → /shell.
+    """
+    _run_init(tmp_path)
+    startup = tmp_path / "gptme-agent-run.sh"
+    # Write non-breaking space (U+00A0) followed by /shell
+    (tmp_path / "prompt.md").write_bytes("\u00a0/shell echo pwned\n".encode())
+
+    proc = subprocess.run(
+        ["bash", str(startup)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 66, (
+        f"Expected exit 66 for unicode-whitespace-prefixed slash command; got {proc.returncode}\n"
+        f"stderr: {proc.stderr}"
+    )
+    assert "in-chat command" in proc.stderr
+
+
+def test_startup_script_prompt_guard_fails_loud_without_python3(
+    tmp_path: Path,
+) -> None:
+    """Prompt guard must fail loudly if python3 is absent from PATH.
+
+    Regression: the guard used `| python3 -c ... || true`, so a missing python3
+    set _prompt_fw to '' and silently let the slash-command check pass even for
+    a prompt starting with /shell.
+    """
+    _run_init(tmp_path)
+    startup = tmp_path / "gptme-agent-run.sh"
+    (tmp_path / "prompt.md").write_text("/shell echo pwned\n")
+
+    # Run with a PATH that has the system tools (bash, grep, awk, …) but no python3.
+    # We create a fake python3 shim that exits 127 to simulate a missing interpreter.
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    fake_python3 = fake_bin / "python3"
+    fake_python3.write_text("#!/bin/sh\nexit 127\n")
+    fake_python3.chmod(0o755)
+    # Prepend our fake_bin so it shadows any real python3, but keep system PATH
+    # for bash, grep, mkdir, etc.
+    new_path = f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+    proc = subprocess.run(
+        ["bash", str(startup)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PATH": new_path},
+    )
+    # Must not exit 0 — failing open would allow /shell to reach the model dispatcher.
+    assert proc.returncode != 0, (
+        "Expected non-zero exit when python3 is absent; guard silently failed open"
+    )
+
+
+def test_startup_script_mkdir_journal_dir_fails_loudly(tmp_path: Path) -> None:
+    """A journal directory that cannot be created must fail with an explicit error.
+
+    Regression: the original template called `mkdir -p "$JOURNAL_DIR"` without
+    checking its exit status. If the workspace lacks write permission, mkdir
+    fails, the subsequent `> "$SESSION_LOG"` redirection also fails, and the
+    script continues as if the journal exists, silently losing all session output.
+    """
+    _run_init(tmp_path)
+    startup = (tmp_path / "gptme-agent-run.sh").read_text()
+
+    # The mkdir line must exit on failure with a diagnostic message.
+    assert 'mkdir -p "$JOURNAL_DIR"' in startup
+    assert "cannot create journal dir" in startup
+
+
+def test_service_unit_restart_backoff_is_actually_applied(tmp_path: Path) -> None:
+    """RestartMaxDelaySec is inert without RestartSteps.
+
+    Regression: the unit set `RestartSec=5` + `RestartMaxDelaySec=60` intending
+    exponential backoff, but systemd ignores RestartMaxDelaySec unless
+    RestartSteps is also set, logging "Service has RestartMaxDelaySec= but no
+    RestartSteps= setting. Ignoring." and retrying at a flat 5s forever.
+    Observed on a real `systemctl --user start` of a generated unit.
+    """
+    _run_init(tmp_path)
+    unit = (tmp_path / "systemd" / "testagent.service").read_text()
+
+    assert "RestartMaxDelaySec=" in unit
+    assert "RestartSteps=" in unit, (
+        "RestartMaxDelaySec is silently ignored by systemd without RestartSteps"
+    )
+
+
+def test_service_unit_gives_up_on_persistent_failure(tmp_path: Path) -> None:
+    """A one-shot session that keeps failing must not retry forever.
+
+    Regression: with `Restart=on-failure` and no start limit, a persistent
+    failure (invalid API key, exhausted quota, unusable prompt) restarted the
+    agent every 5 seconds indefinitely, hammering a paid API. Verified against a
+    real run: an invalid key produced exit 76 and an immediate auto-restart.
+    """
+    _run_init(tmp_path)
+    unit = (tmp_path / "systemd" / "testagent.service").read_text()
+
+    assert "StartLimitIntervalSec=" in unit
+    assert "StartLimitBurst=" in unit
+
+    # The start limit must be declared in [Unit]; systemd ignores it in [Service].
+    unit_section = unit.split("[Service]", 1)[0]
+    assert "StartLimitIntervalSec=" in unit_section
+    assert "StartLimitBurst=" in unit_section
+
+
+def test_generated_units_do_not_set_dead_non_interactive_env(tmp_path: Path) -> None:
+    """GPTME_NON_INTERACTIVE is never read by gptme; shipping it is misleading."""
+    _run_init(tmp_path)
+    unit = (tmp_path / "systemd" / "testagent.service").read_text()
+    assert "GPTME_NON_INTERACTIVE" not in unit
+
+    _run_init(tmp_path, "--platform", "macos")
+    plist = (tmp_path / "systemd" / "com.gptme.testagent.plist").read_text()
+    assert "GPTME_NON_INTERACTIVE" not in plist
+
+
+def test_service_unit_has_runtime_max_sec(tmp_path: Path) -> None:
+    """A hung LLM connection must not keep the unit active forever.
+
+    Without RuntimeMaxSec the unit stays in active (running) state indefinitely
+    when the gptme process hangs (endpoint unresponsive, infinite stream, etc.).
+    Restart=on-failure never fires because the process has not exited, and timer
+    triggers queue behind the still-active unit. RuntimeMaxSec kills the process
+    after a deadline, moving the unit to failed and allowing restart + timer to
+    proceed normally.
+    """
+    _run_init(tmp_path)
+    unit = (tmp_path / "systemd" / "testagent.service").read_text()
+    assert "RuntimeMaxSec=" in unit, (
+        "Without RuntimeMaxSec a hung gptme process keeps the unit active forever"
     )
