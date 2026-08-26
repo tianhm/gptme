@@ -2063,15 +2063,7 @@ def test_v2_create_conversation_default_system_prompt(
     data = response.get_json()
     assert data is not None
     assert "log" in data
-    assert (
-        len(data["log"]) == 3
-    )  # System prompt + webui hint + user message (no workspace context)
-    assert data["log"][0]["role"] == "system"  # Primary system prompt
-    assert data["log"][1]["role"] == "system"  # Webui hint
-    assert data["log"][2]["role"] == "user"
-    assert data["log"][2]["content"] == "Hello, this is a test message."
 
-    # Check that the system prompt is the default one
     prompt_msgs = get_prompt(
         tools=list(get_toolchain(None)),
         interactive=True,
@@ -2080,7 +2072,15 @@ def test_v2_create_conversation_default_system_prompt(
         prompt="full",
         workspace=tmp_path,
     )
-    assert data["log"][0]["content"] == prompt_msgs[0].content
+    assert len(data["log"]) == len(prompt_msgs) + 2
+    for actual, expected in zip(
+        data["log"][: len(prompt_msgs)], prompt_msgs, strict=True
+    ):
+        assert actual["role"] == expected.role
+        assert actual["content"] == expected.content
+    assert data["log"][-2]["role"] == "system"  # Webui hint
+    assert data["log"][-1]["role"] == "user"
+    assert data["log"][-1]["content"] == "Hello, this is a test message."
 
 
 def test_v2_create_conversation_webui_html_hint(
@@ -3405,6 +3405,92 @@ def test_copy_messages_for_fork_copies_only_referenced_attachments(tmp_path: Pat
     fork_attachments = dest_logdir / "attachments"
     assert (fork_attachments / "keep.txt").read_text(encoding="utf-8") == "keep"
     assert not (fork_attachments / "skip.txt").exists()
+
+
+def test_copy_messages_for_fork_copies_referenced_file_snapshots(tmp_path: Path):
+    """A fork must keep the source conversation's content-addressed bytes."""
+    from gptme.logmanager import LogManager  # fmt: skip
+    from gptme.message import Message  # fmt: skip
+    from gptme.server.api_v2 import _copy_messages_for_fork  # fmt: skip
+
+    source_logdir = tmp_path / "source"
+    dest_logdir = tmp_path / "fork"
+    live_file = tmp_path / "workspace" / "bootstrap.md"
+    live_file.parent.mkdir()
+    live_file.write_text("mutated live content", encoding="utf-8")
+
+    source_files = source_logdir / "files"
+    source_files.mkdir(parents=True)
+    (source_files / "abc123.md").write_text("original snapshot", encoding="utf-8")
+    message = Message(
+        "system",
+        "bootstrap",
+        files=[live_file],
+        file_hashes={str(live_file): "abc123"},
+    )
+
+    copied = _copy_messages_for_fork([message], source_logdir, dest_logdir)
+    fork_manager = LogManager(copied, logdir=dest_logdir, lock=False)
+
+    assert fork_manager.log.messages[0].file_hashes == {str(live_file): "abc123"}
+    assert (dest_logdir / "files" / "abc123.md").read_text(encoding="utf-8") == (
+        "original snapshot"
+    )
+
+
+def test_copy_messages_for_fork_tolerates_missing_snapshot(tmp_path: Path):
+    """A fork drops stale hash entries whose snapshot is absent in the source."""
+    from gptme.message import Message  # fmt: skip
+    from gptme.server.api_v2 import _copy_messages_for_fork  # fmt: skip
+
+    source_logdir = tmp_path / "source"
+    dest_logdir = tmp_path / "fork"
+    live_file = tmp_path / "workspace" / "bootstrap.md"
+    live_file.parent.mkdir()
+    live_file.write_text("content", encoding="utf-8")
+
+    # file_hashes contains "deadbeef" but no matching snapshot exists in source.
+    source_logdir.mkdir(parents=True)
+    message = Message(
+        "system",
+        "bootstrap",
+        files=[live_file],
+        file_hashes={str(live_file): "deadbeef"},
+    )
+
+    # Stale hash must be dropped so LogManager.snapshot_message_files can
+    # re-store the live file with a fresh consistent hash instead of silently
+    # overwriting the stale one.
+    copied = _copy_messages_for_fork([message], source_logdir, dest_logdir)
+    assert copied[0].file_hashes == {}
+    assert not (dest_logdir / "files" / "deadbeef.md").exists()
+
+
+def test_copy_messages_for_fork_drops_reference_when_snapshot_and_live_file_missing(
+    tmp_path: Path,
+):
+    """When both snapshot and live file are gone, the file reference must be dropped."""
+    from gptme.message import Message  # fmt: skip
+    from gptme.server.api_v2 import _copy_messages_for_fork  # fmt: skip
+
+    source_logdir = tmp_path / "source"
+    dest_logdir = tmp_path / "fork"
+    gone_file = tmp_path / "workspace" / "deleted.md"
+    # Deliberately do NOT create gone_file — it is missing from disk.
+
+    source_logdir.mkdir(parents=True)
+    message = Message(
+        "system",
+        "ref to deleted file",
+        files=[gone_file],
+        file_hashes={str(gone_file): "deadbeef"},
+    )
+
+    copied = _copy_messages_for_fork([message], source_logdir, dest_logdir)
+    # Both hash and file reference must be dropped — live file doesn't exist,
+    # so the fork's LogManager cannot snapshot it and must not keep a dangling ref.
+    assert copied[0].file_hashes == {}
+    assert copied[0].files == []
 
 
 def test_v2_edit_message_rejects_non_string_content(client: FlaskClient):
