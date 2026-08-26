@@ -168,6 +168,51 @@ def get_profile_memory_dir(profile_name: str) -> Path:
     return path
 
 
+def get_cc_memory_dir(workspace: Path) -> Path:
+    """Get the Claude Code memory directory for a given workspace.
+
+    Claude Code stores per-project memories at:
+        ~/.claude/projects/<workspace-hash>/memory/
+
+    where the hash is the absolute workspace path with slashes, backslashes, and
+    colons replaced by dashes, e.g. ``/home/user/myproject`` → ``-home-user-myproject``
+    and ``C:\\Users\\user\\project`` → ``C--Users-user-project``.
+
+    This allows gptme sessions to read memories written by CC sessions (and vice
+    versa when the memory tool writes to this location).
+
+    Args:
+        workspace: Absolute path to the workspace root
+
+    Returns:
+        Path to the CC memory directory (may not exist)
+
+    Note:
+        The slash-to-dash encoding is non-injective: paths that differ only by a
+        dash versus a path separator (e.g. ``/a/b`` and ``/a-b``) map to the
+        same identifier. This is CC's own encoding scheme; gptme replicates it
+        faithfully so it reads the correct memory directory. The collision risk is
+        inherited from CC's design and cannot be resolved without diverging from
+        CC's path formula.
+    """
+    workspace_hash = (
+        str(workspace.resolve()).replace("\\", "-").replace("/", "-").replace(":", "-")
+    )
+    return Path.home() / ".claude" / "projects" / workspace_hash / "memory"
+
+
+def get_cc_memory_file(workspace: Path) -> Path:
+    """Get the Claude Code MEMORY.md file path for a given workspace.
+
+    Args:
+        workspace: Absolute path to the workspace root
+
+    Returns:
+        Path to MEMORY.md inside the CC memory directory (may not exist)
+    """
+    return get_cc_memory_dir(workspace) / "MEMORY.md"
+
+
 def _migrate_readline_history():
     """Migrate readline history from config dir to data dir."""
     old_path = get_config_dir() / "history"

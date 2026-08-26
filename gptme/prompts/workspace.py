@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import config_path, get_config, get_project_config
+from ..dirs import get_cc_memory_file
 from ..message import Message
 from ..util.context import md_codeblock
 from ..util.context_dedup import _content_hash
@@ -15,6 +16,7 @@ from . import AGENT_FILES, DEFAULT_CONTEXT_FILES, _loaded_agent_files_var
 from .context_cmd import get_project_context_cmd_output
 
 _HASH_PREFIX = "ch:"
+_CC_MEMORY_MAX_BYTES = 64 * 1024  # 64 KB cap to avoid consuming excessive prompt budget
 
 if TYPE_CHECKING:
     from ..util.uri import FilePath
@@ -413,6 +415,33 @@ def prompt_workspace(
             f"## Selected files\n\nRead more with `cat`.\n\n{context_file_list}",
             files=valid_context_files,
         )
+
+    # Load Claude Code memory if present — makes CC-written memories accessible in gptme
+    if include_user_context:
+        cc_memory_file = get_cc_memory_file(workspace_resolved)
+        if cc_memory_file.exists():
+            try:
+                # Read at most MAX+1 bytes to detect oversized files without loading them fully
+                with open(cc_memory_file, "rb") as _f:
+                    raw = _f.read(_CC_MEMORY_MAX_BYTES + 1)
+                truncated = len(raw) > _CC_MEMORY_MAX_BYTES
+                if truncated:
+                    raw = raw[:_CC_MEMORY_MAX_BYTES]
+                    logger.warning(
+                        f"CC memory file {cc_memory_file} exceeds "
+                        f"{_CC_MEMORY_MAX_BYTES // 1024}KB; truncating"
+                    )
+                memory_content = raw.decode("utf-8", errors="ignore").strip()
+                if memory_content:
+                    yield Message(
+                        "system",
+                        f"## Persistent Memory\n\n"
+                        f"The following memory was saved across sessions "
+                        f"(from `{cc_memory_file}`):\n\n{memory_content}",
+                    )
+                    logger.debug(f"Loaded CC memory from {cc_memory_file}")
+            except OSError as e:
+                logger.debug(f"Failed to read CC memory file {cc_memory_file}: {e}")
 
     # Computed context last (changes most often, least cacheable)
     if (
