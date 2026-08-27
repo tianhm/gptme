@@ -137,11 +137,39 @@ def _disk_usage(path: Path | None = None) -> str:
 
 
 def _markdown_table_cell(value: object) -> str:
-    """Escape dynamic values for a single markdown table cell."""
-    text = " ".join(str(value).splitlines()).strip()
+    """Escape dynamic values for a single markdown table cell.
+
+    Lists and dicts are serialised as compact JSON so the cell content is
+    machine-parseable rather than a raw Python repr.
+    """
+    structured = isinstance(value, (list, dict))
+    if structured:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            # U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are not
+            # escaped by json.dumps(ensure_ascii=False), but they act as
+            # newlines in every line-oriented parser — including markdown table
+            # renderers and str.splitlines().  Replace them with their JSON
+            # \uXXXX escape forms so that the cell is safe for all consumers
+            # while still round-tripping correctly through json.loads.
+            text = text.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        except (TypeError, ValueError):
+            text = str(value)
+            structured = False
+    else:
+        text = str(value)
+    # Collapse newlines in plain-text values.  Skip for structured output:
+    # JSON is compact and single-line after the U+2028/U+2029 escaping above.
+    if not structured:
+        text = " ".join(text.splitlines()).strip()
+    else:
+        text = text.strip()
     if not text:
         return "none"
-    return text.replace("|", r"\|")
+    # Markdown's ``\|`` escape is invalid inside JSON strings.  A JSON unicode
+    # escape hides the delimiter from the Markdown parser while preserving the
+    # value when a consumer decodes the cell.
+    return text.replace("|", r"\u007c" if structured else r"\|")
 
 
 def _strip_markdown(doc: str) -> str:
