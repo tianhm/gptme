@@ -138,6 +138,12 @@ class ChatConfig:
         # For old-style config, check if workspace is in the logdir
         elif _logdir and (_logdir / "workspace").exists():
             chat_data["workspace"] = (_logdir / "workspace").resolve()
+        elif _logdir:
+            # No workspace field in config and no logdir/workspace symlink
+            # (e.g. Windows without Developer Mode). Use the logdir itself as a
+            # safe fallback so tool operations don't silently target the process
+            # cwd, which is unrelated to the conversation.
+            chat_data["workspace"] = _logdir.resolve()
 
         # Extract agent
         _missing = object()
@@ -242,7 +248,9 @@ class ChatConfig:
             return cls.from_dict(config_data)
         except _CHAT_CONFIG_LOAD_ERRORS as e:
             logger.warning(f"Failed to load chat config from {chat_config_path}: {e}")
-            return cls()
+            # Keep _logdir unset so save() cannot overwrite an unreadable config
+            # with defaults. The workspace is still safe for read-only recovery.
+            return cls(workspace=path.resolve())
 
     def save(self) -> Self:
         """Save the chat config to the log directory.
