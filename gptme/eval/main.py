@@ -29,7 +29,7 @@ from ..tools import ToolFormat
 from ..util.git_cmd import GIT_CMD
 from .run import run_evals
 from .suites import suites, tests_default, tests_default_ids, tests_map
-from .types import CaseResult, EvalResult, EvalSpec, ModelConfig
+from .types import CaseResult, EvalResult, EvalSpec, ModelConfig, get_effective_format
 
 # Configure logging, including fully-qualified module names
 logging.basicConfig(
@@ -681,9 +681,24 @@ def main(
             if tool_format
             else ["markdown", "xml", "tool"]
         )
+        # Apply model-aware format routing only during automatic format expansion.
+        # Explicit model@format specs and --tool-format bypass this so callers can
+        # intentionally test the failing markdown format.
         model_configs.extend(
-            ModelConfig(model=model_spec, tool_format=fmt) for fmt in formats
+            ModelConfig(
+                model=model_spec,
+                tool_format=(
+                    fmt
+                    if tool_format is not None
+                    else get_effective_format(model_spec, fmt)
+                ),
+            )
+            for fmt in formats
         )
+
+    # Routing may collapse formats, and repeated/mixed model specs may resolve to
+    # the same paid run. Keep only the first occurrence across the full CLI input.
+    model_configs = list(dict.fromkeys(model_configs))
 
     results_files = []
     for f in eval_names_or_result_files:
