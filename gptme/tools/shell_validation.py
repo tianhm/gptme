@@ -24,13 +24,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Sensitive path prefixes — commands reading these should require confirmation
-# even when the command itself is in the allowlist (e.g. `cat /etc/shadow`)
+# even when the command itself is in the allowlist (e.g. `cat /etc/shadow`).
+# Note: home-relative paths (~/.ssh etc.) are covered by _SENSITIVE_HOME_DIRS below.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/",
     "/root/",
     "/proc/",
     "/sys/",
     "/boot/",
+)
+
+# Home-relative directories that contain credentials/secrets.
+# Matched against tokens starting with "~/", e.g. "~/.ssh/id_rsa".
+_SENSITIVE_HOME_DIRS = (
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/.pgp",
+    "~/.kube",
+    "~/.docker",
+    "~/.config/gcloud",
+    "~/.azure",
+    "~/.netrc",
+    "~/.npmrc",
+    "~/.pypirc",
 )
 
 # Commands that are safe to auto-approve without user confirmation
@@ -353,8 +370,54 @@ def _has_sensitive_args(cmd: str) -> bool:
         # because they contain no path separator.
         if "/" in token and any(char in token for char in "*?[{"):
             return True
-        # Sensitive directory prefixes
-        if any(token.startswith(prefix) for prefix in _SENSITIVE_PATH_PREFIXES):
+        # Sensitive directory prefixes (absolute paths). Collapse repeated
+        # leading slashes before normalizing no-op dot segments: POSIX permits
+        # normpath() to preserve exactly two leading slashes even though the
+        # shell resolves //etc and /./etc to /etc on our supported platforms.
+        abs_token = (
+            os.path.normpath(re.sub(r"^/+", "/", token))
+            if token.startswith("/")
+            else token
+        )
+        if any(abs_token.startswith(prefix) for prefix in _SENSITIVE_PATH_PREFIXES):
+            return True
+        # Sensitive home-relative credential directories.
+        # Normalize $HOME/... and ${HOME}/... to ~/... before matching so that
+        # shell-variable spellings (cat "$HOME/.ssh/id_rsa") are caught too.
+        # Use a boundary check (exact match or followed by "/") to avoid
+        # false-positives on sibling paths like ~/.sshrc or ~/.npmrc-public.
+        normalized = token
+        home = os.path.expanduser("~")
+        if token == home or token.startswith(home + "/"):
+            normalized = "~" + token[len(home) :]
+        else:
+            for sub in ("${HOME}/", "$HOME/"):
+                if token.startswith(sub):
+                    normalized = "~/" + token[len(sub) :]
+                    break
+        # ~username/... spellings (e.g. ~root/.ssh/id_rsa) name another user's
+        # home dir; strip the username component and treat the rest as ~/...
+        # so the sensitive-dir boundary check below fires for those too.
+        if re.match(r"^~[^/]+/", normalized) and not normalized.startswith("~/"):
+            normalized = "~/" + re.sub(r"^~[^/]+/", "", normalized)
+        # Collapse redundant separators so that $HOME//.ssh/id_rsa (→ ~//.ssh/id_rsa)
+        # still matches the ~/ prefix boundary after double-slash removal.
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        # Remove no-op ./ segments (e.g. ~/./.ssh/id_rsa → ~/.ssh/id_rsa) that
+        # bash resolves at runtime but which bypass literal prefix matching.
+        while "/./" in normalized:
+            normalized = normalized.replace("/./", "/")
+        # Resolve parent-directory (..) segments within the home-relative path
+        # (e.g. ~/tmp/../.ssh/id_rsa → ~/.ssh/id_rsa).  Tokens with ".." are
+        # already caught by the path-traversal check above; this normpath pass
+        # ensures the prefix check below is also correct as belt-and-suspenders.
+        if ".." in normalized:
+            normalized = os.path.normpath(normalized)
+        if any(
+            normalized == prefix or normalized.startswith(prefix + "/")
+            for prefix in _SENSITIVE_HOME_DIRS
+        ):
             return True
 
     return False
@@ -583,13 +646,39 @@ def shell_allowlist_hook(
     if tool_use.tool != "shell":
         return None
 
-    # Get the command from the tool use
-    cmd = tool_use.content.strip() if tool_use.content else ""
+    # Get the command to check.  For bg sequences the preview contains the full
+    # command context (preceding + bg + remaining) while tool_use.content is
+    # only the bg_cmd fragment.  Always prefer preview when present so that a
+    # dangerous preceding command (e.g. "cat ~/.ssh/id_rsa\nbg ls") is not
+    # silently approved because the isolated bg fragment ("ls") is allowlisted.
+    cmd = (preview or tool_use.content or "").strip()
     if not cmd:
         return None
 
+    # ``bg`` is gptme control syntax, not a shell binary, so remove its prefix
+    # before checking the complete sequence.  A bg command may follow a shell
+    # separator on the same line as well as start a line. Keep every separator
+    # and surrounding command in place so is_allowlisted() still validates the
+    # complete sequence. Only remove prefixes outside quoted regions; text such
+    # as ``echo "hi; bg ls"`` is ordinary shell content, not gptme syntax.
+    quote_regions = _find_quotes(cmd)
+
+    def _strip_bg_prefix(match: re.Match[str]) -> str:
+        return (
+            match.group(0)
+            if _is_in_quoted_region(match.start(), quote_regions)
+            else match.group(1) + match.group(2)
+        )
+
+    check_cmd = re.sub(
+        r"(^|(?<=[;&|]))(\s*)bg\s+",
+        _strip_bg_prefix,
+        cmd,
+        flags=re.MULTILINE,
+    )
+
     # Check if command is allowlisted
-    if is_allowlisted(cmd):
+    if is_allowlisted(check_cmd):
         logger.debug(f"Shell command allowlisted, auto-confirming: {cmd[:50]}...")
         return ConfirmationResult.confirm()
 

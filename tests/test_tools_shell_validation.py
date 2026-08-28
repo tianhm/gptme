@@ -793,6 +793,138 @@ class TestSensitiveArgs:
     def test_find_root_bare_not_allowlisted(self):
         assert not is_allowlisted("find /")
 
+    # Home-directory credential paths
+    def test_cat_ssh_private_key_not_allowlisted(self):
+        """`cat ~/.ssh/id_rsa` must NOT be auto-approved — it is a secret."""
+        assert not is_allowlisted("cat ~/.ssh/id_rsa")
+
+    def test_cat_ssh_authorized_keys_not_allowlisted(self):
+        assert not is_allowlisted("cat ~/.ssh/authorized_keys")
+
+    def test_cat_aws_credentials_not_allowlisted(self):
+        assert not is_allowlisted("cat ~/.aws/credentials")
+
+    def test_cat_kube_config_not_allowlisted(self):
+        assert not is_allowlisted("cat ~/.kube/config")
+
+    def test_cat_gnupg_key_not_allowlisted(self):
+        assert not is_allowlisted("cat ~/.gnupg/secring.gpg")
+
+    def test_cat_netrc_not_allowlisted(self):
+        assert not is_allowlisted("cat ~/.netrc")
+
+    def test_ls_ssh_dir_not_allowlisted(self):
+        """`ls ~/.ssh` must require confirmation — reveals key file names."""
+        assert not is_allowlisted("ls ~/.ssh")
+
+    def test_normal_home_file_still_allowlisted(self):
+        """`cat ~/README.md` should still be auto-approved (no false positive)."""
+        assert is_allowlisted("cat ~/README.md")
+
+    def test_normal_home_dir_listing_still_allowlisted(self):
+        assert is_allowlisted("ls ~/projects")
+
+    # $HOME variable spellings (Greptile P1 fix)
+    def test_cat_home_var_ssh_not_allowlisted(self):
+        """`cat $HOME/.ssh/id_rsa` must be blocked — $HOME is not expanded by shlex."""
+        assert not is_allowlisted('cat "$HOME/.ssh/id_rsa"')
+
+    def test_cat_brace_home_var_ssh_not_allowlisted(self):
+        assert not is_allowlisted("cat ${HOME}/.ssh/id_rsa")
+
+    def test_cat_home_var_aws_not_allowlisted(self):
+        assert not is_allowlisted("cat $HOME/.aws/credentials")
+
+    # Prefix boundary checks (Greptile P2 fix)
+    def test_ssh_sibling_dir_allowlisted(self):
+        """`~/.sshrc` is not a credential dir — should not trip the sensitive check."""
+        assert is_allowlisted("cat ~/.sshrc")
+
+    def test_npmrc_sibling_allowlisted(self):
+        """`~/.npmrc-public` shares the ~/.npmrc prefix but is not sensitive."""
+        assert is_allowlisted("cat ~/.npmrc-public")
+
+    def test_npmrc_exact_still_blocked(self):
+        """Exact `~/.npmrc` match must still be blocked."""
+        assert not is_allowlisted("cat ~/.npmrc")
+
+    def test_ssh_dir_exact_still_blocked(self):
+        """Exact `~/.ssh` must still be blocked (ls reveals key names)."""
+        assert not is_allowlisted("ls ~/.ssh")
+
+    # Redundant separator normalization (Greptile P1 second-review fix)
+    def test_double_slash_home_var_ssh_not_allowlisted(self):
+        """`$HOME//.ssh/id_rsa` has a redundant separator — must still be blocked."""
+        assert not is_allowlisted("cat $HOME//.ssh/id_rsa")
+
+    def test_double_slash_tilde_ssh_not_allowlisted(self):
+        """`~//.ssh/id_rsa` has a redundant separator — must still be blocked."""
+        assert not is_allowlisted("cat ~//.ssh/id_rsa")
+
+    def test_double_slash_abs_path_not_allowlisted(self):
+        """`//etc/shadow` has redundant leading slashes — must still be blocked."""
+        assert not is_allowlisted("cat //etc/shadow")
+
+    def test_triple_slash_abs_path_not_allowlisted(self):
+        """`///etc/passwd` has multiple redundant leading slashes — must still be blocked."""
+        assert not is_allowlisted("cat ///etc/passwd")
+
+    def test_dot_segment_abs_path_not_allowlisted(self):
+        """`/./etc/shadow` resolves to a sensitive absolute path."""
+        assert not is_allowlisted("cat /./etc/shadow")
+
+    def test_absolute_current_home_ssh_not_allowlisted(self):
+        """An absolute path into the current user's SSH directory is sensitive."""
+        from pathlib import Path
+
+        assert not is_allowlisted(f"cat {Path.home()}/.ssh/id_rsa")
+
+    # Dot-segment normalization (Greptile P1 third-review fix)
+    def test_dot_segment_home_var_ssh_not_allowlisted(self):
+        """`$HOME/./.ssh/id_rsa` contains a no-op ./ segment — must still be blocked."""
+        assert not is_allowlisted("cat $HOME/./.ssh/id_rsa")
+
+    def test_dot_segment_tilde_ssh_not_allowlisted(self):
+        """`~/./.ssh/id_rsa` contains a no-op ./ segment — must still be blocked."""
+        assert not is_allowlisted("cat ~/./.ssh/id_rsa")
+
+    # Parent-directory (..) normalization — regression for Greptile P1 finding
+    def test_parent_segment_tilde_ssh_not_allowlisted(self):
+        """`~/tmp/../.ssh/id_rsa` resolves to ~/.ssh/id_rsa — must be blocked.
+
+        The `..` segment causes the path-traversal guard to fire (line 363 in
+        shell_validation.py) well before the home-dir normalization check, so
+        this path can never be auto-confirmed.  This test documents that
+        contract explicitly.
+        """
+        assert not is_allowlisted("cat ~/tmp/../.ssh/id_rsa")
+
+    def test_parent_segment_tilde_aws_not_allowlisted(self):
+        """`~/projects/../.aws/credentials` resolves to ~/.aws/credentials — blocked."""
+        assert not is_allowlisted("cat ~/projects/../.aws/credentials")
+
+    def test_parent_segment_benign_still_blocked(self):
+        """`~/docs/../README.md` contains `..` so requires confirmation.
+
+        Even though it resolves to a non-sensitive path, the path-traversal
+        guard conservatively requires confirmation for any argument with `..`
+        because the effective target cannot be predicted at validation time.
+        """
+        assert not is_allowlisted("cat ~/docs/../README.md")
+
+    # ~username/ form normalization (bob-ai-review P1 fix)
+    def test_tilde_root_ssh_not_allowlisted(self):
+        """`~root/.ssh/id_rsa` uses another user's home spelling — must be blocked."""
+        assert not is_allowlisted("cat ~root/.ssh/id_rsa")
+
+    def test_tilde_username_aws_not_allowlisted(self):
+        """`~admin/.aws/credentials` uses another user's home spelling — must be blocked."""
+        assert not is_allowlisted("cat ~admin/.aws/credentials")
+
+    def test_tilde_username_benign_allowlisted(self):
+        """`~alice/repos/project/README.md` is not a sensitive path — should be auto-approved."""
+        assert is_allowlisted("cat ~alice/repos/project/README.md")
+
 
 # ── P2: Unquoted backtick detection ─────────────────────────────────────────
 
