@@ -6,6 +6,7 @@ parse), and the on-demand (no-timer) path.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -50,6 +51,117 @@ def test_generates_service_and_timer(tmp_path: Path) -> None:
     assert (work / "gptme.toml").exists()
     assert (work / "AGENTS.md").exists()
     assert (work / "gptme-agent-run.sh").exists()
+
+
+def test_health_check_is_opt_in(tmp_path: Path) -> None:
+    _run_init(tmp_path)
+    assert not (tmp_path / "health-check.py").exists()
+    assert not (tmp_path / "HEALTH.md").exists()
+
+
+def test_health_check_generates_executable_local_probe(tmp_path: Path) -> None:
+    _run_init(tmp_path, "--platform", "linux", "--enable-health-check")
+
+    health_check = tmp_path / "health-check.py"
+    health_docs = tmp_path / "HEALTH.md"
+    assert health_check.stat().st_mode & 0o111
+    assert health_docs.exists()
+
+    script = health_check.read_text()
+    docs = health_docs.read_text()
+    assert '"testagent.service"' in script
+    assert '"--property=ActiveState"' in script
+    assert 'properties.get("ActiveState"' in script
+    assert "datetime.now(timezone.utc)" in script
+    assert "does **not** start an HTTP server" in docs
+    assert "curl" not in docs
+
+
+def test_health_check_reports_state_and_preserves_failure_exit_code(
+    tmp_path: Path,
+) -> None:
+    _run_init(tmp_path, "--platform", "linux", "--enable-health-check")
+    health_check = tmp_path / "health-check.py"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text(
+        "#!/bin/sh\nprintf 'LoadState=loaded\\nActiveState=inactive\\n'\nexit 0\n"
+    )
+    systemctl.chmod(0o755)
+    env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+
+    proc = subprocess.run(
+        [str(health_check)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout) | {
+        "load_state": "loaded",
+        "active_state": "inactive",
+        "status": "unhealthy",
+    } == json.loads(proc.stdout)
+
+
+def test_health_check_error_uses_stable_json_schema(tmp_path: Path) -> None:
+    _run_init(tmp_path, "--platform", "linux", "--enable-health-check")
+    health_check = tmp_path / "health-check.py"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    env = {**os.environ, "PATH": str(fake_bin)}
+
+    proc = subprocess.run(
+        ["/usr/bin/python3", str(health_check)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert proc.returncode == 1
+    payload = json.loads(proc.stdout)
+    assert payload["load_state"] == "unknown"
+    assert payload["active_state"] == "unknown"
+    assert payload["status"] == "error"
+    assert "error" in payload
+
+
+def test_health_check_does_not_chmod_skipped_file(tmp_path: Path) -> None:
+    health_check = tmp_path / "health-check.py"
+    health_check.write_text("user-owned\n")
+    health_check.chmod(0o600)
+
+    _run_init(tmp_path, "--platform", "linux", "--enable-health-check")
+
+    assert health_check.read_text() == "user-owned\n"
+    assert health_check.stat().st_mode & 0o777 == 0o600
+
+
+def test_health_check_rejects_macos(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "testagent",
+            "--work-dir",
+            str(tmp_path),
+            "--output-dir",
+            str(tmp_path / "launchd"),
+            "--platform",
+            "macos",
+            "--enable-health-check",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "supports Linux systemd services only" in result.output
+    assert not tmp_path.exists() or not any(tmp_path.iterdir())
 
 
 def test_agents_md_references_template_and_multiple_service_managers(
@@ -548,6 +660,26 @@ def test_macos_autodetect_emits_warning(tmp_path: Path) -> None:
     assert "launchd plist" in result.output.lower(), (
         "expected the launchd-plist note in output (fires only when output_dir is None)"
     )
+
+
+def test_explicit_macos_platform_does_not_claim_autodetection(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--name",
+            "agent",
+            "--work-dir",
+            str(tmp_path),
+            "--platform",
+            "macos",
+        ],
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "macOS detected" not in result.output
 
 
 def test_help_references_launchd_and_full_template() -> None:
