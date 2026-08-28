@@ -98,6 +98,88 @@ class _DynamicHelpCommand(click.Command):
 
     _help_expanded = False
 
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        """Keep arguments after a mirrored utility command opaque to Click."""
+        # Build the set of option names that consume a following value token
+        # (non-flag options).  These must be skipped over when scanning for
+        # the first true positional so that option *values* are not mistaken
+        # for subcommands (e.g. `--model gpt-4` must not yield 'gpt-4').
+        value_opts: set[str] = set()
+        known_opts: set[str] = set()  # all known option names (flags + value-takers)
+        for param in self.params:
+            if isinstance(param, click.Option):
+                known_opts.update(param.opts)
+                if not param.is_flag and param.nargs != 0:
+                    value_opts.update(param.opts)
+
+        # Scan past leading option/value pairs to find the first positional.
+        skip_next = False
+        first_positional: str | None = None
+        for a in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if a == "--":
+                # '--' is the POSIX end-of-options sentinel: the user wants
+                # everything after it treated as literal prompts, not as a
+                # utility shortcut.  Signal main() to skip util dispatch.
+                ctx.meta["util_dispatch_suppressed"] = True
+                break
+            if a == "-":
+                # '-' is gptme's MULTIPROMPT_SEPARATOR, not an option prefix.
+                # Treat as a positional; it is never a UTIL_SUBCOMMAND so the
+                # scan stops here without enabling the gptme-util forward path.
+                first_positional = a
+                break
+            if a.startswith("-"):
+                if a.startswith("--"):
+                    # Long option: --opt=val (inline) or --opt val (next token).
+                    opt_name = a.split("=")[0]
+                    if opt_name not in known_opts:
+                        # Unknown long option: with ignore_unknown_options=True,
+                        # Click treats it as a positional.  Mirror that here so
+                        # the scan doesn't skip past the real first positional.
+                        first_positional = a
+                        break
+                    if "=" not in a and opt_name in value_opts:
+                        skip_next = True
+                    continue
+                # Short option, possibly grouped (e.g. -vm where -m takes a value).
+                # Inspect flags from left to right, as Click does.  The remainder
+                # of the token becomes an attached value as soon as a value-taking
+                # option is found; otherwise every character must be a known flag.
+                chars = a[1:]
+                for idx, ch in enumerate(chars):
+                    opt_name = f"-{ch}"
+                    if opt_name not in known_opts:
+                        # With ignore_unknown_options=True, Click preserves an
+                        # unknown short option as a positional argument.  Stop
+                        # here rather than treating a later utility name as the
+                        # first positional (e.g. `-x chats list --help`).
+                        first_positional = a
+                        break
+                    if opt_name in value_opts:
+                        # No characters after the option means its value is the
+                        # next token.  Otherwise the remainder (including an '='
+                        # prefix) is the attached value.
+                        if idx == len(chars) - 1:
+                            skip_next = True
+                        break
+                if first_positional is not None:
+                    break
+                continue
+            first_positional = a
+            break
+
+        if first_positional is not None:
+            from .util import UTIL_SUBCOMMANDS
+
+            if first_positional in UTIL_SUBCOMMANDS:
+                # Otherwise eager or recognized top-level options such as --help
+                # are consumed before main() can forward them to gptme-util.
+                ctx.allow_interspersed_args = False
+        return super().parse_args(ctx, args)
+
     def _expand_dynamic_help(self) -> None:
         if self._help_expanded:
             return
@@ -778,10 +860,14 @@ def main(
 
     # gptme-util subcommand mirroring: `gptme chats [...]` → `gptme-util chats [...]`
     # Any top-level gptme-util subcommand can be invoked without typing 'gptme-util'.
+    # Suppressed when '--' was used (parse_args sets util_dispatch_suppressed).
     if prompts and not show_version:
         from .util import UTIL_SUBCOMMANDS  # cheap: just a sorted list constant
 
-        if prompts[0] in UTIL_SUBCOMMANDS:
+        _ctx = click.get_current_context()
+        if prompts[0] in UTIL_SUBCOMMANDS and not _ctx.meta.get(
+            "util_dispatch_suppressed", False
+        ):
             if util_exec := shutil.which("gptme-util"):
                 sys.exit(subprocess.call([util_exec, *prompts]))
             else:
@@ -794,7 +880,12 @@ def main(
 
     # Plugin dispatch: `gptme CMD [args...]` → `gptme-CMD [args...]` if installed
     # Enables extensibility: `gptme sessions` works if gptme-sessions is in PATH.
-    if prompts and not show_version:
+    # Suppressed after '--' for the same literal-prompt semantics as util dispatch.
+    if (
+        prompts
+        and not show_version
+        and not _ctx.meta.get("util_dispatch_suppressed", False)
+    ):
         plugin = f"gptme-{prompts[0]}"
         if plugin_path := shutil.which(plugin):
             sys.exit(subprocess.call([plugin_path, *prompts[1:]]))

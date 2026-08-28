@@ -129,6 +129,20 @@ class TestPluginDispatch:
         assert result.exit_code == 0
         mock_call.assert_not_called()
 
+    def test_plugin_dispatch_suppressed_after_double_dash(self, runner: CliRunner):
+        """gptme -- sessions treats sessions as a prompt, not a plugin."""
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-sessions",
+            ),
+            patch("gptme.cli.main.subprocess.call") as mock_call,
+            patch.object(importlib.import_module("gptme.chat"), "chat"),
+        ):
+            result = runner.invoke(main, ["--", "sessions"])
+        assert result.exit_code == 0
+        mock_call.assert_not_called()
+
     def test_help_mentions_plugin_dispatch(self, runner: CliRunner):
         """gptme --help mentions the plugin dispatch mechanism."""
         result = runner.invoke(main, ["--help"])
@@ -164,6 +178,145 @@ class TestUtilSubcommandMirroring:
         mock_call.assert_called_once_with(
             ["/usr/local/bin/gptme-util", "chats", "list"]
         )
+
+    def test_util_subcmd_forwards_nested_help(self, runner: CliRunner):
+        """gptme chats list --help shows the mirrored command's help."""
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-util",
+            ),
+            patch("gptme.cli.main.subprocess.call", return_value=0) as mock_call,
+        ):
+            result = runner.invoke(main, ["chats", "list", "--help"])
+        assert result.exit_code == 0
+        mock_call.assert_called_once_with(
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+        )
+
+    def test_util_subcmd_forwards_nested_help_with_leading_flag(
+        self, runner: CliRunner
+    ):
+        """gptme --verbose chats list --help forwards --help to gptme-util."""
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-util",
+            ),
+            patch("gptme.cli.main.subprocess.call", return_value=0) as mock_call,
+        ):
+            result = runner.invoke(main, ["--verbose", "chats", "list", "--help"])
+        assert result.exit_code == 0
+        mock_call.assert_called_once_with(
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+        )
+
+    def test_util_subcmd_forwards_nested_help_with_leading_value_option(
+        self, runner: CliRunner
+    ):
+        """gptme --model gpt-4 chats list --help forwards --help to gptme-util.
+
+        The option value 'gpt-4' must not be mistaken for the first positional.
+        """
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-util",
+            ),
+            patch("gptme.cli.main.subprocess.call", return_value=0) as mock_call,
+        ):
+            result = runner.invoke(
+                main, ["--model", "gpt-4", "chats", "list", "--help"]
+            )
+        assert result.exit_code == 0
+        mock_call.assert_called_once_with(
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+        )
+
+    def test_util_subcmd_forwards_nested_help_with_grouped_short_option(
+        self, runner: CliRunner
+    ):
+        """gptme -vm gpt-4 chats list --help forwards --help to gptme-util.
+
+        '-v' is a flag and '-m' is a value option; the grouped token '-vm' must
+        cause the scanner to skip the next token ('gpt-4') so that 'chats' is
+        found as the first positional.
+        """
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-util",
+            ),
+            patch("gptme.cli.main.subprocess.call", return_value=0) as mock_call,
+        ):
+            result = runner.invoke(main, ["-vm", "gpt-4", "chats", "list", "--help"])
+        assert result.exit_code == 0
+        mock_call.assert_called_once_with(
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+        )
+
+    def test_util_subcmd_forwards_nested_help_with_inline_value_short_option(
+        self, runner: CliRunner
+    ):
+        """gptme -mgpt-4 chats list --help forwards --help to gptme-util.
+
+        '-mgpt-4' is a short option with the value attached inline (no space).
+        The scanner must not skip the next token ('chats') — the value is already
+        embedded in the token, so 'chats' is the first true positional.
+        """
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-util",
+            ),
+            patch("gptme.cli.main.subprocess.call", return_value=0) as mock_call,
+        ):
+            result = runner.invoke(main, ["-mgpt-4", "chats", "list", "--help"])
+        assert result.exit_code == 0
+        mock_call.assert_called_once_with(
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+        )
+
+    def test_util_subcmd_after_double_dash_suppresses_dispatch(self, runner: CliRunner):
+        """gptme -- chats list sets util_dispatch_suppressed in ctx.meta.
+
+        '--' is the POSIX end-of-options sentinel: everything after it is treated
+        as a literal prompt, not as a utility shortcut (same intuition as '-' for
+        multi-prompt chaining).  parse_args sets util_dispatch_suppressed so
+        main() skips the UTIL_SUBCOMMANDS check.
+
+        We test parse_args via make_context (which runs parse_args but NOT the
+        main() body) to avoid triggering LLM initialisation in the test.
+        """
+        with patch("gptme.cli.main.shutil.which", return_value=None):
+            ctx = main.make_context("gptme", ["--", "chats", "list"])
+        assert ctx.meta.get("util_dispatch_suppressed", False)
+
+    def test_util_subcmd_after_unknown_option_does_not_dispatch(
+        self, runner: CliRunner
+    ):
+        """gptme --bogus chats list --help shows gptme help, not gptme-util.
+
+        With ignore_unknown_options=True, Click treats '--bogus' as a positional.
+        The scanner mirrors this: unknown long options stop the scan without
+        enabling util dispatch, so allow_interspersed_args stays True and
+        --help fires as an eager option showing gptme's top-level help.
+        """
+        with patch("gptme.cli.main.subprocess.call") as mock_call:
+            result = runner.invoke(main, ["--bogus", "chats", "list", "--help"])
+        assert "Usage:" in result.output
+        assert result.exit_code == 0
+        mock_call.assert_not_called()
+
+    def test_util_subcmd_after_unknown_short_option_does_not_dispatch(
+        self, runner: CliRunner
+    ):
+        """gptme -x chats list --help shows gptme help, not gptme-util."""
+        with patch("gptme.cli.main.subprocess.call") as mock_call:
+            result = runner.invoke(main, ["-x", "chats", "list", "--help"])
+        assert "Usage:" in result.output
+        assert result.exit_code == 0
+        mock_call.assert_not_called()
 
     def test_util_subcmd_skipped_for_version_flag(self, runner: CliRunner):
         """gptme --version chats does not trigger gptme-util dispatch."""
