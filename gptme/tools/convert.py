@@ -25,6 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
+from ..message import Message
+from .base import Parameter, ToolSpec
+
 logger = logging.getLogger(__name__)
 
 
@@ -162,6 +165,11 @@ class ConversionResult:
     def summary(self) -> str:
         if not self.success:
             return f"Conversion failed ({self.converter_used}): {self.error}"
+        if self.metadata.get("dry_run"):
+            return (
+                f"Dry-run: would convert via {self.converter_used} → "
+                f"{self.output_path} (no file written)"
+            )
         parts = [f"Converted via {self.converter_used} → {self.output_path}"]
         if self.lossy:
             parts.append("(lossy)")
@@ -793,6 +801,15 @@ def convert_file(
         )
 
     if dry_run:
+        # Match the concrete converters: a directory destination cannot succeed.
+        # Dry-run used to skip this check and report a possible conversion.
+        if dest.is_dir():
+            return ConversionResult(
+                success=False,
+                output_path=dest,
+                converter_used=conv.name,
+                error=f"Destination is an existing directory: {dest}",
+            )
         return ConversionResult(
             success=True,
             output_path=dest,
@@ -818,6 +835,103 @@ def convert_file(
             error=f"Could not create output directory {dest.parent}: {e}",
         )
     return conv.convert(src, dest, quality=quality, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Structured tool surface (auto-discovered ToolSpec)
+# ---------------------------------------------------------------------------
+
+
+def _execute_convert(
+    code: str | None,
+    args: list[str] | None,
+    kwargs: dict[str, str] | None,
+) -> Message:
+    """Execute a file conversion from a structured tool call.
+
+    Accepts keyword arguments ``input_path`` (required) and ``output_path``
+    (required; extension selects the target format). Optional ``quality``
+    (low/medium/high) and ``dry_run``.
+    """
+    kwargs = kwargs or {}
+    src_raw = kwargs.get("input_path")
+    dest_raw = kwargs.get("output_path")
+    if not src_raw or not dest_raw:
+        return Message(
+            "system",
+            "Error: both `input_path` and `output_path` are required.",
+        )
+
+    src = Path(src_raw)
+    dest = Path(dest_raw)
+    if not src.exists():
+        return Message("system", f"Error: input file not found: {src}")
+
+    quality = kwargs.get("quality", "medium")
+    # `dry_run` may arrive as a JSON boolean or a string; normalize defensively.
+    dry_run = str(kwargs.get("dry_run", "false")).strip().lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    try:
+        result = convert_file(src, dest, quality=quality, dry_run=dry_run)
+    except OSError as exc:
+        return Message("system", f"Conversion error: {exc}")
+    return Message("system", result.summary())
+
+
+tool = ToolSpec(
+    name="convert",
+    desc="Convert a file to another format using offline system tools",
+    instructions=(
+        "Use this tool when a workflow needs a file in a different format: "
+        "render a PDF to images for visual inspection, extract text from a "
+        "document for summarization, make a video thumbnail, or reformat an "
+        "image. It runs fully offline, falling back gracefully when a specific "
+        "converter is unavailable.\n\n"
+        "Choose the destination format by the `output_path` extension (e.g. "
+        "`.png`, `.jpg`, `.txt`, `.md`). Set `quality` to low/medium/high "
+        "when the conversion supports it, and pass `dry_run` = true to see "
+        "the converter plan first. For a new conversion, dry-run before "
+        "executing to confirm the chain is available."
+    ),
+    execute=_execute_convert,
+    parameters=[
+        Parameter(
+            name="input_path",
+            type="string",
+            description="Path to the source file to convert",
+            required=True,
+        ),
+        Parameter(
+            name="output_path",
+            type="string",
+            description=(
+                "Path of the output file; its extension selects the target "
+                "format (e.g. .png, .jpg, .txt, .md)"
+            ),
+            required=True,
+        ),
+        Parameter(
+            name="quality",
+            type="string",
+            enum=["low", "medium", "high"],
+            description="Conversion quality (default: medium)",
+        ),
+        Parameter(
+            name="dry_run",
+            type="string",
+            # Keep in sync with the truthy set in `_execute_convert`.
+            enum=["true", "false", "1", "yes"],
+            description=(
+                "If true, show the converter plan without executing. "
+                "Accepts true/false/1/yes (JSON booleans also work)."
+            ),
+        ),
+    ],
+)
 
 
 # ---------------------------------------------------------------------------

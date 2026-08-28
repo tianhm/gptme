@@ -13,6 +13,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+from gptme.tools.base import ToolSpec
 from gptme.tools.convert import (
     ConversionResult,
     DocumentToTextConverter,
@@ -557,6 +558,29 @@ def test_convert_file_dry_run(avail_all, tmp_path):
     assert result.success
     assert result.metadata.get("dry_run") is True
     assert not dest.exists()  # dry_run should NOT create the file
+    summary = result.summary()
+    assert "Dry-run" in summary
+    assert "Converted via" not in summary
+    assert "no file written" in summary
+
+
+def test_convert_file_dry_run_rejects_directory_destination(avail_all, tmp_path):
+    """Dry-run must fail when dest is an existing directory, matching real conversion."""
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"%PDF-1.4")
+    dest = tmp_path / "out.png"
+    dest.mkdir()
+    with (
+        patch("gptme.tools.convert.get_availability", return_value=avail_all),
+        patch("gptme.tools.convert._detect_mime", return_value="application/pdf"),
+    ):
+        result = convert_file(src, dest, dry_run=True)
+    assert not result.success
+    assert result.error is not None
+    assert "directory" in result.error.lower()
+    summary = result.summary()
+    assert "failed" in summary.lower()
+    assert "Dry-run:" not in summary
 
 
 def test_convert_file_no_converter(avail_none, tmp_path):
@@ -601,6 +625,21 @@ def test_conversion_result_summary_failure():
     summary = result.summary()
     assert "failed" in summary.lower()
     assert "Exit code 1" in summary
+
+
+def test_conversion_result_summary_dry_run():
+    """Dry-run summaries must not claim a conversion completed."""
+    result = ConversionResult(
+        success=True,
+        output_path=Path("/tmp/out.png"),
+        converter_used="pdftoppm",
+        metadata={"dry_run": True, "src_mime": "application/pdf", "dest_ext": "png"},
+    )
+    summary = result.summary()
+    assert summary.startswith("Dry-run:")
+    assert "pdftoppm" in summary
+    assert "no file written" in summary
+    assert "Converted via" not in summary
 
 
 def test_convert_file_same_path_rejected(avail_all, tmp_path):
@@ -994,3 +1033,180 @@ def test_doc_to_text_specific_error_when_only_python_docx_installed(tmp_path):
     assert "libreoffice" in result.error.lower() or "LibreOffice" in result.error
     # Must NOT say the generic "nothing available" message — python-docx IS there
     assert "No document" not in result.error
+
+
+# ---------------------------------------------------------------------------
+# Structured tool surface (ToolSpec)
+# ---------------------------------------------------------------------------
+
+
+def test_convert_tool_exported_and_discoverable():
+    """The convert module exposes an auto-discoverable ToolSpec named `convert`."""
+    from gptme.tools import convert
+    from gptme.tools.base import _iter_tool_specs
+
+    assert isinstance(convert.tool, ToolSpec)
+    assert convert.tool.name == "convert"
+    # Auto-discovery collects it from the module.
+    specs = list(_iter_tool_specs(convert))
+    assert any(s.name == "convert" for s in specs)
+
+
+def test_convert_tool_parameters():
+    """The convert tool exposes input_path/output_path/quality/dry_run parameters."""
+    from gptme.tools import convert
+
+    names = [p.name for p in convert.tool.parameters]
+    assert names == ["input_path", "output_path", "quality", "dry_run"]
+    by_name = {p.name: p for p in convert.tool.parameters}
+    assert by_name["input_path"].required
+    assert by_name["output_path"].required
+    assert by_name["quality"].enum == ["low", "medium", "high"]
+    assert by_name["dry_run"].enum == ["true", "false", "1", "yes"]
+
+
+def test_execute_convert_success(tmp_path):
+    """_execute_convert forwards args to convert_file and returns a summary Message."""
+    from gptme.tools import convert
+
+    src = tmp_path / "in.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    dest = tmp_path / "out.jpg"
+
+    with patch(
+        "gptme.tools.convert.convert_file",
+        return_value=ConversionResult(
+            success=True,
+            output_path=dest,
+            converter_used="image",
+            lossy=True,
+        ),
+    ) as mock_convert:
+        result = convert._execute_convert(
+            None, None, {"input_path": str(src), "output_path": str(dest)}
+        )
+
+    assert result.role == "system"
+    assert "Converted" in result.content
+    assert "out.jpg" in result.content
+    assert "lossy" in result.content
+    mock_convert.assert_called_once()
+    call_args, call_kwargs = mock_convert.call_args
+    assert str(call_args[0]) == str(src)
+    assert str(call_args[1]) == str(dest)
+    assert call_kwargs.get("quality") == "medium"
+    assert call_kwargs.get("dry_run") is False
+
+
+def test_execute_convert_missing_args():
+    """_execute_convert reports an error when required args are missing."""
+    from gptme.tools import convert
+
+    result = convert._execute_convert(None, None, {"input_path": "/tmp/x.png"})
+    assert result.role == "system"
+    assert "Error" in result.content
+
+
+def test_execute_convert_missing_input():
+    """_execute_convert reports a clear error for a nonexistent input."""
+    from gptme.tools import convert
+
+    result = convert._execute_convert(
+        None,
+        None,
+        {"input_path": "/nonexistent/nope.png", "output_path": "/tmp/out.png"},
+    )
+    assert result.role == "system"
+    assert "input file not found" in result.content
+
+
+def test_execute_convert_dry_run_boolean(tmp_path):
+    """_execute_convert tolerates `dry_run` arriving as a JSON boolean (True)."""
+    from typing import cast
+
+    from gptme.tools import convert
+
+    src = tmp_path / "in.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    dest = tmp_path / "out.jpg"
+
+    # Provider-native calls can deliver a real boolean despite the str annotation.
+    kwargs = cast(
+        "dict[str, str]",
+        {
+            "input_path": str(src),
+            "output_path": str(dest),
+            "dry_run": True,
+        },
+    )
+
+    with patch(
+        "gptme.tools.convert.convert_file",
+        return_value=ConversionResult(
+            success=True,
+            output_path=dest,
+            converter_used="image",
+            metadata={"dry_run": True},
+        ),
+    ) as mock_convert:
+        result = convert._execute_convert(None, None, kwargs)
+
+    assert mock_convert.call_args.kwargs["dry_run"] is True
+    assert "Dry-run" in result.content
+    assert "Converted via" not in result.content
+    assert "no file written" in result.content
+
+
+@pytest.mark.parametrize("value", ["true", "1", "yes", "TRUE", " Yes ", " true "])
+def test_execute_convert_dry_run_truthy_values(tmp_path, value):
+    """Schema truthy values (and padded/cased variants) must dry-run, not convert."""
+    from gptme.tools import convert
+
+    src = tmp_path / "in.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    dest = tmp_path / "out.jpg"
+
+    with patch(
+        "gptme.tools.convert.convert_file",
+        return_value=ConversionResult(
+            success=True,
+            output_path=dest,
+            converter_used="image",
+            metadata={"dry_run": True},
+        ),
+    ) as mock_convert:
+        result = convert._execute_convert(
+            None,
+            None,
+            {
+                "input_path": str(src),
+                "output_path": str(dest),
+                "dry_run": value,
+            },
+        )
+
+    assert mock_convert.call_args.kwargs["dry_run"] is True
+    assert "Dry-run" in result.content
+    assert "Converted via" not in result.content
+
+
+def test_execute_convert_reports_os_error(tmp_path):
+    """OS failures from converter execution are returned as tool output."""
+    from gptme.tools import convert
+
+    src = tmp_path / "in.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n")
+    dest = tmp_path / "out.jpg"
+
+    with patch(
+        "gptme.tools.convert.convert_file",
+        side_effect=PermissionError("output directory is read-only"),
+    ):
+        result = convert._execute_convert(
+            None,
+            None,
+            {"input_path": str(src), "output_path": str(dest)},
+        )
+
+    assert result.role == "system"
+    assert result.content == "Conversion error: output directory is read-only"
