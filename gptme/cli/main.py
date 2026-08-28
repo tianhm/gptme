@@ -1101,8 +1101,9 @@ def main(
     from ..chat import chat
     from ..config import ensure_workspace_dir, get_config, setup_config_from_cli
     from ..init import init_logging
-    from ..llm import get_provider_from_model
+    from ..llm import get_provider_from_model, is_custom_provider
     from ..llm import reply as llm_reply
+    from ..llm.models import PROVIDERS, get_model
     from ..message import Message
     from ..profiles import get_profile
     from ..prompts import (
@@ -1433,11 +1434,34 @@ def main(
         sys.exit(1)
 
     # Validate model early to fail fast before the expensive get_prompt() call.
-    # Only check models with a provider/ prefix; bare provider names (e.g. "anthropic")
-    # and model aliases (e.g. "gpt-4o") are left for init_model() to resolve.
-    if config.chat.model and "/" in config.chat.model:
+    # Slash-prefixed names are always checked via provider lookup — that was the
+    # original behavior, including when resuming (`gptme --resume --model
+    # badprovider/x` must still be a UsageError, not a later generic crash).
+    # Bare provider names (e.g. "anthropic") and resolvable aliases (e.g.
+    # "gpt-4o") still pass through to init_model(); unresolvable bare names used
+    # to skip this block and pay get_prompt() (workspace context_cmd, 10s+)
+    # before init_model() rejected them. Saved aliases on existing conversations
+    # may outlive the current registry, so skip the new bare-name check unless
+    # --model was explicitly passed on the command line.
+    model_from_cli = ctx.get_parameter_source("model") == ParameterSource.COMMANDLINE
+    if config.chat.model:
         try:
-            get_provider_from_model(config.chat.model)
+            if "/" in config.chat.model:
+                get_provider_from_model(config.chat.model)
+            elif (
+                (not is_existing_conversation or model_from_cli)
+                and config.chat.model not in PROVIDERS
+                and not is_custom_provider(config.chat.model)
+            ):
+                resolved = get_model(config.chat.model)
+                if resolved.provider == "unknown":
+                    raise ValueError(
+                        f"Unknown model {config.chat.model!r}. Use 'provider/model' "
+                        "with a known provider "
+                        f"(e.g. 'openai/{config.chat.model}'), or configure a "
+                        "custom provider. Run 'gptme-util models list' to see "
+                        "available models."
+                    )
         except ValueError as e:
             _cleanup_aborted_new_logdir(logdir, preexisting=logdir_preexisting)
             raise click.UsageError(f"--model: {e}") from e
