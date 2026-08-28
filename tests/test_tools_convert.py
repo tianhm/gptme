@@ -8,6 +8,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 from gptme.tools.convert import (
     ConversionResult,
     DocumentToTextConverter,
@@ -22,6 +27,21 @@ from gptme.tools.convert import (
     convert_file,
     find_converter,
 )
+
+# ---------------------------------------------------------------------------
+# Packaging
+# ---------------------------------------------------------------------------
+
+
+def test_console_script_is_registered():
+    """The installed package must expose the conversion CLI."""
+    pyproject = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    )
+    assert pyproject["project"]["scripts"]["gptme-convert"] == (
+        "gptme.tools.convert:main"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -667,6 +687,8 @@ def test_convert_file_no_converter_error_message_is_correct(avail_none, tmp_path
         result = convert_file(src, dest)
     assert not result.success
     assert result.error is not None
+    # Must name the installed CLI binary, not the python -m invocation
+    assert "gptme-convert" in result.error
     # Must not reference the non-existent --check-tools flag
     assert "--check-tools" not in result.error
     assert "check-tools" in result.error
