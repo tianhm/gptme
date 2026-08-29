@@ -737,3 +737,161 @@ def test_prompt_workspace_path_included_without_runtime_context(tmp_path):
     assert str(workspace.resolve()) in combined, (
         "Path must be present when include_path=True even if include_runtime_context=False"
     )
+
+
+def test_profile_system_prompt_before_cache_boundary():
+    """Test that profile system prompts are included before cache boundary content.
+
+    Phase 3.2 verification: Profiles are placed in static (cacheable) sections,
+    not dynamic sections, so they remain consistent across session starts.
+
+    The boundary is only inserted when dynamic_sections exist. We mock
+    prompt_chat_history to provide a non-empty dynamic section so the boundary
+    appears, then verify the profile precedes it.
+    """
+    from unittest.mock import patch
+
+    from gptme.message import Message
+    from gptme.profiles import Profile
+
+    # Create a test profile
+    profile = Profile(
+        name="test_profile",
+        description="Test profile",
+        system_prompt="# Test Profile Instructions\nBe creative and concise.",
+    )
+
+    # Inject a fake dynamic section (chat history) so the boundary is inserted.
+    # Without dynamic_sections, get_prompt() omits the boundary entirely.
+    fake_history = [Message("user", "Dynamic history message to trigger boundary")]
+    with patch("gptme.prompts.prompt_chat_history", return_value=fake_history):
+        prompt_msgs = get_prompt(
+            get_tools(),
+            prompt="full",
+            profile=profile,
+        )
+
+    # Find the profile in the combined content
+    combined_content = "\n\n".join(msg.content for msg in prompt_msgs)
+
+    # Profile should be present
+    assert "# Agent Profile: test_profile" in combined_content, (
+        "Profile section should be present in prompt"
+    )
+    assert "# Test Profile Instructions" in combined_content, (
+        "Profile system prompt should be included"
+    )
+
+    # Profile must appear BEFORE the cache boundary — the whole point of the Phase 3.1 fix
+    profile_idx = combined_content.find("# Agent Profile: test_profile")
+    boundary_idx = combined_content.find("# System Prompt Cache Boundary")
+
+    assert profile_idx >= 0, "Profile should be present in prompt"
+    assert boundary_idx >= 0, (
+        "Cache boundary marker should be present (triggered by injected dynamic section)"
+    )
+    assert profile_idx < boundary_idx, (
+        f"Profile (at index {profile_idx}) must appear before cache boundary "
+        f"(at index {boundary_idx}), not after it"
+    )
+
+
+def test_unchanged_history_produces_identical_provider_request(monkeypatch):
+    """Phase 3.2: Verify profile-enabled sessions produce identical prompts.
+
+    Pin every dynamic provider used by this prompt so the test exercises prompt
+    assembly without reading mutable clock or filesystem state.
+    """
+    from gptme.message import Message
+    from gptme.profiles import Profile, ProfileBehavior
+
+    monkeypatch.setattr(
+        "gptme.prompts.prompt_systeminfo",
+        lambda workspace=None, tool_format="markdown": [
+            Message("system", "## System Information\n\nFixed test environment")
+        ],
+    )
+    monkeypatch.setattr(
+        "gptme.prompts.prompt_timeinfo",
+        lambda tool_format="markdown": [
+            Message("system", "## Current Date\n\n2026-01-01")
+        ],
+    )
+    monkeypatch.setattr("gptme.prompts.prompt_chat_history", lambda: [])
+
+    # Create a test profile
+    profile = Profile(
+        name="verification_profile",
+        description="Cache consistency verification",
+        system_prompt="Profile instructions for verification.\nShould remain consistent.",
+        tools=None,
+        behavior=ProfileBehavior(),
+    )
+
+    # Get prompt with profile twice
+    first_run = get_prompt(
+        get_tools(),
+        prompt="full",
+        profile=profile,
+    )
+
+    second_run = get_prompt(
+        get_tools(),
+        prompt="full",
+        profile=profile,
+    )
+
+    # Messages should be identical (same role, content, etc.)
+    assert len(first_run) == len(second_run), (
+        f"Message count should be identical: {len(first_run)} vs {len(second_run)}"
+    )
+
+    # Check each message is byte-identical
+    for i, (msg1, msg2) in enumerate(zip(first_run, second_run)):
+        assert msg1.role == msg2.role, f"Message {i}: role mismatch"
+        assert msg1.content == msg2.content, f"Message {i}: content mismatch"
+
+    # Verify profile appears in both
+    content1 = "\n\n".join(msg.content for msg in first_run)
+    content2 = "\n\n".join(msg.content for msg in second_run)
+
+    assert "Profile instructions for verification" in content1
+    assert "Profile instructions for verification" in content2
+    assert content1 == content2, "Full prompt content should be identical across calls"
+
+
+def test_profile_system_prompt_included_in_stats():
+    """Test that profile system prompts are counted in prompt stats."""
+    from gptme.profiles import Profile
+
+    profile = Profile(
+        name="test_profile",
+        description="Test profile",
+        system_prompt="# Test Profile Instructions",
+    )
+
+    # Get stats without profile
+    stats_no_profile = get_prompt_stats(
+        get_tools(),
+        prompt="full",
+    )
+
+    # Get stats with profile
+    stats_with_profile = get_prompt_stats(
+        get_tools(),
+        prompt="full",
+        profile=profile,
+    )
+
+    # With profile should have more tokens
+    assert stats_with_profile.total_tokens > stats_no_profile.total_tokens, (
+        "Adding a profile should increase total tokens"
+    )
+
+    # Profile tokens should be in cacheable (before boundary)
+    cacheable_diff = (
+        stats_with_profile.cacheable_tokens - stats_no_profile.cacheable_tokens
+    )
+    assert cacheable_diff > 0, (
+        "Profile system prompt should be counted in cacheable_tokens"
+    )

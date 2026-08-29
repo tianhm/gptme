@@ -1478,6 +1478,18 @@ def main(
                 "the persisted system prompt is kept unchanged"
             )
         initial_msgs = []
+        # Re-inject profile system prompt on resume: the persisted log has no profile
+        # message when first created without a profile (or with an older version), so
+        # --agent-profile must still take effect even for existing conversations.
+        if selected_profile and selected_profile.system_prompt:
+            initial_msgs = [
+                Message(
+                    "system",
+                    f"# Agent Profile: {selected_profile.name}\n\n{selected_profile.system_prompt}",
+                    hide=True,
+                    pinned=True,
+                )
+            ]
     else:
         # Infer context mode: --context-include / --no-workspace both imply selective mode
         effective_context_mode: ContextMode | None = (
@@ -1505,15 +1517,8 @@ def main(
             context_mode=effective_context_mode,
             context_include=effective_context_include,
             initial_prompt=prompt_msgs[0].content if prompt_msgs else None,
+            profile=selected_profile,
         )
-
-    # Append profile system prompt if using a profile
-    if selected_profile and selected_profile.system_prompt:
-        profile_msg = Message(
-            "system",
-            f"# Agent Profile: {selected_profile.name}\n\n{selected_profile.system_prompt}",
-        )
-        initial_msgs.append(profile_msg)
 
     # register a handler for Ctrl-C
     set_interruptible()  # prepare, user should be able to Ctrl+C until user prompt ready
