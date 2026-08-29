@@ -16,8 +16,8 @@ from ...llm.models import get_default_model
 from ...message import Message, len_tokens
 from ..base import ToolSpec
 from .config import _get_keep_head
+from .context_provider import CompressionConfig, get_context_provider
 from .decision import should_auto_compact
-from .engine import auto_compact_log
 from .handlers import cmd_compact_handler
 from .resume import _resume_via_llm
 
@@ -117,13 +117,12 @@ def autocompact_hook(
 
         # Apply auto-compacting to get compacted messages
         try:
-            compacted_msgs = list(
-                auto_compact_log(
-                    messages,
-                    logdir=manager.logdir,
-                    keep_head=_get_keep_head(),
-                )
+            provider = get_context_provider("default")
+            config = CompressionConfig(
+                logdir=manager.logdir,
+                keep_head=_get_keep_head(),
             )
+            compacted_msgs = provider.compress(messages, config).messages
 
             # Calculate reduction stats
             m = get_default_model()
