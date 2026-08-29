@@ -65,6 +65,7 @@ from .shell_background import (
     execute_jobs_command,
     execute_kill_command,
     execute_output_command,
+    execute_wait_command,
     get_background_job,
 )
 from .shell_background import (
@@ -92,6 +93,52 @@ _is_windows = os.name == "nt"
 
 # ANSI escape sequence pattern for stripping terminal formatting
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _redirect_background_stdin(command: str) -> str:
+    """Redirect stdin before unquoted ``&`` operators in a shell command.
+
+    Appending ``< /dev/null`` to a command ending in ``&`` creates a separate
+    null command after the background operator. The background process keeps
+    the persistent shell's stdin and can consume subsequent tool commands. If
+    the asynchronous list has a trailing foreground command, redirect that
+    command as well.
+    """
+    import bashlex
+
+    try:
+        nodes = bashlex.parse(command)
+    except Exception:
+        # split_commands handles unsupported and invalid syntax separately.
+        # Avoid rewriting syntax we cannot classify confidently here.
+        return command
+
+    positions: list[int] = []
+
+    def _collect_operators(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                _collect_operators(item)
+            return
+        if not hasattr(value, "kind"):
+            return
+        position = getattr(value, "pos", None)
+        if (
+            getattr(value, "kind", None) == "operator"
+            and getattr(value, "op", None) == "&"
+            and isinstance(position, tuple)
+        ):
+            positions.append(position[0])
+        for child in vars(value).values():
+            _collect_operators(child)
+
+    _collect_operators(nodes)
+
+    for position in reversed(positions):
+        command = command[:position].rstrip() + " < /dev/null " + command[position:]
+    if positions and not command.rstrip().endswith("&"):
+        command += " < /dev/null"
+    return command
 
 
 def strip_ansi_codes(text: str) -> str:
@@ -159,19 +206,20 @@ These programs are available, among others:
 
 ### When to use the shell
 
-Use the shell when you need to inspect the workspace, search or examine files,
-check git state, or run existing commands and tests. Prefer the shell over
-answering from memory when the repo can tell you the answer directly.
+Use the shell to inspect the workspace, search files, check git state, or run
+existing commands and tests. Prefer the repo over answering from memory.
 
 ### Background Jobs
 
-For long-running commands (dev servers, builds, etc.), use background jobs:
-- `bg <command>` - Start command in background, returns job ID
-- `jobs` - List all background jobs with status
-- `output <id>` - Show accumulated output from a job
-- `kill <id>` - Terminate a background job
+For long-running commands (dev servers, builds):
+- `bg <command>` - start, returns job ID
+- `jobs` - list jobs
+- `output <id>` - accumulated output
+- `output <id> --new` - unread output only; poll while waiting for a log line
+- `wait <id> [timeout]` - wait for completion; timeout leaves the job running
+- `kill <id>` - terminate
 
-This prevents blocking on commands like `npm run dev` that run indefinitely.
+Avoids blocking on commands like `npm run dev` that run indefinitely.
 """.strip()
 
 instructions_format: dict[str, str] = {}
@@ -242,6 +290,7 @@ def examples(tool_format):
 > Use these commands to manage it:
 > - `jobs` - List all background jobs
 > - `output 1` - Show output from job #1
+> - `wait 1 60s` - Wait up to 60 seconds for job #1
 > - `kill 1` - Terminate job #1
 
 > User: check the server output
@@ -551,8 +600,12 @@ class ShellSession:
                     # Fallback to raw command if parsing fails
                     logger.warning(f"Failed to parse pipe in command '{command}': {e}")
             elif not has_stdin_redirect and "|" not in command_parts:
-                # No pipe and no stdin redirection - add /dev/null
-                command += " < /dev/null"
+                # Redirect background commands before ``&`` so they cannot
+                # consume future input sent to the persistent shell.
+                redirected = _redirect_background_stdin(command)
+                command = (
+                    redirected if redirected != command else command + " < /dev/null"
+                )
         except ValueError as e:
             logger.warning(f"Failed shlex parsing command, using raw command: {e}")
 
@@ -1872,6 +1925,15 @@ def execute_shell(
         # Show output from job: output <id>
         job_id_str = cmd_parts[1] if len(cmd_parts) > 1 else ""
         yield from execute_output_command(job_id_str)
+        return
+
+    if cmd_lower.startswith("wait "):
+        wait_parts = cmd_stripped.split()
+        if len(wait_parts) not in (2, 3):
+            yield Message("system", "Usage: `wait <job-id> [timeout]`")
+            return
+        timeout_str = wait_parts[2] if len(wait_parts) == 3 else None
+        yield from execute_wait_command(wait_parts[1], timeout_str)
         return
 
     if cmd_lower.startswith("kill ") and len(cmd_parts) == 2:

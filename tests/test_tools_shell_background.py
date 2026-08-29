@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gptme.tools import shell_background
 from gptme.tools.shell_background import (
     _MAX_BUFFER_SIZE,
     BackgroundJob,
@@ -27,6 +28,7 @@ from gptme.tools.shell_background import (
     execute_jobs_command,
     execute_kill_command,
     execute_output_command,
+    execute_wait_command,
     get_background_job,
     list_background_jobs,
     reset_background_jobs,
@@ -104,6 +106,16 @@ class TestBackgroundJobOutput:
         stdout, stderr = job.get_output()
         assert stdout == "hello world"
         assert stderr == "warn"
+
+    def test_get_output_incrementally(self):
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        job = BackgroundJob(id=1, command="echo hi", process=proc, start_time=0)
+        job.stdout_buffer = ["first"]
+        assert job.get_output(incremental=True) == ("first", "")
+        job.stdout_buffer.append(" second")
+        assert job.get_output(incremental=True) == (" second", "")
+        assert job.get_output(incremental=True) == ("", "")
 
     def test_append_to_buffer_within_limit(self):
         proc = MagicMock(spec=subprocess.Popen)
@@ -335,6 +347,19 @@ class TestCleanupFinishedJobs:
         assert get_background_job(job.id) is not None
         job.kill()
 
+    def test_keeps_finished_job_while_output_is_draining(self):
+        process = MagicMock(spec=subprocess.Popen)
+        process.poll.return_value = 0
+        job = BackgroundJob(id=1, command="true", process=process, start_time=0)
+        reader = MagicMock(spec=threading.Thread)
+        reader.is_alive.return_value = True
+        job._reader_thread = reader
+        shell_background._background_jobs[job.id] = job
+
+        cleanup_finished_jobs()
+
+        assert get_background_job(job.id) is job
+
 
 class TestResetBackgroundJobs:
     """Test reset_background_jobs."""
@@ -487,6 +512,19 @@ class TestExecuteOutputCommand:
         assert "No output yet" in msgs[0].content
         job.kill()
 
+    def test_shows_only_new_output(self):
+        job = start_background_job("sleep 10")
+        with job._buffer_lock:
+            job.stdout_buffer = ["first"]
+        first = _collect(execute_output_command(f"{job.id} --new"))[0].content
+        with job._buffer_lock:
+            job.stdout_buffer.append(" second")
+        second = _collect(execute_output_command(f"{job.id} --new"))[0].content
+        assert "first" in first
+        assert "first" not in second
+        assert "second" in second
+        job.kill()
+
     def test_truncates_long_stdout(self):
         job = start_background_job("echo hello_from_bg")
         job.process.wait(timeout=5)
@@ -508,6 +546,46 @@ class TestExecuteOutputCommand:
         msgs = _collect(execute_output_command(str(job.id)))
         content = msgs[0].content
         assert "truncated" in content
+
+
+class TestExecuteWaitCommand:
+    """Test execute_wait_command."""
+
+    def test_waits_for_job_and_returns_output(self):
+        job = start_background_job("sleep 0.1 && echo done")
+        content = _collect(execute_wait_command(str(job.id), "2s"))[0].content
+        assert "Finished" in content
+        assert "done" in content
+
+    def test_timeout_leaves_job_running(self):
+        job = start_background_job("sleep 10")
+        content = _collect(execute_wait_command(str(job.id), "0.01s"))[0].content
+        assert "still running" in content
+        assert job.is_running()
+        job.kill()
+
+    def test_rejects_invalid_timeout(self):
+        job = start_background_job("sleep 10")
+        content = _collect(execute_wait_command(str(job.id), "later"))[0].content
+        assert "Invalid timeout" in content
+        job.kill()
+
+    def test_reports_when_finished_job_output_is_still_draining(self):
+        process = MagicMock(spec=subprocess.Popen)
+        process.poll.return_value = 0
+        process.returncode = 0
+        job = BackgroundJob(id=1, command="true", process=process, start_time=0)
+        reader = MagicMock(spec=threading.Thread)
+        reader.is_alive.return_value = True
+        job._reader_thread = reader
+        shell_background._background_jobs[job.id] = job
+
+        content = _collect(execute_wait_command(str(job.id), "2s"))[0].content
+
+        reader.join.assert_called_once_with(timeout=1.0)
+        assert "output still draining" in content
+        assert f"wait {job.id}" in content
+        assert f"output {job.id} --new" in content
 
 
 class TestExecuteKillCommand:
