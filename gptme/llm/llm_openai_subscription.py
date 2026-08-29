@@ -46,7 +46,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlparse
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import requests
 
@@ -452,6 +452,24 @@ def get_auth(timeout: float | tuple[float, float] = 30) -> SubscriptionAuth:
     )
 
 
+def _codex_model_and_effort(
+    model: str, reasoning_level: str | None = None
+) -> tuple[str, str]:
+    """Normalize a gptme model string to Codex backend model + effort.
+
+    ``gpt-5.6-sol`` and ``gpt-5.6-sol:medium`` both become
+    ``("gpt-5.6-sol", "medium")``. An explicit suffix (``:high``) wins over
+    the default. Used by both the request body and the routing ``session_id``
+    so equivalent spellings keep cache affinity.
+    """
+    base_model = model.split(":")[0] if ":" in model else model
+    if ":" in model:
+        reasoning_level = model.split(":")[1]
+    if reasoning_level is None:
+        reasoning_level = "medium"
+    return base_model, reasoning_level
+
+
 def _transform_to_codex_request(
     input_items: list[dict[str, Any]],
     model: str,
@@ -462,12 +480,7 @@ def _transform_to_codex_request(
     max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Build a Responses API request body from shared Responses helpers."""
-    base_model = model.split(":")[0] if ":" in model else model
-    if ":" in model:
-        reasoning_level = model.split(":")[1]
-
-    if reasoning_level is None:
-        reasoning_level = "medium"
+    base_model, reasoning_level = _codex_model_and_effort(model, reasoning_level)
 
     body: dict[str, Any] = {
         "model": base_model,
@@ -500,6 +513,40 @@ def _parse_sse_response(line: bytes | str) -> dict[str, Any] | None:
         return json.loads(data)
     except json.JSONDecodeError:
         return None
+
+
+def _conversation_id_for_codex() -> str | None:
+    """Resolve the active conversation id for Codex cache routing.
+
+    Server sessions set ``current_conversation_id``. CLI ``chat()`` sets the
+    telemetry conversation context from ``logdir.name``. Either is stable
+    across turns of one conversation.
+    """
+    from ..hooks.server_confirm import current_conversation_id
+    from ..telemetry import get_conversation_context
+
+    conv_id = current_conversation_id.get()
+    if conv_id:
+        return conv_id
+    conv_id, _ = get_conversation_context()
+    return conv_id
+
+
+def _codex_session_id(model: str) -> str:
+    """Conversation-stable ``session_id`` header for the Codex backend.
+
+    A per-request UUID is a pod-routing hint and forces cold-cache pricing
+    (OnlyTerp gotcha 9b). Hash conversation id with the *normalized* Codex
+    request identity (base model + effort) so a model switch does not reuse
+    another model's routing key, while equivalent spellings
+    (``gpt-5.6-sol`` vs ``gpt-5.6-sol:medium``) keep affinity. Fall back to
+    uuid4 when no conversation context exists (one-shot / isolated tests).
+    """
+    conv_id = _conversation_id_for_codex()
+    if not conv_id:
+        return str(uuid4())
+    base_model, effort = _codex_model_and_effort(model)
+    return str(uuid5(NAMESPACE_URL, f"gptme:codex:{conv_id}:{base_model}:{effort}"))
 
 
 def stream(
@@ -535,7 +582,7 @@ def stream(
         "OpenAI-Beta": "responses=experimental",
         "chatgpt-account-id": auth.account_id,
         "originator": "gptme",
-        "session_id": str(uuid4()),
+        "session_id": _codex_session_id(model),
     }
 
     # Timeout is (connect, read). With stream=True the read timeout applies
