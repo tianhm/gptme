@@ -1189,8 +1189,17 @@ def api_steer_external_session(external_session_id: str):
     Returns 422 if the session does not support steering, 501 if the server-side
     steer implementation (gptme-sessions steer) is not available.
     """
-    body = request.get_json(silent=True) or {}
-    message = (body.get("message") or "").strip()
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    elif not isinstance(body, dict):
+        return flask.jsonify({"error": "Request body must be a JSON object"}), 400
+    raw_message = body.get("message")
+    if raw_message is None:
+        return flask.jsonify({"error": "message is required"}), 400
+    if not isinstance(raw_message, str):
+        return flask.jsonify({"error": "message must be a string"}), 400
+    message = raw_message.strip()
     if not message:
         return flask.jsonify({"error": "message is required"}), 400
 

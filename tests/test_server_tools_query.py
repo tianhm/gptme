@@ -253,3 +253,28 @@ def test_query_invalid_regex_pattern_returns_400(client: FlaskClient):
     data = resp.get_json()
     assert "error" in data
     assert "Invalid regex" in data["error"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [[1, 2, 3], [], "just-a-string", "", 42, 0, True, False],
+)
+def test_query_non_dict_body_returns_400(client: FlaskClient, body):
+    """A non-dict JSON body must 400, not 500.
+
+    Regression: ``ToolQueryRequest(**body)`` raised ``TypeError`` on a
+    non-mapping body, which escaped the ``ValidationError`` handler and
+    surfaced as a Flask 500. A follow-up (``or {}`` before the type
+    check) also let falsy non-dicts (``[]``, ``""``, ``0``, ``false``)
+    through as an empty object.
+    """
+    resp = client.open(
+        "/api/v2/tools",
+        method="QUERY",
+        content_type="application/json",
+        data=json.dumps(body),
+    )
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
+    assert data["error"] == "Request body must be a JSON object"
