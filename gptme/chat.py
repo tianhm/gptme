@@ -10,6 +10,7 @@ from .config import ChatConfig, get_config, require_workspace_exists
 from .constants import (
     DECLINED_CONTENT,
     INTERRUPT_CONTENT,
+    LLM_REQUEST_FAILED_PREFIX,
     MAX_MESSAGE_LENGTH,
     MAX_PROMPT_QUEUE_SIZE,
 )
@@ -18,7 +19,7 @@ from .constants import (
 )
 from .hooks import HookType, trigger_hook
 from .init import init
-from .llm import reply
+from .llm import is_provider_error, reply
 from .llm.models import get_default_model, get_model
 from .logmanager import Log, LogManager, prepare_messages
 from .message import (
@@ -363,6 +364,23 @@ def _run_chat_loop(
             # Clear any remaining prompts to avoid confusion
             prompt_queue.clear()
             continue
+        except Exception as e:
+            # A failing provider call (rate limit, upstream outage, network
+            # error) must not kill an interactive session: report it and hand
+            # control back to the user, who can retry or switch model.
+            # Only errors tagged at the provider call inside `reply()` qualify
+            # — tool/hook httpx or SDK failures must not be swallowed.
+            # Non-interactive runs still fail loudly so the exit code carries
+            # the error class. See https://github.com/gptme/gptme/issues/3668
+            if not interactive or not is_provider_error(e):
+                raise
+            logger.error("%s %s", LLM_REQUEST_FAILED_PREFIX, e)
+            if not is_output_json() and not is_output_quiet():
+                console.log(f"[red]{LLM_REQUEST_FAILED_PREFIX}[/red] {e}")
+            manager.append(Message("system", f"{LLM_REQUEST_FAILED_PREFIX} {e}"))
+            # Drop queued prompts — they were meant for the failed turn.
+            prompt_queue.clear()
+            continue
 
     # Trigger session end hooks when exiting normally
     if session_end_msgs := trigger_hook(
@@ -517,26 +535,37 @@ def _should_prompt_for_input(log: Log) -> bool:
     """
     last_msg = log[-1] if log else None
 
-    # Check if there's an interrupt or decline message after the last assistant message
-    # This handles cases where hooks (like cost_awareness) add messages after the interrupt/decline
-    has_recent_interrupt_or_decline = False
+    # Check if there's an interrupt, decline, or provider-error message after
+    # the last assistant *and* last user message. These mean "hand control
+    # back to the user" rather than auto-generating. A newer user turn
+    # supersedes the marker (crash recovery / queued follow-up). Hooks
+    # (like cost_awareness) may append system messages after the marker, so
+    # skip those — but stop at user or assistant.
+    has_recent_return_to_prompt = False
     for msg in reversed(log):
-        if msg.role == "assistant":
+        if msg.role in ("assistant", "user"):
             break
-        if msg.content in (INTERRUPT_CONTENT, DECLINED_CONTENT):
-            has_recent_interrupt_or_decline = True
+        if (
+            msg.role == "system"
+            and not msg.call_id
+            and (
+                msg.content in (INTERRUPT_CONTENT, DECLINED_CONTENT)
+                or msg.content.startswith(LLM_REQUEST_FAILED_PREFIX)
+            )
+        ):
+            has_recent_return_to_prompt = True
             break
 
     # Ask for input when:
     # - No messages at all
     # - Last message was from assistant (normal flow)
-    # - There was an interrupt or decline after the last assistant message
+    # - There was an interrupt, decline, or provider error after the last assistant
     # - Last message was pinned
     # - No user messages exist in the entire log
     return (
         not last_msg
         or last_msg.role == "assistant"
-        or has_recent_interrupt_or_decline
+        or has_recent_return_to_prompt
         or last_msg.pinned
         or not any(role == "user" for role in [m.role for m in log])
     )
@@ -613,7 +642,8 @@ def step(
         if tool_format == "tool":
             tools = [t for t in get_tools() if t.is_runnable]
 
-        # generate response
+        # generate response — `reply()` tags only the provider call, after
+        # GENERATION_PRE hooks, so tool/hook failures still propagate.
         with terminal_state_title("🤔 generating"):
             msg_response = reply(
                 msgs,
@@ -625,8 +655,8 @@ def step(
                 on_token=on_token,
                 on_thinking=on_thinking,
             )
-            if get_config().get_env_bool("GPTME_COSTS"):
-                log_costs(msgs + [msg_response])
+        if get_config().get_env_bool("GPTME_COSTS"):
+            log_costs(msgs + [msg_response])
 
         # Trigger generation post hooks (e.g., TTS)
         if generation_post_msgs := trigger_hook(

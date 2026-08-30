@@ -275,6 +275,37 @@ def _resolve_max_tokens(model: str, max_tokens: int | None) -> int | None:
     return model_meta.max_output or 4096
 
 
+# SDK and httpx exceptions are also raised by tools and GENERATION_PRE hooks
+# (browser, embeddings, context fetchers). Interactive recovery only kicks in
+# when the exception was tagged at the actual provider call inside `reply()`,
+# after those hooks have already run. See https://github.com/gptme/gptme/issues/3668
+_PROVIDER_ERROR_MODULES = frozenset({"openai", "anthropic", "httpx", "requests"})
+_LLM_REPLY_ORIGIN_ATTR = "_gptme_from_llm_reply"
+
+
+def mark_llm_reply_origin(exc: BaseException) -> None:
+    """Mark an exception as raised from the provider call inside `reply()`.
+
+    Applied after GENERATION_PRE hooks so a hook/tool failure is not treated
+    as a recoverable LLM outage.
+    """
+    setattr(exc, _LLM_REPLY_ORIGIN_ATTR, True)
+
+
+def is_provider_error(e: BaseException) -> bool:
+    """Whether an exception is a recoverable LLM provider/transport failure.
+
+    Requires the ``_gptme_from_llm_reply`` tag so untagged openai/anthropic/httpx/requests
+    errors from tools or hooks still propagate. See gptme/gptme#3668.
+    ``requests`` covers openai-subscription (and similar HTTP backends) which do
+    not raise SDK types.
+    """
+    if not getattr(e, _LLM_REPLY_ORIGIN_ATTR, False):
+        return False
+    modules = {(cls.__module__ or "").split(".", 1)[0] for cls in type(e).__mro__}
+    return bool(modules & _PROVIDER_ERROR_MODULES)
+
+
 @trace_function(name="llm.reply", attributes={"component": "llm"})
 def reply(
     messages: list[Message],
@@ -309,6 +340,38 @@ def reply(
     if context_msgs:
         generation_msgs.extend(context_msgs)
 
+    # Tag only the provider call, not GENERATION_PRE hook failures above.
+    try:
+        return _reply_after_hooks(
+            generation_msgs,
+            model,
+            stream,
+            tools,
+            output_schema,
+            on_token,
+            on_thinking,
+            max_tokens,
+            temperature,
+            top_p,
+        )
+    except Exception as e:
+        mark_llm_reply_origin(e)
+        raise
+
+
+def _reply_after_hooks(
+    generation_msgs: list[Message],
+    model: str,
+    stream: bool,
+    tools: list[ToolSpec] | None,
+    output_schema: type | None,
+    on_token: Callable[[str], None] | None,
+    on_thinking: Callable[[bool], None] | None,
+    max_tokens: int | None,
+    temperature: float | None,
+    top_p: float | None,
+) -> Message:
+    """Provider call portion of `reply()`, after GENERATION_PRE hooks."""
     init_llm(get_provider_from_model(model))
     config = get_config()
     agent_name = _get_agent_name(config)

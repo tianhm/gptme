@@ -36,6 +36,12 @@ from .openai_responses import (
     _tool_spec_to_responses_tool,
 )
 from .retry_abort import backoff_wait, current_generation
+from .retry_policy import (
+    DEFAULT_BASE_DELAY,
+    SDK_MAX_RETRIES,
+    get_max_retries,
+    retry_delay,
+)
 from .utils import (
     apply_cache_control,
     extract_tool_uses_from_assistant_message,
@@ -93,6 +99,7 @@ def _lazy_client_factory(cls_name: str):
     """Return an ``OpenAI``/``AzureOpenAI``-like constructor that defers SDK import."""
 
     def factory(**kwargs: Any) -> OpenAI:
+        kwargs.setdefault("max_retries", SDK_MAX_RETRIES)
         return cast("OpenAI", _LazyClient(cls_name, kwargs))
 
     return factory
@@ -474,11 +481,11 @@ def init(provider: Provider, config: Config):
     """Initialize OpenAI client for a given provider.
 
     Missing API keys raise here (fail fast at startup); the SDK client itself
-    is constructed lazily on first use (see _LazyClient).
+    is constructed lazily on first use (see _LazyClient). Every provider is
+    registered through ``_init_openai_client``, which injects
+    ``max_retries=SDK_MAX_RETRIES`` via the lazy factory so SDK retries cannot
+    stack on gptme's retry loop.
     """
-    OpenAI = _lazy_client_factory("OpenAI")
-    AzureOpenAI = _lazy_client_factory("AzureOpenAI")
-
     proxy_key = config.get_env("LLM_PROXY_API_KEY")
     proxy_url = config.get_env("LLM_PROXY_URL")
 
@@ -507,17 +514,15 @@ def init(provider: Provider, config: Config):
     elif provider == "azure":
         api_key = config.get_env_required("AZURE_OPENAI_API_KEY")
         azure_endpoint = config.get_env_required("AZURE_OPENAI_ENDPOINT")
-        clients[provider] = AzureOpenAI(
-            api_key=api_key,
-            api_version="2023-07-01-preview",
-            azure_endpoint=azure_endpoint,
-            timeout=timeout,
+        _init_openai_client(
+            provider, api_key=api_key, base_url=azure_endpoint, timeout=timeout
         )
     elif provider == "openrouter":
         api_key = proxy_key or _get_provider_api_key(
             config, provider, "OPENROUTER_API_KEY"
         )
-        clients[provider] = OpenAI(
+        _init_openai_client(
+            provider,
             api_key=api_key,
             base_url=proxy_url or "https://openrouter.ai/api/v1",
             timeout=timeout,
@@ -526,7 +531,8 @@ def init(provider: Provider, config: Config):
         api_key = proxy_key or _get_provider_api_key(
             config, provider, "REQUESTY_API_KEY"
         )
-        clients[provider] = OpenAI(
+        _init_openai_client(
+            provider,
             api_key=api_key,
             base_url=proxy_url or "https://router.requesty.ai/v1",
             timeout=timeout,
@@ -536,22 +542,21 @@ def init(provider: Provider, config: Config):
 
         api_key = proxy_key or get_api_key(config)
         base_url = proxy_url or get_base_url(config)
-        clients[provider] = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
+        _init_openai_client(
+            provider, api_key=api_key, base_url=base_url, timeout=timeout
         )
     elif provider == "gemini":
         api_key = _get_provider_api_key(config, provider, "GEMINI_API_KEY")
-        clients[provider] = OpenAI(
+        _init_openai_client(
+            provider,
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta",
             timeout=timeout,
         )
     elif provider == "xai":
         api_key = _get_provider_api_key(config, provider, "XAI_API_KEY")
-        clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://api.x.ai/v1", timeout=timeout
+        _init_openai_client(
+            provider, api_key=api_key, base_url="https://api.x.ai/v1", timeout=timeout
         )
     elif provider == "grok-subscription":
         # SuperGrok subscription: OAuth token from grok CLI or gptme auth flow.
@@ -571,24 +576,32 @@ def init(provider: Provider, config: Config):
         return  # _init_openai_client already assigned clients[provider]
     elif provider == "groq":
         api_key = _get_provider_api_key(config, provider, "GROQ_API_KEY")
-        clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=timeout
+        _init_openai_client(
+            provider,
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            timeout=timeout,
         )
     elif provider == "deepseek":
         api_key = _get_provider_api_key(config, provider, "DEEPSEEK_API_KEY")
-        clients[provider] = OpenAI(
-            api_key=api_key, base_url="https://api.deepseek.com/v1", timeout=timeout
+        _init_openai_client(
+            provider,
+            api_key=api_key,
+            base_url="https://api.deepseek.com/v1",
+            timeout=timeout,
         )
     elif provider == "moonshot":
         api_key = _get_provider_api_key(config, provider, "MOONSHOT_API_KEY")
-        clients[provider] = OpenAI(
+        _init_openai_client(
+            provider,
             api_key=api_key,
             base_url="https://api.moonshot.ai/v1",
             timeout=timeout,
         )
     elif provider == "nvidia":
         api_key = _get_provider_api_key(config, provider, "NVIDIA_API_KEY")
-        clients[provider] = OpenAI(
+        _init_openai_client(
+            provider,
             api_key=api_key,
             base_url="https://integrate.api.nvidia.com/v1",
             timeout=timeout,
@@ -600,7 +613,9 @@ def init(provider: Provider, config: Config):
         if not api_base:
             raise KeyError("Missing environment variable OPENAI_BASE_URL")
         api_key = config.get_env("OPENAI_API_KEY") or "ollama"
-        clients[provider] = OpenAI(api_key=api_key, base_url=api_base, timeout=timeout)
+        _init_openai_client(
+            provider, api_key=api_key, base_url=api_base, timeout=timeout
+        )
     else:
         # Check if this is a custom provider (config-file based)
         custom_provider = next(
@@ -608,7 +623,8 @@ def init(provider: Provider, config: Config):
         )
         if custom_provider:
             api_key = custom_provider.get_api_key(config)
-            clients[provider] = OpenAI(
+            _init_openai_client(
+                provider,
                 api_key=api_key,
                 base_url=custom_provider.base_url,
                 timeout=timeout,
@@ -625,7 +641,8 @@ def init(provider: Provider, config: Config):
                         f"Missing environment variable {plugin.api_key_env} "
                         f"required by provider plugin {plugin.name!r}"
                     )
-                clients[provider] = OpenAI(
+                _init_openai_client(
+                    provider,
                     api_key=api_key,
                     base_url=plugin.base_url,
                     timeout=timeout,
@@ -823,7 +840,7 @@ def _handle_openai_transient_error(
     if not should_retry or attempt == max_retries - 1:
         raise e
 
-    delay = base_delay * (2**attempt)
+    delay = retry_delay(attempt, base_delay)
     status_code = getattr(e, "status_code", "unknown")
     logger.warning(
         f"OpenAI API transient error (status {status_code}), "
@@ -834,7 +851,9 @@ def _handle_openai_transient_error(
         raise e
 
 
-def retry_on_openai_error(max_retries: int = 5, base_delay: float = 1.0):
+def retry_on_openai_error(
+    max_retries: int | None = None, base_delay: float = DEFAULT_BASE_DELAY
+):
     """Decorator to retry functions on OpenAI API transient errors with exponential backoff.
 
     Handles 5xx server errors, rate limits, and other transient API issues.
@@ -843,16 +862,17 @@ def retry_on_openai_error(max_retries: int = 5, base_delay: float = 1.0):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
+            attempts = max_retries if max_retries is not None else get_max_retries()
             # Capture the retry generation once per call: if test teardown
             # interrupts pending retries after this point, every backoff wait
             # for this call aborts immediately (even attempts started later).
             generation = current_generation()
-            for attempt in range(max_retries):
+            for attempt in range(attempts):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
                     _handle_openai_transient_error(
-                        e, attempt, max_retries, base_delay, generation=generation
+                        e, attempt, attempts, base_delay, generation=generation
                     )
             # _handle_openai_transient_error raises on last attempt,
             # but guard against silent None return if logic changes
@@ -863,7 +883,9 @@ def retry_on_openai_error(max_retries: int = 5, base_delay: float = 1.0):
     return decorator
 
 
-def retry_generator_on_openai_error(max_retries: int = 5, base_delay: float = 1.0):
+def retry_generator_on_openai_error(
+    max_retries: int | None = None, base_delay: float = DEFAULT_BASE_DELAY
+):
     """Decorator to retry generator functions on OpenAI API transient errors with exponential backoff.
 
     Handles 5xx server errors, rate limits, and other transient API issues.
@@ -875,9 +897,10 @@ def retry_generator_on_openai_error(max_retries: int = 5, base_delay: float = 1.
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
+            attempts = max_retries if max_retries is not None else get_max_retries()
             # Capture the retry generation once per call (see retry_abort.py).
             generation = current_generation()
-            for attempt in range(max_retries):
+            for attempt in range(attempts):
                 has_yielded = False
                 try:
                     gen = func(*args, **kwargs)
@@ -896,7 +919,7 @@ def retry_generator_on_openai_error(max_retries: int = 5, base_delay: float = 1.
                         # Can't retry after streaming has started - would cause duplicates
                         raise
                     _handle_openai_transient_error(
-                        e, attempt, max_retries, base_delay, generation=generation
+                        e, attempt, attempts, base_delay, generation=generation
                     )
             # _handle_openai_transient_error raises on last attempt,
             # but guard against silent None return if logic changes

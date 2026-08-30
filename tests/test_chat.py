@@ -853,3 +853,343 @@ def test_complete_hook_fires_in_current_turn():
     # complete_hook MUST raise — complete was called in the current turn.
     with pytest.raises(SessionCompleteException):
         list(complete_hook(messages))
+
+
+def _rate_limit_error(*, tagged: bool = True):
+    """An openai RateLimitError like the one in issue #3668.
+
+    Tagged errors simulate the provider call inside ``reply()``; untagged
+    errors simulate a tool or hook using the OpenAI SDK.
+    """
+    from openai import RateLimitError
+
+    from gptme.llm import mark_llm_reply_origin
+
+    response = MagicMock()
+    response.status_code = 429
+    err = RateLimitError("upstream rate-limited", response=response, body=None)
+    if tagged:
+        mark_llm_reply_origin(err)
+    return err
+
+
+def test_should_prompt_after_provider_error_system_message():
+    """A trailing LLM-failure system message must return control to the user.
+
+    Crash recovery still auto-continues on a trailing *user* message. The
+    provider-error path must not take that branch — otherwise the loop
+    immediately re-calls the provider and hammers a still-down API.
+    """
+    from gptme.chat import _should_prompt_for_input
+    from gptme.constants import INTERRUPT_CONTENT, LLM_REQUEST_FAILED_PREFIX
+    from gptme.logmanager import Log
+    from gptme.message import Message
+
+    failed = Log(
+        [
+            Message("user", "hello"),
+            Message("system", f"{LLM_REQUEST_FAILED_PREFIX} RateLimitError"),
+        ]
+    )
+    assert _should_prompt_for_input(failed) is True
+
+    # Existing crash-recovery path: trailing user message auto-generates.
+    assert _should_prompt_for_input(Log([Message("user", "hello")])) is False
+
+    # A newer user turn supersedes the failure marker. Scanning past it
+    # would stall crash-recovery / queued follow-ups (P2 6fc9a6d00154).
+    recovered = Log(
+        [
+            Message("user", "hello"),
+            Message("system", f"{LLM_REQUEST_FAILED_PREFIX} RateLimitError"),
+            Message("user", "try again"),
+        ]
+    )
+    assert _should_prompt_for_input(recovered) is False
+
+    # Hook system messages after the marker must still return to the user.
+    hooked = Log(
+        [
+            Message("user", "hello"),
+            Message("system", f"{LLM_REQUEST_FAILED_PREFIX} RateLimitError"),
+            Message("system", "cost: $0.01"),
+        ]
+    )
+    assert _should_prompt_for_input(hooked) is True
+    interrupted_then_user = Log(
+        [
+            Message("user", "hello"),
+            Message("assistant", "hi"),
+            Message("system", INTERRUPT_CONTENT),
+            Message("user", "continue"),
+        ]
+    )
+    assert _should_prompt_for_input(interrupted_then_user) is False
+
+    # Tool results are also system messages. A tool whose output happens to
+    # start with the failure prefix must not steal control from the turn.
+    tool_result = Log(
+        [
+            Message("user", "hello"),
+            Message("assistant", "calling tool"),
+            Message(
+                "system",
+                f"{LLM_REQUEST_FAILED_PREFIX} fake tool output",
+                call_id="call_1",
+            ),
+        ]
+    )
+    assert _should_prompt_for_input(tool_result) is False
+
+
+def test_interactive_survives_provider_error(tmp_path):
+    """A 429 returns control to the user, not a crash or retry loop.
+
+    Must not patch ``_should_prompt_for_input``: the previous version of this
+    test did, which hid an infinite retry when the last message is the
+    LLM-failure system message. Regression for gptme/gptme#3668 and
+    AI-review P1 0cb85cacfd0f.
+    """
+    import sys
+
+    from gptme.chat import _run_chat_loop
+    from gptme.logmanager import Log
+    from gptme.message import Message
+
+    # See test_chained_prompts_continue_after_complete for why we use sys.modules.
+    _chat_mod = sys.modules["gptme.chat"]
+
+    manager = MagicMock()
+    manager.log = Log()
+    manager.workspace = tmp_path
+    manager.logdir = tmp_path
+
+    def _append(msg: Message) -> None:
+        manager.log = manager.log.append(msg)
+
+    manager.append.side_effect = _append
+
+    process_calls = 0
+
+    def _process(*args, **kwargs):
+        nonlocal process_calls
+        process_calls += 1
+        if process_calls > 3:
+            raise RuntimeError("provider-error recovery re-entered the LLM call")
+        raise _rate_limit_error()
+
+    with (
+        patch.object(_chat_mod, "_process_message_conversation", side_effect=_process),
+        patch.object(_chat_mod, "trigger_hook", return_value=[]),
+        patch.object(_chat_mod, "include_paths", side_effect=lambda msg, ws: msg),
+        patch.object(_chat_mod, "execute_cmd", return_value=False),
+        # After the failure the loop asks the user for input; simulate exit.
+        # Do NOT patch _should_prompt_for_input — that was masking the retry loop.
+        patch.object(_chat_mod, "_get_user_input", return_value=None),
+    ):
+        _run_chat_loop(
+            manager=manager,
+            prompt_queue=[Message("user", "hello")],
+            stream=False,
+            tool_format="markdown",
+            model=None,
+            interactive=True,
+        )
+
+    assert process_calls == 1, (
+        f"expected one LLM call then a user prompt, got {process_calls}"
+    )
+    assert any(
+        msg.role == "system" and "LLM request failed" in msg.content
+        for msg in manager.log
+    ), f"expected an error message in the log, got: {list(manager.log)}"
+
+
+def test_non_interactive_still_raises_provider_error():
+    """Non-interactive runs must keep failing loudly so exit codes stay useful."""
+    import sys
+
+    from openai import RateLimitError
+
+    from gptme.chat import _run_chat_loop
+    from gptme.message import Message
+
+    _chat_mod = sys.modules["gptme.chat"]
+
+    manager = MagicMock()
+    manager.log = MagicMock()
+    manager.workspace = Path("/tmp")
+    manager.logdir = Path("/tmp/logdir")
+
+    with (
+        patch.object(
+            _chat_mod,
+            "_process_message_conversation",
+            side_effect=_rate_limit_error(),
+        ),
+        patch.object(_chat_mod, "trigger_hook", return_value=[]),
+        patch.object(_chat_mod, "include_paths", side_effect=lambda msg, ws: msg),
+        patch.object(_chat_mod, "execute_cmd", return_value=False),
+        pytest.raises(RateLimitError),
+    ):
+        _run_chat_loop(
+            manager=manager,
+            prompt_queue=[Message("user", "hello")],
+            stream=False,
+            tool_format="markdown",
+            model=None,
+            interactive=False,
+        )
+
+
+def test_interactive_still_raises_non_provider_errors():
+    """Bugs in gptme itself must not be swallowed as recoverable API errors."""
+    import sys
+
+    from gptme.chat import _run_chat_loop
+    from gptme.message import Message
+
+    _chat_mod = sys.modules["gptme.chat"]
+
+    manager = MagicMock()
+    manager.log = MagicMock()
+    manager.workspace = Path("/tmp")
+    manager.logdir = Path("/tmp/logdir")
+
+    with (
+        patch.object(
+            _chat_mod,
+            "_process_message_conversation",
+            side_effect=ValueError("bug in gptme"),
+        ),
+        patch.object(_chat_mod, "trigger_hook", return_value=[]),
+        patch.object(_chat_mod, "include_paths", side_effect=lambda msg, ws: msg),
+        patch.object(_chat_mod, "execute_cmd", return_value=False),
+        pytest.raises(ValueError, match="bug in gptme"),
+    ):
+        _run_chat_loop(
+            manager=manager,
+            prompt_queue=[Message("user", "hello")],
+            stream=False,
+            tool_format="markdown",
+            model=None,
+            interactive=True,
+        )
+
+
+def _httpx_connect_error():
+    import httpx
+
+    return httpx.ConnectError("tool network failed")
+
+
+def test_interactive_does_not_swallow_untagged_sdk_errors():
+    """OpenAI SDK errors from tools/hooks must not recover as LLM failures."""
+    import sys
+
+    from openai import RateLimitError
+
+    from gptme.chat import _run_chat_loop
+    from gptme.message import Message
+
+    _chat_mod = sys.modules["gptme.chat"]
+
+    manager = MagicMock()
+    manager.log = MagicMock()
+    manager.workspace = Path("/tmp")
+    manager.logdir = Path("/tmp/logdir")
+
+    with (
+        patch.object(
+            _chat_mod,
+            "_process_message_conversation",
+            side_effect=_rate_limit_error(tagged=False),
+        ),
+        patch.object(_chat_mod, "trigger_hook", return_value=[]),
+        patch.object(_chat_mod, "include_paths", side_effect=lambda msg, ws: msg),
+        patch.object(_chat_mod, "execute_cmd", return_value=False),
+        pytest.raises(RateLimitError, match="upstream rate-limited"),
+    ):
+        _run_chat_loop(
+            manager=manager,
+            prompt_queue=[Message("user", "hello")],
+            stream=False,
+            tool_format="markdown",
+            model=None,
+            interactive=True,
+        )
+
+
+def test_interactive_does_not_swallow_tool_httpx_errors():
+    """httpx errors from tools/hooks must not be recovered as LLM failures."""
+    import sys
+
+    import httpx
+
+    from gptme.chat import _run_chat_loop
+    from gptme.message import Message
+
+    _chat_mod = sys.modules["gptme.chat"]
+
+    manager = MagicMock()
+    manager.log = MagicMock()
+    manager.workspace = Path("/tmp")
+    manager.logdir = Path("/tmp/logdir")
+
+    with (
+        patch.object(
+            _chat_mod,
+            "_process_message_conversation",
+            side_effect=_httpx_connect_error(),
+        ),
+        patch.object(_chat_mod, "trigger_hook", return_value=[]),
+        patch.object(_chat_mod, "include_paths", side_effect=lambda msg, ws: msg),
+        patch.object(_chat_mod, "execute_cmd", return_value=False),
+        pytest.raises(httpx.ConnectError, match="tool network failed"),
+    ):
+        _run_chat_loop(
+            manager=manager,
+            prompt_queue=[Message("user", "hello")],
+            stream=False,
+            tool_format="markdown",
+            model=None,
+            interactive=True,
+        )
+
+
+def test_step_marks_httpx_from_reply_as_provider_error():
+    """httpx raised by the provider call inside reply() is recoverable."""
+    import importlib
+
+    import httpx
+
+    from gptme.llm import is_provider_error, mark_llm_reply_origin
+    from gptme.message import Message
+    from gptme.tools import init_tools
+
+    init_tools(allowlist=["shell"])
+    chat_module = importlib.import_module("gptme.chat")
+    llm_module = importlib.import_module("gptme.llm")
+
+    with (
+        patch.object(llm_module, "init_llm", return_value=None),
+        patch("gptme.hooks.trigger_hook", return_value=iter([])),
+        patch.object(
+            llm_module, "_chat_complete", side_effect=httpx.ConnectError("upstream")
+        ),
+        pytest.raises(httpx.ConnectError) as ei,
+    ):
+        list(
+            chat_module.step(
+                [Message("user", "hello")],
+                stream=False,
+                model="openai/gpt-4",
+            )
+        )
+
+    assert is_provider_error(ei.value)
+    # Untagged twin of the same exception class is a tool failure.
+    tool_err = httpx.ConnectError("browser failed")
+    assert not is_provider_error(tool_err)
+    mark_llm_reply_origin(tool_err)
+    assert is_provider_error(tool_err)
