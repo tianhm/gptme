@@ -768,6 +768,7 @@ def test_dropout_log_matched_has_policy_fields(monkeypatch, tmp_path):
     assert entry["policy_version"] == 1
     assert "path" in entry
     assert "title" in entry
+    assert entry["effective_epsilon"] == 0.05  # validated_core default, not global 0.25
 
 
 # --- Manifest root-anchored classification (Greptile finding) ---
@@ -1253,3 +1254,154 @@ def test_classify_lesson_symlinked_lesson_file_outside_root_still_matches(
     monkeypatch.setenv("LESSON_POLICY_MANIFEST_PATH", str(manifest_file))
 
     assert _classify_lesson(str(lessons_dir / "foo.md"))[0] == "validated_core"
+
+
+# --- Class-aware dropout (Phase 1: differential epsilon) ---
+
+from gptme.lessons.auto_include import (
+    _get_dropout_epsilon_for_class,
+    _get_dropout_epsilon_validated_core,
+)
+
+
+def test_dropout_epsilon_validated_core_default(monkeypatch):
+    monkeypatch.delenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", raising=False)
+    assert _get_dropout_epsilon_validated_core() == 0.05
+
+
+def test_dropout_epsilon_validated_core_env_override(monkeypatch):
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", "0.10")
+    assert _get_dropout_epsilon_validated_core() == 0.10
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", "0.0")
+    assert _get_dropout_epsilon_validated_core() == 0.0
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", "2.0")
+    assert _get_dropout_epsilon_validated_core() == 1.0
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", "not-a-float")
+    assert _get_dropout_epsilon_validated_core() == 0.05  # fallback to default
+
+
+def test_dropout_epsilon_for_class_exempt_is_always_zero(monkeypatch):
+    """exempt lessons must never be withheld regardless of global epsilon."""
+    assert _get_dropout_epsilon_for_class("exempt", 0.20) == 0.0
+    assert _get_dropout_epsilon_for_class("exempt", 1.0) == 0.0
+    assert _get_dropout_epsilon_for_class("exempt", 0.0) == 0.0
+
+
+def test_dropout_epsilon_for_class_validated_core_uses_lower_epsilon(monkeypatch):
+    monkeypatch.delenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", raising=False)
+    # validated_core uses the lower default (0.05), not global_epsilon (0.20)
+    eff = _get_dropout_epsilon_for_class("validated_core", 0.20)
+    assert eff == 0.05
+    assert eff < 0.20
+
+
+def test_dropout_epsilon_for_class_holdout_uses_global(monkeypatch):
+    assert _get_dropout_epsilon_for_class("holdout", 0.20) == 0.20
+    assert _get_dropout_epsilon_for_class("unknown", 0.15) == 0.15
+
+
+def test_dropout_exempt_lesson_never_withheld(monkeypatch, tmp_path):
+    """An exempt lesson must never be withheld even at epsilon=1.0."""
+    import random as _random
+
+    import gptme.lessons.auto_include as _mod
+
+    log_dir = tmp_path / "drop"
+    exempt_path = "/tmp/exempt_lesson.md"
+
+    # Inject a manifest that classifies this path as exempt.
+    # Monkeypatch _load_policy_manifest directly — the cache-key comparison
+    # inside the real loader won't match an injected key, so we bypass it.
+    manifest = {
+        "version": 1,
+        "validated_core": [],
+        "exempt": ["exempt_lesson"],
+        "holdout_population": [],
+        "root": "/tmp",
+    }
+    monkeypatch.setattr(_mod, "_load_policy_manifest", lambda: manifest)
+
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON", "1.0")
+    monkeypatch.setenv("LESSON_DROPOUT_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("GPTME_SESSION_ID", "sess-exempt-test")
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+
+    _random.seed(99)
+    matches = [_MockMatch(_make_lesson("Exempt", "body", exempt_path))]
+    result = _apply_lesson_dropout(matches)
+
+    # The exempt lesson must be kept even at epsilon=1.0
+    assert len(result) == 1, "Exempt lesson was withheld — should be kept"
+
+
+def test_dropout_withheld_records_contain_effective_epsilon(monkeypatch, tmp_path):
+    """Withheld records must include effective_epsilon for per-class analysis."""
+    import random as _random
+
+    log_dir = tmp_path / "drop"
+    monkeypatch.setenv(
+        "LESSON_DROPOUT_EPSILON", "1.0"
+    )  # withhold everything non-exempt
+    monkeypatch.setenv("LESSON_DROPOUT_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("GPTME_SESSION_ID", "sess-eff-eps")
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+
+    _random.seed(0)
+    matches = [_MockMatch(_make_lesson("H", "body", "/tmp/holdout.md"))]
+    _apply_lesson_dropout(matches)
+
+    log_file = log_dir / "sess-eff-eps.jsonl"
+    records = [json.loads(line) for line in log_file.read_text().splitlines() if line]
+    assert records, "No log written"
+    withheld = records[0]["withheld"]
+    assert withheld, "No withheld lessons logged"
+    assert "effective_epsilon" in withheld[0], (
+        "effective_epsilon missing from withheld record — needed for per-class analysis"
+    )
+
+
+def test_dropout_kept_validated_core_records_override_epsilon(monkeypatch, tmp_path):
+    """Kept validated_core entries must persist the class epsilon, not global.
+
+    Greptile P1 on gptme/gptme#3700: a non-default
+    LESSON_DROPOUT_EPSILON_VALIDATED_CORE was recorded only on withheld
+    lessons, so kept observations could not reconstruct the assignment
+    probability used for the coin flip.
+    """
+    import random as _random
+
+    import gptme.lessons.auto_include as _mod
+
+    _reset_manifest_cache(monkeypatch)
+    log_dir = tmp_path / "drop"
+    p = _make_manifest_file(tmp_path, validated_core=["category/kept-core"])
+    monkeypatch.setenv("LESSON_POLICY_MANIFEST_PATH", str(p))
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON", "0.25")
+    monkeypatch.setenv("LESSON_DROPOUT_EPSILON_VALIDATED_CORE", "0.10")
+    monkeypatch.setenv("LESSON_DROPOUT_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("GPTME_SESSION_ID", "sess-kept-eff-eps")
+    monkeypatch.delenv("CC_SESSION_ID", raising=False)
+    monkeypatch.setattr(_random, "random", lambda: 0.9)  # always keep
+
+    matches = [
+        _MockMatch(_make_lesson("Kept", "body", "lessons/category/kept-core.md")),
+    ]
+    kept = _mod._apply_lesson_dropout(matches)
+    assert len(kept) == 1
+
+    records = [
+        json.loads(line)
+        for line in (log_dir / "sess-kept-eff-eps.jsonl").read_text().splitlines()
+        if line
+    ]
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["epsilon"] == 0.25  # global switch
+    assert rec["withheld"] == []
+    assert len(rec["matched"]) == 1
+    entry = rec["matched"][0]
+    assert entry["policy_class"] == "validated_core"
+    assert entry["effective_epsilon"] == 0.10, (
+        "kept validated_core must record the class-specific epsilon "
+        f"(got {entry.get('effective_epsilon')!r}, global was 0.25)"
+    )
