@@ -64,6 +64,13 @@ _loaded_tools_var: ContextVar[list[ToolSpec] | None] = ContextVar(
 _available_tools_var: ContextVar[list[ToolSpec] | None] = ContextVar(
     "available_tools", default=None
 )
+# Effective operator allowlist from the last init_tools() in this context.
+# None means unrestricted (default session); a list is a hard cap for model
+# enablement via request_tool_change. /tools load still uses load_tool()
+# directly and is not gated here.
+_session_allowlist_var: ContextVar[list[str] | None] = ContextVar(
+    "session_allowlist", default=None
+)
 
 # Note: Tools must be initialized in each context that needs them.
 # This is particularly important for server environments where request handling
@@ -185,6 +192,7 @@ def init_tools(
                 allowlist = config.chat.tools
 
         allowlist = expand_tool_allowlist_presets(allowlist)
+        set_session_allowlist(allowlist)
 
         # Partition allowlist into file paths and tool names
         file_paths: list[str] = []
@@ -342,18 +350,19 @@ def execute_msg(
     """
     assert msg.role == "assistant", "Only assistant messages can be executed"
 
-    # Snapshot runnability once per tool_use. Evaluating `is_runnable` a second
-    # time later would open a TOCTOU gap: a tool whose loaded-state changes
-    # between the two checks (e.g. a subagent thread concurrently (re)initializing
-    # tools) could fall through both branches and leave a structured tool_use with
-    # no tool_result — which the Anthropic API rejects with a hard 400 (#554).
-    classified = [(tu, tu.is_runnable) for tu in ToolUse.iter_from_content(msg.content)]
+    # Materialize every parsed tool_use first so each structured call still gets
+    # exactly one result. Evaluate runnability once per call, immediately before
+    # the branch, so an earlier request_tool_change in this response can enable
+    # or disable a sibling without a concurrent load/unload skipping both the
+    # execute and pairing paths (Anthropic 400, #554).
+    classified = list(ToolUse.iter_from_content(msg.content))
 
     if not classified:
         return
 
     remaining = iter(classified)
-    for tooluse, runnable in remaining:
+    for tooluse in remaining:
+        runnable = tooluse.is_runnable
         if runnable:
             with terminal_state_title(f"🛠️ running {tooluse.tool}"):
                 t0 = time.monotonic()
@@ -369,7 +378,7 @@ def execute_msg(
                     # Drain the rest: any structured tool_use that's left in the
                     # message still needs a paired tool_result or the next API
                     # request will 400 with a dangling tool_use.
-                    for rem_tu, _ in remaining:
+                    for rem_tu in remaining:
                         if rem_tu.call_id is not None:
                             yield Message(
                                 "system",
@@ -484,6 +493,7 @@ def clear_tools():
     """
     _set_available_tools_cache(None)
     _loaded_tools_var.set([])
+    _session_allowlist_var.set(None)
 
 
 def get_tools() -> list[ToolSpec]:
@@ -498,6 +508,59 @@ def set_tools(tools: list[ToolSpec]) -> None:
     ContextVars from the parent context aren't visible.
     """
     _loaded_tools_var.set(tools)
+
+
+def get_session_allowlist() -> list[str] | None:
+    """Return the operator tool allowlist captured by the last init_tools()."""
+    return _session_allowlist_var.get()
+
+
+def set_session_allowlist(allowlist: list[str] | None) -> None:
+    """Override the session tool allowlist for this context.
+
+    ``None`` means unrestricted. An explicit list is the hard cap that
+    ``request_tool_change`` enablement must honor.
+    """
+    _session_allowlist_var.set(list(allowlist) if allowlist is not None else None)
+
+
+def unload_tool(tool_name: str) -> ToolSpec:
+    """Unload one tool and best-effort unregister its session-local hooks.
+
+    Commands are *not* unregistered. The slash-command registry is
+    process-global (``gptme.commands.base._command_registry``), shared by every
+    session in this process. Dropping a command here would remove that slash
+    command from sibling conversations on gptme-server even though their
+    context-local tool sets still contain the tool. Hooks are ContextVar-backed,
+    so unregistering them is session-scoped and safe.
+
+    Session isolation for commands is enforced at dispatch: ``handle_cmd``
+    refuses to run a tool-owned command when that tool is not in this
+    session's loaded set.
+    """
+    with _tools_init_lock:
+        tool = get_tool(tool_name)
+        if tool is None:
+            raise ValueError(f"Tool '{tool_name}' is not loaded")
+
+        from ..hooks import unregister_hook
+
+        # Filter by identity: get_tool() matches name *or* block_types, so a
+        # block-type argument would miss a name-only filter and leave a zombie
+        # tool loaded after its hooks were unregistered.
+        set_tools([loaded for loaded in get_tools() if loaded is not tool])
+        for hook_name in tool.hooks:
+            try:
+                unregister_hook(f"{tool.name}.{hook_name}")
+            except Exception:
+                logger.exception(
+                    "Failed to unregister hook '%s.%s' while unloading tool",
+                    tool.name,
+                    hook_name,
+                )
+
+        logger.info("Unloaded tool '%s' mid-conversation", tool_name)
+        return tool
 
 
 def get_tool(tool_name: str) -> ToolSpec | None:
