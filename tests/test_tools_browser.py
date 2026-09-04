@@ -26,6 +26,7 @@ from gptme.tools.browser import (
     _get_pdf_to_image_hints,
     _is_github_repo_url,
     _is_pdf_url,
+    _pdf_source_is_remote,
     _read_github_repo,
     _search_failed,
     _search_with_engine,
@@ -93,6 +94,30 @@ class TestIsPdfUrl:
             mock_req.head.return_value = mock_resp
             mock_req.RequestException = Exception
             assert _is_pdf_url("https://example.com/doc.pdf?v=2") is False
+
+    def test_rejects_file_scheme_before_head(self):
+        with patch("gptme.tools.browser.requests") as mock_req:
+            with pytest.raises(ValueError, match="not allowed"):
+                _is_pdf_url("file:///etc/passwd")
+            mock_req.head.assert_not_called()
+            mock_req.get.assert_not_called()
+
+    def test_rejects_gopher_scheme_before_head(self):
+        with patch("gptme.tools.browser.requests") as mock_req:
+            with pytest.raises(ValueError, match="not allowed"):
+                _is_pdf_url("gopher://example.com/x.pdf")
+            mock_req.head.assert_not_called()
+
+    def test_accepts_uppercase_http_scheme(self):
+        assert _is_pdf_url("HTTP://example.com/x.pdf") is True
+
+    def test_rejects_missing_host(self):
+        with pytest.raises(ValueError, match="hostname"):
+            _is_pdf_url("https://")
+
+    def test_rejects_embedded_credentials(self):
+        with pytest.raises(ValueError, match="credentials"):
+            _is_pdf_url("https://user:pass@example.com/x.pdf")
 
 
 class TestIsGithubRepoUrl:
@@ -377,6 +402,24 @@ class TestReadPdfUrl:
 
     @patch("gptme.tools.browser.has_pypdf", True)
     @patch("gptme.tools.browser.requests")
+    def test_rejects_file_scheme_before_get(self, mock_requests):
+        from gptme.tools.browser import _read_pdf_url
+
+        with pytest.raises(ValueError, match="not allowed"):
+            _read_pdf_url("file:///tmp/x.pdf")
+        mock_requests.get.assert_not_called()
+
+    @patch("gptme.tools.browser.has_pypdf", True)
+    @patch("gptme.tools.browser.requests")
+    def test_rejects_gopher_scheme_before_get(self, mock_requests):
+        from gptme.tools.browser import _read_pdf_url
+
+        with pytest.raises(ValueError, match="not allowed"):
+            _read_pdf_url("gopher://example.com/x.pdf")
+        mock_requests.get.assert_not_called()
+
+    @patch("gptme.tools.browser.has_pypdf", True)
+    @patch("gptme.tools.browser.requests")
     def test_download_failure(self, mock_requests):
         from gptme.tools.browser import _read_pdf_url
 
@@ -508,6 +551,78 @@ class TestReadPdfUrl:
             assert f"Page {DEFAULT_PDF_MAX_PAGES + 1}" not in result
 
 
+class TestPdfSourceIsRemote:
+    """Tests for _pdf_source_is_remote — HTTP vs local path classification."""
+
+    def test_http_urls_are_remote(self):
+        assert _pdf_source_is_remote("https://example.com/doc.pdf") is True
+        assert _pdf_source_is_remote("HTTP://example.com/x.pdf") is True
+
+    def test_posix_local_paths_stay_local(self):
+        assert _pdf_source_is_remote("/tmp/doc.pdf") is False
+        assert _pdf_source_is_remote("./doc.pdf") is False
+        assert _pdf_source_is_remote("../doc.pdf") is False
+        assert _pdf_source_is_remote("doc.pdf") is False
+
+    def test_url_like_local_filenames_stay_local(self):
+        assert _pdf_source_is_remote("https:report.pdf") is False
+        assert _pdf_source_is_remote("/tmp/foo://bar.pdf") is False
+        assert _pdf_source_is_remote("/tmp/https://example.com/doc.pdf") is False
+        assert _pdf_source_is_remote("./https://example.com/doc.pdf") is False
+        assert _pdf_source_is_remote("../https://example.com/doc.pdf") is False
+        # Implicit-relative: :// is inside a path component, not a URL scheme.
+        assert _pdf_source_is_remote("downloads/https://example.com/doc.pdf") is False
+        assert _pdf_source_is_remote("C:/Users/https://example.com/doc.pdf") is False
+
+    def test_windows_drive_letter_stays_local(self):
+        assert _pdf_source_is_remote(r"C:\Users\file.pdf") is False
+        assert _pdf_source_is_remote("C:/Users/file.pdf") is False
+        # urlparse scheme is "c" and the string starts with "c://". Still a
+        # drive letter, not a network URL.
+        assert _pdf_source_is_remote("C://temp/file.pdf") is False
+
+    def test_file_and_gopher_schemes_are_rejected(self):
+        with pytest.raises(ValueError, match="not allowed"):
+            _pdf_source_is_remote("file:///tmp/x.pdf")
+        with pytest.raises(ValueError, match="not allowed"):
+            _pdf_source_is_remote("gopher://example.com/x.pdf")
+
+    def test_https_empty_host_is_rejected(self):
+        with pytest.raises(ValueError, match="hostname"):
+            _pdf_source_is_remote("https://")
+
+    def test_embedded_credentials_are_rejected(self):
+        with pytest.raises(ValueError, match="credentials"):
+            _pdf_source_is_remote("https://user:pass@example.com/x.pdf")
+
+    def test_http_url_stays_remote_even_if_cwd_has_scheme_dir(
+        self, tmp_path, monkeypatch
+    ):
+        # POSIX collapses https://x to https:/x. A CWD directory named
+        # "https:" must not skip host/credential checks or substitute a
+        # local PDF for a fetch.
+        monkeypatch.chdir(tmp_path)
+        dest = tmp_path / "https:" / "example.com"
+        dest.mkdir(parents=True)
+        (dest / "x.pdf").write_bytes(b"%PDF-fake")
+        cred_dest = tmp_path / "https:" / "user:pass@example.com"
+        cred_dest.mkdir(parents=True)
+        (cred_dest / "x.pdf").write_bytes(b"%PDF-fake")
+        assert _pdf_source_is_remote("https://example.com/x.pdf") is True
+        with pytest.raises(ValueError, match="credentials"):
+            _pdf_source_is_remote("https://user:pass@example.com/x.pdf")
+
+    def test_posix_collapsed_single_slash_spelling_stays_local(self):
+        # Already-collapsed HTTP:/host/file is a path, not a URL (no ://).
+        assert _pdf_source_is_remote("HTTP:/example.com/doc.pdf") is False
+
+    def test_dotdot_in_http_url_stays_remote(self):
+        assert (
+            _pdf_source_is_remote("https://example.com/../../etc/ssh-report.pdf")
+            is True
+        )
+
+
 class TestPdfToImages:
     """Tests for pdf_to_images — PDF conversion to image files."""
 
@@ -589,6 +704,106 @@ class TestPdfToImages:
         pdf_to_images("https://example.com/doc.pdf", output_dir=tmp_path)
 
         mock_requests.get.assert_called_once()
+
+    @patch("gptme.tools.browser.requests")
+    @patch("gptme.tools.browser._convert_with_pdftoppm")
+    @patch("gptme.tools.browser._has_pdftoppm", return_value=True)
+    def test_downloads_uppercase_http_url(
+        self, _, mock_convert, mock_requests, tmp_path
+    ):
+        from gptme.tools.browser import pdf_to_images
+
+        mock_response = MagicMock()
+        mock_response.content = b"%PDF-fake"
+        mock_requests.get.return_value = mock_response
+        mock_convert.return_value = []
+
+        pdf_to_images("HTTP://example.com/x.pdf", output_dir=tmp_path)
+
+        mock_requests.get.assert_called_once_with(
+            "HTTP://example.com/x.pdf", timeout=60
+        )
+
+    @patch("gptme.tools.browser.requests")
+    @patch("gptme.tools.browser._convert_with_pdftoppm")
+    @patch("gptme.tools.browser._has_pdftoppm", return_value=True)
+    def test_http_url_fetches_even_if_cwd_has_scheme_dir(
+        self, _, mock_convert, mock_requests, tmp_path, monkeypatch
+    ):
+        from gptme.tools.browser import pdf_to_images
+
+        monkeypatch.chdir(tmp_path)
+        dest = tmp_path / "HTTP:" / "example.com"
+        dest.mkdir(parents=True)
+        (dest / "doc.pdf").write_bytes(b"%PDF-fake")
+        mock_response = MagicMock()
+        mock_response.content = b"%PDF-remote"
+        mock_requests.get.return_value = mock_response
+        mock_convert.return_value = []
+
+        pdf_to_images("HTTP://example.com/doc.pdf", output_dir=tmp_path)
+
+        mock_requests.get.assert_called_once_with(
+            "HTTP://example.com/doc.pdf", timeout=60
+        )
+
+    @patch("gptme.tools.browser.requests")
+    @patch("gptme.tools.browser._convert_with_pdftoppm")
+    @patch("gptme.tools.browser._has_pdftoppm", return_value=True)
+    def test_absolute_path_with_embedded_url_substring(
+        self, _, mock_convert, mock_requests, tmp_path
+    ):
+        from gptme.tools.browser import pdf_to_images
+
+        url_dir = tmp_path / "https:" / "example.com"
+        url_dir.mkdir(parents=True)
+        pdf_file = url_dir / "doc.pdf"
+        pdf_file.write_bytes(b"%PDF-fake")
+        mock_convert.return_value = []
+
+        # POSIX collapses the extra slash, so this string contains "://"
+        # but names the same local file.
+        weird = f"{tmp_path}/https://example.com/doc.pdf"
+        pdf_to_images(weird, output_dir=tmp_path)
+
+        mock_requests.get.assert_not_called()
+        mock_convert.assert_called_once()
+
+    @patch("gptme.tools.browser.requests")
+    @patch("gptme.tools.browser._convert_with_pdftoppm")
+    @patch("gptme.tools.browser._has_pdftoppm", return_value=True)
+    def test_https_colon_filename_is_local(
+        self, _, mock_convert, mock_requests, tmp_path, monkeypatch
+    ):
+        from gptme.tools.browser import pdf_to_images
+
+        monkeypatch.chdir(tmp_path)
+        pdf_file = tmp_path / "https:report.pdf"
+        pdf_file.write_bytes(b"%PDF-fake")
+        mock_convert.return_value = []
+
+        pdf_to_images("https:report.pdf", output_dir=tmp_path)
+
+        mock_requests.get.assert_not_called()
+        mock_convert.assert_called_once()
+
+    @patch("gptme.tools.browser.requests")
+    @patch("gptme.tools.browser._has_pdftoppm", return_value=True)
+    def test_rejects_file_url(self, _, mock_requests, tmp_path):
+        from gptme.tools.browser import pdf_to_images
+
+        with pytest.raises(ValueError, match="not allowed"):
+            pdf_to_images("file:///tmp/x.pdf", output_dir=tmp_path)
+        mock_requests.get.assert_not_called()
+
+    @patch("gptme.tools.browser.requests")
+    @patch("gptme.tools.browser._has_pdftoppm", return_value=True)
+    def test_rejects_gopher_url(self, _, mock_requests, tmp_path):
+        from gptme.tools.browser import pdf_to_images
+
+        with pytest.raises(ValueError, match="not allowed"):
+            pdf_to_images("gopher://example.com/x.pdf", output_dir=tmp_path)
+        mock_requests.get.assert_not_called()
 
     @patch("gptme.tools.browser._convert_with_pdftoppm")
     @patch("gptme.tools.browser._has_pdftoppm", return_value=True)

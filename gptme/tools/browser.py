@@ -98,6 +98,7 @@ from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import requests
 
@@ -108,6 +109,7 @@ from ..util.gh import (
     parse_github_url,
     transform_github_url,
 )
+from ._url_safety import _validate_url_scheme
 from .base import ToolFunction, ToolSpec, ToolUse
 
 # Availability check only — pypdf itself is imported lazily in _read_pdf_url,
@@ -220,8 +222,9 @@ def pdf_to_images(
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download PDF if URL
-    if url_or_path.startswith(("http://", "https://")):
+    # Download PDF if URL. Case-insensitive http(s) only; local paths stay
+    # on disk (including Windows drive letters, which urlparse treats as a scheme).
+    if _pdf_source_is_remote(url_or_path):
         logger.info(f"Downloading PDF from: {url_or_path}")
         try:
             response = requests.get(url_or_path, timeout=60)
@@ -618,8 +621,41 @@ def has_browser_tool():
     return browser is not None
 
 
+def _pdf_source_is_remote(url_or_path: str) -> bool:
+    """Return True if *url_or_path* should be fetched over HTTP(S).
+
+    Classification is syntactic, not filesystem-dependent. Local paths stay
+    local, including Windows drive letters and POSIX paths that contain
+    URL-like substrings (a download saved as
+    ``downloads/https://example.com/doc.pdf``). A source is a URL only when
+    it begins with ``{scheme}://``; a later ``://`` is just path text.
+
+    An http(s) URL is always remote, even if POSIX would collapse
+    ``https://x`` to a local ``https:/x`` that happens to exist. That
+    existence shortcut let a CWD directory named ``https:`` (or ``HTTP:``)
+    skip host/credential checks and substitute a local PDF for a fetch.
+    file:// and gopher:// still fail the shared validator. Single-letter
+    schemes (``C://temp/file.pdf``) are Windows drive letters, not URLs.
+    """
+    parsed = urlparse(url_or_path)
+    scheme = parsed.scheme.lower()
+    # urlparse("https:report.pdf") has scheme=https but is a filename.
+    # urlparse("downloads/https://host/doc.pdf") has no scheme: "/" is not a
+    # scheme character, so the :// is inside the path.
+    if not (scheme and url_or_path.lower().startswith(f"{scheme}://")):
+        return False
+    # urlparse("C://temp/file.pdf").scheme == "c" and the string starts
+    # with "c://". That is a drive letter, not a network URL.
+    if len(scheme) == 1:
+        return False
+    _validate_url_scheme(url_or_path)
+    return True
+
+
 def _is_pdf_url(url: str) -> bool:
     """Check if URL points to a PDF file."""
+    _validate_url_scheme(url)
+
     # Check URL extension
     if url.lower().endswith(".pdf"):
         return True
@@ -646,6 +682,8 @@ def _read_pdf_url(url: str, max_pages: int | None = None) -> str:
         max_pages: Maximum number of pages to read (default: 10).
                    Set to 0 to read all pages.
     """
+    _validate_url_scheme(url)
+
     if not has_pypdf:
         return "Error: PDF support requires pypdf. Install with: pip install pypdf"
 
