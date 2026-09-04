@@ -12,6 +12,22 @@ from .util.git_cmd import GIT_CMD
 logger = logging.getLogger(__name__)
 
 
+def _get_env_path(var: str) -> str | None:
+    """Return the env-var value, or None if unset or empty/whitespace.
+
+    Treats an empty or whitespace-only value the same as "not set" —
+    this is intentional: empty XDG_* vars (common in Docker or misconfigured
+    environments) must not produce relative paths like ``Path("") / "gptme"``.
+
+    Surrounding whitespace is stripped. ``Path(" /tmp/foo")`` is relative
+    (it does not start with ``/``), so a leading space on ``XDG_DATA_HOME``
+    would otherwise write data under CWD. Accidental padding is the
+    misconfiguration this helper exists to tolerate.
+    """
+    stripped = os.environ.get(var, "").strip()
+    return stripped or None
+
+
 def get_config_dir() -> Path:
     return Path(user_config_dir("gptme"))
 
@@ -26,8 +42,8 @@ def get_pt_history_file() -> Path:
 
 def get_data_dir() -> Path:
     # used in testing, so must take precedence
-    if "XDG_DATA_HOME" in os.environ:
-        return Path(os.environ["XDG_DATA_HOME"]) / "gptme"
+    if xdg := _get_env_path("XDG_DATA_HOME"):
+        return Path(xdg) / "gptme"
 
     # just a workaround for me personally
     old = Path("~/.local/share/gptme").expanduser()
@@ -43,15 +59,15 @@ def get_state_dir() -> Path:
     Used for recovery artifacts and other state that should persist between
     invocations but is not important enough to back up — checkpoints, etc.
     """
-    if "XDG_STATE_HOME" in os.environ:
-        return Path(os.environ["XDG_STATE_HOME"]) / "gptme"
+    if xdg := _get_env_path("XDG_STATE_HOME"):
+        return Path(xdg) / "gptme"
     return Path(user_state_dir("gptme"))
 
 
 def get_logs_dir() -> Path:
     """Get the path for **conversation logs** (not to be confused with the logger file)"""
-    if "GPTME_LOGS_HOME" in os.environ:
-        path = Path(os.environ["GPTME_LOGS_HOME"])
+    if logs_home := _get_env_path("GPTME_LOGS_HOME"):
+        path = Path(logs_home)
     else:
         path = get_data_dir() / "logs"
     path.mkdir(parents=True, exist_ok=True)
@@ -111,14 +127,14 @@ def get_workspace() -> Path:
     """Get the agent workspace directory.
 
     Detection order:
-    1. GPTME_WORKSPACE environment variable
+    1. GPTME_WORKSPACE environment variable (ignored if empty)
     2. Git root, traversing to parent repo if in a submodule
     3. Current working directory
 
     Handles git submodules: if `.git` is a file (not a directory),
     we're in a submodule and the parent repo root is returned instead.
     """
-    if workspace := os.environ.get("GPTME_WORKSPACE"):
+    if workspace := _get_env_path("GPTME_WORKSPACE"):
         return Path(workspace)
 
     try:
@@ -159,11 +175,28 @@ def get_profile_memory_dir(profile_name: str) -> Path:
     learnings that persist across invocations. The primary file is MEMORY.md.
 
     Args:
-        profile_name: Name of the agent profile (e.g. 'explorer', 'researcher')
+        profile_name: Name of the agent profile (e.g. 'explorer', 'researcher').
+            Must be a non-empty path component other than ``.`` or ``..``.
 
     Returns:
         Path to the memory directory (created if it doesn't exist)
+
+    Raises:
+        ValueError: If ``profile_name`` is not a safe single path component.
     """
+    if (
+        not profile_name
+        or profile_name in {".", ".."}
+        or "/" in profile_name
+        or "\\" in profile_name
+        or "\n" in profile_name
+        or "\r" in profile_name
+        or "\0" in profile_name
+        or Path(profile_name).name != profile_name
+    ):
+        raise ValueError(
+            f"Invalid profile name {profile_name!r}: must be a safe path component."
+        )
     path = get_data_dir() / "memories" / "profiles" / profile_name
     path.mkdir(parents=True, exist_ok=True)
     return path
