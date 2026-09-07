@@ -19,6 +19,7 @@ const mockUseTauriServerStatus = jest.fn(() => ({
   serverStatus: null,
 }));
 const isConnected$ = observable(true);
+const isAutoConnecting$ = observable(false);
 const compatibilityWarning$ = observable<null | {
   kind: 'server_older' | 'api_major_mismatch';
   serverApiVersion: number;
@@ -85,6 +86,7 @@ jest.mock('@/contexts/ApiContext', () => {
         compatibilityWarning$,
       },
       isConnected$,
+      isAutoConnecting$,
       connect: mockConnect,
       connectionConfig: { baseUrl: mockBaseUrl },
       switchServer: jest.fn(),
@@ -129,6 +131,7 @@ describe('WelcomeView', () => {
     localStorage.clear();
     setLocation('http://localhost/');
     isConnected$.set(true);
+    isAutoConnecting$.set(false);
     lastConnectionResult$.set(null);
     compatibilityWarning$.set(null);
     mockBaseUrl = 'http://localhost:5700';
@@ -419,6 +422,37 @@ describe('WelcomeView', () => {
       'href',
       'https://gptme.org/docs/server.html'
     );
+  });
+
+  it('hides the disconnected banner while auto-connect is still in progress', () => {
+    // Loading /chat directly kicks off an auto-connect that takes ~1s. Rendering
+    // "Cannot reach ..." during that window contradicts the server dropdown,
+    // which reports "Auto-connecting..." at the same moment.
+    mockBaseUrl = 'http://my-server.example.com:5700';
+    isConnected$.set(false);
+    isAutoConnecting$.set(true);
+
+    render(
+      <SettingsProvider>
+        <WelcomeView />
+      </SettingsProvider>
+    );
+
+    expect(screen.queryByText(/Cannot reach/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the disconnected banner once auto-connect finishes without connecting', () => {
+    mockBaseUrl = 'http://my-server.example.com:5700';
+    isConnected$.set(false);
+    isAutoConnecting$.set(false);
+
+    render(
+      <SettingsProvider>
+        <WelcomeView />
+      </SettingsProvider>
+    );
+
+    expect(screen.getByText(/Cannot reach/i)).toBeInTheDocument();
   });
 
   it('shows a finish-setup banner when the server has no provider configured', async () => {
