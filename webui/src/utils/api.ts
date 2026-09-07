@@ -325,6 +325,24 @@ export class ApiClient {
   private authCookieSetAt: number | null = null;
   private authCookiePromise: Promise<void> | null = null;
   private _probeNonce = 0;
+  // Tracks in-flight server-side conversation creation so subscribeToEvents
+  // can await server readiness before opening the SSE stream.  This lets
+  // createConversationWithPlaceholder return (and the UI navigate) immediately
+  // while the REST call still completes in the background.
+  private pendingServerCreations = new Map<string, Promise<void>>();
+
+  /**
+   * Resolves when the background server-side creation for a given conversation
+   * is complete (or immediately if no creation is in flight).  Useful for tests
+   * that need to assert on server request details after calling
+   * createConversationWithPlaceholder.
+   */
+  async waitForConversationCreation(conversationId: string): Promise<void> {
+    const pending = this.pendingServerCreations.get(conversationId);
+    if (pending) {
+      await pending;
+    }
+  }
 
   constructor(baseUrl: string = getApiBaseUrl(), authHeader: string | null = null) {
     this.baseUrl = baseUrl;
@@ -721,6 +739,30 @@ export class ApiClient {
     reconnectAttempt = 0
   ): Promise<void> {
     const maxReconnects = 5;
+
+    // If this conversation was just created via createConversationWithPlaceholder,
+    // wait for the background server-side creation to finish before opening the
+    // SSE stream.  Without this the EventSource would hit a 404 because the
+    // conversation doesn't exist on the server yet.
+    const pendingCreation = this.pendingServerCreations.get(conversationId);
+    if (pendingCreation) {
+      // Keep the promise in the map until it settles so that concurrent
+      // subscribers (e.g. navigate away and back while creation is pending)
+      // also wait on it instead of bypassing the gate.
+      try {
+        await pendingCreation;
+      } catch (error) {
+        console.error('[ApiClient] Background server creation failed:', error);
+        callbacks.onError(
+          error instanceof Error ? error.message : 'Failed to create conversation on server'
+        );
+        return;
+      } finally {
+        // Delete after settling (success or failure) so no further subscriber
+        // can block on a stale entry.
+        this.pendingServerCreations.delete(conversationId);
+      }
+    }
 
     // Close any existing event stream for this conversation
     this.closeEventStream(conversationId);
@@ -1302,42 +1344,59 @@ export class ApiClient {
       setTopP(conversationId, options.topP);
     }
 
-    if (options?.pendingFiles?.length) {
-      // When files are attached: create an empty conversation first (no message yet),
-      // upload files, then send ONE complete message with file paths.
-      // This avoids the duplicate-message bug where createConversation sent msg_no_files
-      // and sendMessage sent a second copy of msg_with_files.
-      await this.createConversation(conversationId, [], {
-        chat: {
-          model: options?.model,
-          stream: options?.stream,
-          workspace: requestWorkspace(options?.workspace),
-        },
-      });
-      try {
-        const uploadResult = await this.uploadFiles(conversationId, options.pendingFiles);
-        const filePaths = uploadResult.files.map((f) => f.path);
-        await this.sendMessage(conversationId, { ...message, files: filePaths });
-      } catch (error) {
-        console.error('[API] Failed to upload pending files:', error);
-        // Fall back: send original message without files
-        await this.sendMessage(conversationId, message);
+    // Fire server-side creation in the background so the caller can navigate
+    // immediately without waiting for the round-trip.  subscribeToEvents
+    // awaits this promise before opening the SSE stream, preserving the
+    // invariant that the conversation exists on the server before any event
+    // subscription is attempted.
+    const serverCreation = (async () => {
+      if (options?.pendingFiles?.length) {
+        // When files are attached: create an empty conversation first (no message yet),
+        // upload files, then send ONE complete message with file paths.
+        // This avoids the duplicate-message bug where createConversation sent msg_no_files
+        // and sendMessage sent a second copy of msg_with_files.
+        await this.createConversation(conversationId, [], {
+          chat: {
+            model: options?.model,
+            stream: options?.stream,
+            workspace: requestWorkspace(options?.workspace),
+          },
+        });
+        try {
+          const uploadResult = await this.uploadFiles(conversationId, options.pendingFiles);
+          const filePaths = uploadResult.files.map((f) => f.path);
+          await this.sendMessage(conversationId, { ...message, files: filePaths });
+        } catch (error) {
+          console.error('[API] Failed to upload pending files:', error);
+          // Fall back: send original message without files
+          await this.sendMessage(conversationId, message);
+        }
+      } else {
+        // No files: create conversation with the initial message.
+        // useConversation will call step() after subscribing (needsInitialStep: true above).
+        await this.createConversation(conversationId, [message], {
+          chat: {
+            model: options?.model,
+            stream: options?.stream,
+            workspace: requestWorkspace(options?.workspace),
+          },
+        });
       }
-    } else {
-      // No files: create conversation with the initial message.
-      // useConversation will call step() after subscribing (needsInitialStep: true above).
-      await this.createConversation(conversationId, [message], {
-        chat: {
-          model: options?.model,
-          stream: options?.stream,
-          workspace: requestWorkspace(options?.workspace),
-        },
-      });
-    }
+    })();
+
+    // Attach a catch handler so that if no subscriber ever calls
+    // subscribeToEvents, an abandoned rejection doesn't become an
+    // UnhandledPromiseRejection and the map entry is cleaned up.
+    serverCreation.catch((error) => {
+      console.warn('[ApiClient] Background server creation failed (no subscriber):', error);
+      this.pendingServerCreations.delete(conversationId);
+    });
+
+    this.pendingServerCreations.set(conversationId, serverCreation);
 
     // NOTE: step() is NOT called here — useConversation calls it after subscribing to SSE.
 
-    // Return ID immediately after server creation
+    // Return the ID immediately; server creation runs concurrently.
     return conversationId;
   }
 
