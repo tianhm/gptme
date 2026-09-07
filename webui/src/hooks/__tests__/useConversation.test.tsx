@@ -25,11 +25,13 @@ describe('useConversation', () => {
   const mockedUseApi = useApi as jest.MockedFunction<typeof useApi>;
   const subscribeToEvents = jest.fn().mockResolvedValue(undefined);
   const step = jest.fn().mockResolvedValue(undefined);
+  const interruptGenerationApi = jest.fn().mockResolvedValue(undefined);
   const closeEventStream = jest.fn();
   const getChatConfig = jest.fn().mockResolvedValue(null);
   let eventHandlers:
     | {
         onConnected?: () => void;
+        onMessageStart?: () => void;
       }
     | undefined;
 
@@ -39,7 +41,8 @@ describe('useConversation', () => {
       eventHandlers = handlers;
       return Promise.resolve();
     });
-    step.mockClear();
+    step.mockReset().mockResolvedValue(undefined);
+    interruptGenerationApi.mockReset().mockResolvedValue(undefined);
     closeEventStream.mockClear();
     getChatConfig.mockReset().mockResolvedValue(null);
 
@@ -67,6 +70,7 @@ describe('useConversation', () => {
         ({
           subscribeToEvents,
           step,
+          interruptGeneration: interruptGenerationApi,
           closeEventStream,
           getConversation: jest.fn(),
           getChatConfig,
@@ -148,5 +152,79 @@ describe('useConversation', () => {
         'initialStepStream'
       )
     ).toBe(false);
+  });
+
+  it('honors Stop before the SSE session exists by cancelling the pending initial step', async () => {
+    conversations$.get('chat-placeholder')?.isGenerating.set(true);
+
+    const { result } = renderHook(() => useConversation('chat-placeholder'));
+
+    await waitFor(() => {
+      expect(subscribeToEvents).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      await result.current.interruptGeneration();
+    });
+
+    expect(conversations$.get('chat-placeholder')?.needsInitialStep.get()).toBe(false);
+    expect(conversations$.get('chat-placeholder')?.isGenerating.get()).toBe(false);
+    expect(interruptGenerationApi).toHaveBeenCalledWith('chat-placeholder');
+
+    await act(async () => {
+      eventHandlers?.onConnected?.();
+      await Promise.resolve();
+    });
+
+    expect(step).not.toHaveBeenCalled();
+  });
+
+  it('hides Stop even after onConnected already consumed the pending initial step', async () => {
+    conversations$.get('chat-placeholder')?.isGenerating.set(true);
+
+    const { result } = renderHook(() => useConversation('chat-placeholder'));
+
+    await waitFor(() => {
+      expect(subscribeToEvents).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      eventHandlers?.onConnected?.();
+      await Promise.resolve();
+    });
+    expect(step).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.interruptGeneration();
+    });
+
+    expect(conversations$.get('chat-placeholder')?.isGenerating.get()).toBe(false);
+
+    await act(async () => {
+      eventHandlers?.onMessageStart?.();
+    });
+
+    expect(conversations$.get('chat-placeholder')?.isGenerating.get()).toBe(false);
+    expect(interruptGenerationApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears generating when the initial step request fails', async () => {
+    step.mockRejectedValueOnce(new Error('step failed'));
+    conversations$.get('chat-placeholder')?.isGenerating.set(true);
+
+    renderHook(() => useConversation('chat-placeholder'));
+
+    await waitFor(() => {
+      expect(subscribeToEvents).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      eventHandlers?.onConnected?.();
+    });
+
+    await waitFor(() => {
+      expect(conversations$.get('chat-placeholder')?.isGenerating.get()).toBe(false);
+    });
+    expect(step).toHaveBeenCalled();
   });
 });

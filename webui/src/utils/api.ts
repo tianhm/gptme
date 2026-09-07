@@ -18,7 +18,13 @@ import { getApiBaseUrl } from '@/utils/connectionConfig';
 import { isLocalUrl, withLocalAddressSpace } from '@/utils/addressSpace';
 import { type Observable } from '@legendapp/state';
 import { observable } from '@legendapp/state';
-import { initConversation, setMaxTokens, setTemperature, setTopP } from '@/stores/conversations';
+import {
+  initConversation,
+  setGenerating,
+  setMaxTokens,
+  setTemperature,
+  setTopP,
+} from '@/stores/conversations';
 
 // Add DOM types
 type RequestInit = globalThis.RequestInit;
@@ -1334,6 +1340,13 @@ export class ApiClient {
       },
       { needsInitialStep: true, initialStepStream: options?.stream }
     );
+    // Pre-set generating so Stop appears with the first chat render, collapsing
+    // "message appears" and "response starts indicating" into one visual event.
+    // Stop before the SSE session exists cancels this pending initial step
+    // (useConversation.interruptGeneration). A rejected initial step() also
+    // clears the flag. onMessageStart re-sets it (no-op); onError/onInterrupted
+    // remain the SSE failure/interrupt paths.
+    setGenerating(conversationId, true);
     if (options?.maxTokens !== undefined) {
       setMaxTokens(conversationId, options.maxTokens);
     }
@@ -1693,7 +1706,9 @@ export class ApiClient {
       const sessionId: string | undefined = this.sessions$.get(logfile).get();
 
       if (!sessionId) {
-        throw new ApiClientError('Session ID not found for conversation', 404);
+        // Stop clicked before the SSE handshake supplied a session. Nothing to
+        // interrupt on the server; the caller cancels any pending local initial-step.
+        return;
       }
 
       await this.fetchJson<{ status: string }>(

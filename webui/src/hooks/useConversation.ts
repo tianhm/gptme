@@ -53,6 +53,9 @@ export function useConversation(conversationId: string, serverId?: string) {
   const topP = use$(() => conversation$?.topP.get());
 
   const messageJustCompleted = useRef(false);
+  // Stop during the new-chat handshake: onConnected / onMessageStart must not
+  // restart generation after the user already cancelled the pending initial step.
+  const stopRequestedRef = useRef(false);
   const loadingOlderMessagesRef = useRef(false);
   const isLoadingOlderMessages$ = useObservable(false);
   const isLoadingOlderMessages = use$(isLoadingOlderMessages$);
@@ -220,6 +223,13 @@ export function useConversation(conversationId: string, serverId?: string) {
         api
           .subscribeToEvents(conversationId, {
             onMessageStart: () => {
+              if (stopRequestedRef.current) {
+                // Handshake started generation after Stop. Keep the UI stopped
+                // and interrupt now that a session is likely present.
+                setGenerating(conversationId, false);
+                void api.interruptGeneration(conversationId);
+                return;
+              }
               setGenerating(conversationId, true);
               setExecutingTool(conversationId, null, null); // Clear executing tool when starting new generation
               messageJustCompleted.current = false;
@@ -424,26 +434,29 @@ export function useConversation(conversationId: string, serverId?: string) {
             },
             onConnected: () => {
               // Check if this conversation needs initial step (was created from WelcomeView)
-              // This fixes the race condition where step() was called before subscription
-              const needsStep = conversation$?.needsInitialStep?.get();
-              if (needsStep) {
-                const initialStepStream = conversation$?.initialStepStream?.get();
-                clearInitialStepState(conversationId);
-                api
-                  .step(
-                    conversationId,
-                    undefined,
-                    initialStepStream ?? true,
-                    'main',
-                    maxTokens,
-                    temperature,
-                    topP
-                  )
-                  .catch((error) => {
-                    console.error('[useConversation] Error triggering initial step:', error);
-                    toastStepStartError(toast, error);
-                  });
+              // This fixes the race condition where step() was called before subscription.
+              // Re-read immediately before stepping so a Stop click during the handshake
+              // (which clears needsInitialStep / stopRequestedRef) is honored.
+              if (stopRequestedRef.current || !conversation$?.needsInitialStep?.get()) {
+                return;
               }
+              const initialStepStream = conversation$?.initialStepStream?.get();
+              clearInitialStepState(conversationId);
+              api
+                .step(
+                  conversationId,
+                  undefined,
+                  initialStepStream ?? true,
+                  'main',
+                  maxTokens,
+                  temperature,
+                  topP
+                )
+                .catch((error) => {
+                  console.error('[useConversation] Error triggering initial step:', error);
+                  setGenerating(conversationId, false);
+                  toastStepStartError(toast, error);
+                });
             },
             onConnectionState: (state) => {
               switch (state.status) {
@@ -491,6 +504,7 @@ export function useConversation(conversationId: string, serverId?: string) {
           })
           .catch((err) => {
             console.error('[useConversation] Failed to subscribe to events:', err);
+            setGenerating(conversationId, false);
             toast({
               variant: 'destructive',
               title: 'Error',
@@ -523,6 +537,7 @@ export function useConversation(conversationId: string, serverId?: string) {
     if (!conversation$) {
       throw new Error('Conversation not initialized');
     }
+    stopRequestedRef.current = false;
 
     // Clear any pending or executing tool when sending a new message
     const pendingTool = conversation$?.pendingTool.get();
@@ -661,6 +676,14 @@ export function useConversation(conversationId: string, serverId?: string) {
   };
 
   const interruptGeneration = async () => {
+    // Unconditional local cancel. Stop must hide immediately even if
+    // onConnected already consumed needsInitialStep and step() is in flight
+    // without a session id yet. The API interrupt is best-effort and no-ops
+    // until a session exists.
+    stopRequestedRef.current = true;
+    clearInitialStepState(conversationId);
+    setGenerating(conversationId, false);
+
     try {
       await api.interruptGeneration(conversationId);
     } catch (error) {
