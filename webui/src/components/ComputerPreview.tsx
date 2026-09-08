@@ -4,8 +4,34 @@ import { Button } from '@/components/ui/button';
 import { useApi } from '@/contexts/ApiContext';
 import type { FC } from 'react';
 
-const VNC_URL = 'http://localhost:6080/vnc.html';
+// noVNC port used by the computer-use Docker stack (websockify on :6080).
+const VNC_PORT = 6080;
 const DEFAULT_POLL_INTERVAL_MS = 2000;
+
+/**
+ * Build the noVNC URL for a given server base URL.
+ *
+ * Mounted under ``/preview/`` — never under ``/api/``. Agent-controlled HTML
+ * on the API cookie path would inherit gptme-server origin privileges.
+ * Same-origin iframe auth uses the ``Path=/preview/`` auth cookie; cloud
+ * deployments authenticate at Traefik. Iframes cannot attach a bearer header.
+ *
+ * noVNC 1.5.0 defaults its WebSocket path to root-relative ``/websockify``.
+ * The ``path`` query param points it at the proxied websockify endpoint,
+ * including any cloud instance prefix on ``baseUrl``.
+ */
+export function buildVncUrl(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '');
+  const previewPrefix = `/preview/${VNC_PORT}`;
+  const pageUrl = `${base}${previewPrefix}/vnc.html`;
+  const wsPath = new URL(`${base}${previewPrefix}/websockify`).pathname.replace(/^\//, '');
+  const params = new URLSearchParams({
+    path: wsPath,
+    autoconnect: '1',
+    resize: 'scale',
+  });
+  return `${pageUrl}?${params.toString()}`;
+}
 
 interface BackendStatus {
   screenshot_available: boolean;
@@ -191,9 +217,10 @@ export const ComputerPreview: FC = () => {
           <span className="text-xs text-muted-foreground">VNC mode (requires Docker)</span>
         </div>
         <iframe
-          src={VNC_URL}
+          src={buildVncUrl(baseUrl)}
           className="h-full w-full rounded-md border-0"
           allow="clipboard-read; clipboard-write"
+          sandbox="allow-scripts allow-forms allow-pointer-lock allow-popups allow-popups-to-escape-sandbox"
           title="VNC Viewer"
         />
       </div>
