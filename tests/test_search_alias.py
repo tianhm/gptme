@@ -1,13 +1,19 @@
 """Tests for `gptme search` alias and gptme-* plugin dispatch."""
 
 import importlib
+import os
 import re
-from unittest.mock import patch
+import subprocess
+import sys
+from pathlib import Path
+from unittest.mock import ANY, patch
 
 import pytest
 from click.testing import CliRunner
 
 from gptme.cli.main import main
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -175,7 +181,9 @@ class TestUtilSubcommandMirroring:
         ):
             result = runner.invoke(main, ["chats"])
         assert result.exit_code == 0
-        mock_call.assert_called_once_with(["/usr/local/bin/gptme-util", "chats"])
+        mock_call.assert_called_once_with(
+            ["/usr/local/bin/gptme-util", "chats"], env=ANY
+        )
 
     def test_util_subcmd_passes_all_args(self, runner: CliRunner):
         """gptme chats list passes 'chats list' to gptme-util."""
@@ -189,7 +197,7 @@ class TestUtilSubcommandMirroring:
             result = runner.invoke(main, ["chats", "list"])
         assert result.exit_code == 0
         mock_call.assert_called_once_with(
-            ["/usr/local/bin/gptme-util", "chats", "list"]
+            ["/usr/local/bin/gptme-util", "chats", "list"], env=ANY
         )
 
     def test_util_subcmd_forwards_nested_help(self, runner: CliRunner):
@@ -204,7 +212,7 @@ class TestUtilSubcommandMirroring:
             result = runner.invoke(main, ["chats", "list", "--help"])
         assert result.exit_code == 0
         mock_call.assert_called_once_with(
-            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"], env=ANY
         )
 
     def test_util_subcmd_forwards_nested_help_with_leading_flag(
@@ -221,7 +229,7 @@ class TestUtilSubcommandMirroring:
             result = runner.invoke(main, ["--verbose", "chats", "list", "--help"])
         assert result.exit_code == 0
         mock_call.assert_called_once_with(
-            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"], env=ANY
         )
 
     def test_util_subcmd_forwards_nested_help_with_leading_value_option(
@@ -243,7 +251,7 @@ class TestUtilSubcommandMirroring:
             )
         assert result.exit_code == 0
         mock_call.assert_called_once_with(
-            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"], env=ANY
         )
 
     def test_util_subcmd_forwards_nested_help_with_grouped_short_option(
@@ -265,7 +273,7 @@ class TestUtilSubcommandMirroring:
             result = runner.invoke(main, ["-vm", "gpt-4", "chats", "list", "--help"])
         assert result.exit_code == 0
         mock_call.assert_called_once_with(
-            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"], env=ANY
         )
 
     def test_util_subcmd_forwards_nested_help_with_inline_value_short_option(
@@ -287,7 +295,7 @@ class TestUtilSubcommandMirroring:
             result = runner.invoke(main, ["-mgpt-4", "chats", "list", "--help"])
         assert result.exit_code == 0
         mock_call.assert_called_once_with(
-            ["/usr/local/bin/gptme-util", "chats", "list", "--help"]
+            ["/usr/local/bin/gptme-util", "chats", "list", "--help"], env=ANY
         )
 
     def test_util_subcmd_after_double_dash_suppresses_dispatch(self):
@@ -357,7 +365,7 @@ class TestUtilSubcommandMirroring:
                 return "/usr/local/bin/gptme-chats"
             return None
 
-        def fake_call(args: list) -> int:
+        def fake_call(args: list, **kwargs) -> int:
             calls.append(args)
             return 0
 
@@ -382,3 +390,65 @@ class TestUtilSubcommandMirroring:
             result = runner.invoke(main, ["chats"])
         assert result.exit_code == 1
         assert "gptme-util" in result.output
+
+    def test_util_subcmd_propagates_parent_prog_env(self, runner: CliRunner):
+        """Forwarded gptme-util subprocesses receive GPTME_PARENT_PROG=gptme."""
+        with (
+            patch(
+                "gptme.cli.main.shutil.which",
+                return_value="/usr/local/bin/gptme-util",
+            ),
+            patch("gptme.cli.main.subprocess.call", return_value=0) as mock_call,
+        ):
+            result = runner.invoke(main, ["chats"])
+        assert result.exit_code == 0
+        mock_call.assert_called_once()
+        _args, kwargs = mock_call.call_args
+        assert kwargs["env"]["GPTME_PARENT_PROG"] == "gptme"
+
+
+def _util_stats_days_zero_output(*, parent_prog: str | None) -> str:
+    """Invoke gptme-util stats --days 0 in a fresh interpreter.
+
+    GPTME_PARENT_PROG is applied at import time, so this cannot use CliRunner
+    in the already-imported test process.
+    """
+    env = os.environ.copy()
+    if parent_prog is None:
+        env.pop("GPTME_PARENT_PROG", None)
+    else:
+        env["GPTME_PARENT_PROG"] = parent_prog
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(_REPO_ROOT) if not existing else f"{_REPO_ROOT}{os.pathsep}{existing}"
+    )
+    code = (
+        "import sys\n"
+        "sys.argv[0] = 'gptme-util'\n"
+        "from gptme.cli.util import main\n"
+        "raise SystemExit(main())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, "stats", "--days", "0"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return (result.stderr or "") + (result.stdout or "")
+
+
+class TestUtilParentProgName:
+    def test_forwarded_validation_error_uses_gptme_program_name(self):
+        """gptme stats --days 0 must not leak the gptme-util implementation name."""
+        output = _util_stats_days_zero_output(parent_prog="gptme")
+        assert "Usage: gptme stats" in output
+        assert "Try 'gptme stats --help'" in output
+        assert "gptme-util" not in output
+
+    def test_direct_validation_error_keeps_gptme_util_program_name(self):
+        """Direct gptme-util invocation is unchanged when the parent marker is absent."""
+        output = _util_stats_days_zero_output(parent_prog=None)
+        assert "Usage: gptme-util stats" in output
+        assert "Try 'gptme-util stats --help'" in output
