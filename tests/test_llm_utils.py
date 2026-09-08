@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import pytest
+
 from gptme.llm.utils import apply_cache_control, parameters2dict, process_image_file
 from gptme.tools.base import Parameter
 
@@ -406,6 +408,272 @@ class TestProcessImageFile:
         content_parts2: list[dict] = []
         result2 = process_image_file(str(img_file), content_parts2, max_size_mb=3)
         assert result2 is not None
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 10000])
+@pytest.mark.parametrize("break_on_tooluse", [False, True])
+def test_reply_stream_ipython_terminal_projection(
+    monkeypatch, chunk_size, break_on_tooluse
+):
+    """Terminal projection must not alter callbacks, saved content, or tool breaks."""
+    import io
+    import json
+
+    from rich.console import Console
+
+    from gptme.llm import _reply_stream, _StreamWithMetadata
+    from gptme.message import Message
+    from gptme.tools import init_tools
+
+    init_tools(["ipython"], include_mcp=False)
+    monkeypatch.setattr("gptme.tools.base.tool_format", "tool")
+    source = 'values = [1, 2]\nprint("} \\" [/tmp/source] ```")'
+    call = "@ipython(call-1): " + json.dumps(
+        {"code": source, "kernel": "python3"}, indent=2
+    )
+    suffix = "\nAfter the call"
+    raw = call + suffix
+
+    def chunks():
+        for i in range(0, len(raw), chunk_size):
+            yield raw[i : i + chunk_size]
+        return {"model": "mock/echo", "usage": {"output_tokens": 9}}
+
+    monkeypatch.setattr(
+        "gptme.llm._stream",
+        lambda *args, **kwargs: _StreamWithMetadata(chunks(), "mock/echo"),
+    )
+    captured = io.StringIO()
+    terminal = Console(file=captured, width=160, force_terminal=True, record=True)
+    monkeypatch.setattr("gptme.llm.rprint", terminal.print)
+    tokens: list[str] = []
+    result = _reply_stream(
+        [Message("user", "hi")],
+        model="mock/echo",
+        tools=None,
+        on_token=tokens.append,
+        break_on_tooluse=break_on_tooluse,
+    )
+
+    expected = call if break_on_tooluse else raw
+    assert result.content == expected
+    assert "".join(tokens) == expected
+    assert result.metadata is not None
+    assert result.metadata["usage"]["output_tokens"] == 9
+    rendered = terminal.export_text()
+    assert "@ipython(call-1):" in rendered
+    assert source in rendered
+    assert 'arguments: {"kernel": "python3"}' in rendered
+    assert '"code":' not in rendered
+    assert ("After the call" in rendered) is (not break_on_tooluse)
+    assert "\x1b[" in captured.getvalue()
+
+
+def test_reply_stream_tool_display_projects_shell_and_streams_prose(monkeypatch):
+    """Prose streams immediately; complete native shell calls are projected."""
+    import io
+
+    from rich.console import Console
+
+    from gptme.llm import _reply_stream, _StreamWithMetadata
+    from gptme.message import Message
+
+    captured = io.StringIO()
+    terminal = Console(file=captured, width=160, force_terminal=True, record=True)
+    monkeypatch.setattr("gptme.llm.rprint", terminal.print)
+    ordinary = 'Hello\n@shell(call-2): {"command": "pwd"}\nAfter\n'
+
+    def chunks():
+        yield "Hello"
+        assert "Hello" in captured.getvalue()
+        yield ordinary[len("Hello") :]
+
+    monkeypatch.setattr(
+        "gptme.llm._stream",
+        lambda *args, **kwargs: _StreamWithMetadata(chunks(), "mock/echo"),
+    )
+    result = _reply_stream(
+        [Message("user", "hi")], "mock/echo", None, break_on_tooluse=False
+    )
+    assert result.content == ordinary
+    rendered = terminal.export_text()
+    assert "Hello" in rendered
+    assert "@shell(call-2):" in rendered
+    assert "pwd" in rendered
+    assert "After" in rendered
+    assert '"command":' not in rendered
+
+
+@pytest.mark.parametrize("error", [None, KeyboardInterrupt, RuntimeError])
+def test_reply_stream_unfinished_ipython_display_is_flushed(monkeypatch, error):
+    """A cancelled or broken stream must display incomplete native calls once."""
+    import io
+
+    from rich.console import Console
+
+    from gptme.llm import _reply_stream, _StreamWithMetadata
+    from gptme.message import Message
+
+    raw = '@ipython(partial): {"code": "print(\\n[/tmp/source]'
+    captured = io.StringIO()
+    terminal = Console(file=captured, width=160)
+    monkeypatch.setattr("gptme.llm.rprint", terminal.print)
+
+    def chunks():
+        yield raw[:9]
+        yield raw[9:]
+        if error:
+            raise error()
+
+    monkeypatch.setattr(
+        "gptme.llm._stream",
+        lambda *args, **kwargs: _StreamWithMetadata(chunks(), "mock/echo"),
+    )
+    if error is RuntimeError:
+        with pytest.raises(RuntimeError):
+            _reply_stream([Message("user", "hi")], "mock/echo", None)
+    else:
+        result = _reply_stream([Message("user", "hi")], "mock/echo", None)
+        suffix = "... ^C Interrupted" if error is KeyboardInterrupt else ""
+        assert result.content == raw + suffix
+    assert captured.getvalue().count(raw) == 1
+
+
+def test_tool_call_display_compacts_emitted_prefix():
+    """Emitted prose is dropped so later drain scans do not rescan the whole reply."""
+    from gptme.util.tool_display import ToolCallDisplay, ToolCodeDisplay
+
+    display = ToolCallDisplay()
+    prefix = "Hello world\n" * 40
+    streamed = "".join(part for part in display.feed(prefix) if isinstance(part, str))
+    assert streamed == prefix
+    assert "Hello world" not in display._buf
+    assert display._emitted == 0
+
+    parts = list(display.feed('@shell(c1): {"command": "pwd"}\nAfter\n'))
+    assert any(isinstance(p, ToolCodeDisplay) and p.code == "pwd" for p in parts)
+    assert any(isinstance(p, str) and "After" in p for p in parts)
+
+
+def test_tool_call_display_compacts_up_to_incomplete_call():
+    from gptme.util.tool_display import ToolCallDisplay, ToolCodeDisplay
+
+    display = ToolCallDisplay()
+    list(display.feed('Prose before\n@shell(c1): {"command": "pw'))
+    assert "Prose before" not in display._buf
+    assert display._buf.startswith("@shell")
+    parts = list(display.feed('d"}'))
+    assert any(isinstance(p, ToolCodeDisplay) and p.code == "pwd" for p in parts)
+    assert display.finish() == ""
+
+
+def test_tool_call_display_retains_open_fence_across_chunks():
+    """An unclosed fence must survive compaction so later native calls stay literal."""
+    from gptme.util.tool_display import ToolCallDisplay, ToolCodeDisplay
+
+    display = ToolCallDisplay()
+    list(display.feed("```example\n"))
+    assert "```example" in display._buf
+    parts = list(display.feed('@shell(c1): {"command": "pwd"}\n'))
+    assert not any(isinstance(p, ToolCodeDisplay) for p in parts)
+    parts = list(display.feed('```\nAfter\n@shell(c2): {"command": "ls"}\n'))
+    projected = [p for p in parts if isinstance(p, ToolCodeDisplay)]
+    assert len(projected) == 1
+    assert projected[0].code == "ls"
+
+
+def test_tool_call_display_drops_closed_fence():
+    from gptme.util.tool_display import ToolCallDisplay
+
+    display = ToolCallDisplay()
+    list(display.feed("```example\nfoo\n```\n"))
+    assert display._buf == ""
+    assert display._emitted == 0
+
+
+def test_tool_call_display_abandoned_partial_call_streams_later_prose():
+    """An incomplete native call that turns into illegal JSON must not freeze."""
+    from gptme.util.tool_display import ToolCallDisplay, ToolCodeDisplay
+
+    display = ToolCallDisplay()
+    assert list(display.feed("@shell(call-2): {")) == []
+    parts = list(display.feed("\nThis is ordinary prose\nMore text\n"))
+    streamed = "".join(p for p in parts if isinstance(p, str))
+    assert "This is ordinary prose" in streamed
+    assert "More text" in streamed
+    assert not any(isinstance(p, ToolCodeDisplay) for p in parts)
+    assert display.finish() == ""
+
+
+def test_tool_call_display_pretty_printed_json_still_projects():
+    """A newline after '{' is still a live JSON prefix, not an abandoned call."""
+    from gptme.util.tool_display import ToolCallDisplay, ToolCodeDisplay
+
+    display = ToolCallDisplay()
+    assert list(display.feed("@shell(c1): {\n")) == []
+    parts = list(display.feed('  "command": "pwd"\n}'))
+    projected = [p for p in parts if isinstance(p, ToolCodeDisplay)]
+    assert len(projected) == 1
+    assert projected[0].code == "pwd"
+    assert display.finish() == ""
+
+
+def test_tool_call_display_holds_header_newline_for_next_json_chunk():
+    """Header plus newline must stay buffered so the JSON chunk is still a call."""
+    from gptme.util.tool_display import ToolCallDisplay, ToolCodeDisplay
+
+    display = ToolCallDisplay()
+    assert list(display.feed("@shell(c1):\n")) == []
+    assert display._buf.startswith("@shell")
+    parts = list(display.feed('{"command": "pwd"}'))
+    projected = [p for p in parts if isinstance(p, ToolCodeDisplay)]
+    assert len(projected) == 1
+    assert projected[0].code == "pwd"
+
+
+def test_reply_stream_abandoned_partial_call_still_streams_prose(monkeypatch):
+    """Abandoned '@shell(...): {' must not hide later streamed prose."""
+    import io
+
+    from rich.console import Console
+
+    from gptme.llm import _reply_stream, _StreamWithMetadata
+    from gptme.message import Message
+
+    captured = io.StringIO()
+    terminal = Console(file=captured, width=160, force_terminal=True, record=True)
+    monkeypatch.setattr("gptme.llm.rprint", terminal.print)
+    ordinary = "@shell(call-2): {\nThis is ordinary prose\n"
+
+    def chunks():
+        yield "@shell(call-2): {"
+        yield "\nThis is ordinary prose\n"
+
+    monkeypatch.setattr(
+        "gptme.llm._stream",
+        lambda *args, **kwargs: _StreamWithMetadata(chunks(), "mock/echo"),
+    )
+    result = _reply_stream(
+        [Message("user", "hi")], "mock/echo", None, break_on_tooluse=False
+    )
+    assert result.content == ordinary
+    rendered = terminal.export_text()
+    assert "This is ordinary prose" in rendered
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_reply_ipython_display_with_offline_provider(capsys, stream):
+    """The actual provider/reply path shares terminal-only formatting."""
+    import json
+
+    from gptme.llm import reply
+    from gptme.message import Message
+
+    source = "values = [1, 2]\nprint(values)"
+    request = "\n@ipython(offline): " + json.dumps({"code": source})
+    result = reply([Message("user", request)], "mock/echo", stream=stream)
+    assert result.content == "Echo: " + request
+    assert source in capsys.readouterr().out
 
 
 def test_reply_stream_on_token_callback(monkeypatch):
