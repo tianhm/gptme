@@ -99,8 +99,24 @@ class Codeblock:
         return list(_extract_codeblocks(markdown, streaming=streaming))
 
 
-def _find_heredoc_terminator(line: str) -> str | None:
-    """Return the heredoc terminator word if ``line`` opens a heredoc.
+def _find_heredoc_terminator(
+    line: str,
+    in_single: bool = False,
+    in_double: bool = False,
+    in_ansi_c: bool = False,
+) -> tuple[str | None, bool, bool, bool]:
+    """Return ``(terminator | None, in_single, in_double, in_ansi_c)``.
+
+    The quote-state parameters let callers carry per-character quote state
+    across lines so that a multiline single-quoted string (e.g.
+    ``s='\\n<< EOF\\n'``) is not misidentified as a heredoc opener on the
+    continuation line.  Returns the end-of-line quote state so callers can
+    pass it into the next invocation.
+
+    ``in_ansi_c`` tracks bash ANSI-C quoting (``$'...'``), where backslash
+    escapes *are* processed (unlike POSIX single quotes).  Without this,
+    ``x=$'a\\'b'`` is scanned as POSIX ``'...'`` and leaves ``in_single``
+    set, so a later closing fence is treated as quoted content.
 
     Only recognizes ``<<`` operators at top-level (outside quoted strings,
     outside comments, and not backslash-escaped): a heredoc operator is
@@ -123,14 +139,37 @@ def _find_heredoc_terminator(line: str) -> str | None:
     are rejected to avoid minting a phantom terminator that could swallow
     later fences.
     """
-    in_single = in_double = False
     i = 0
     n = len(line)
-    while i < n - 1:
+    # Iterate over ALL characters so that a quote at the very end of a line
+    # (e.g. ``s='``) updates in_single/in_double for the caller to carry to the
+    # next line.  The old ``while i < n - 1`` guard was safe for the ``<<``
+    # look-ahead but silently skipped trailing quote characters.
+    while i < n:
         c = line[i]
+        if in_ansi_c:
+            # ANSI-C $'...' : backslash escapes the next char, including quotes.
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                in_ansi_c = False
+            i += 1
+            continue
         if c == "\\" and not in_single:
             # Backslash escapes the next char outside single quotes (bash
             # doesn't allow escaping inside single quotes at all).
+            i += 2
+            continue
+        if (
+            c == "$"
+            and not in_single
+            and not in_double
+            and i + 1 < n
+            and line[i + 1] == "'"
+        ):
+            # Start of ANSI-C quoting: $'...'
+            in_ansi_c = True
             i += 2
             continue
         if c == "'" and not in_double:
@@ -144,7 +183,7 @@ def _find_heredoc_terminator(line: str) -> str | None:
             and (i == 0 or line[i - 1].isspace())
         ):
             # Start of a shell comment - nothing after it is executable syntax.
-            return None
+            return None, in_single, in_double, in_ansi_c
         elif (
             c == "$"
             and not in_single
@@ -160,6 +199,7 @@ def _find_heredoc_terminator(line: str) -> str | None:
             continue
         elif (
             c == "<"
+            and i + 1 < n  # guard: need line[i+1] for the look-ahead
             and line[i + 1] == "<"
             and not in_single
             and not in_double
@@ -180,9 +220,11 @@ def _find_heredoc_terminator(line: str) -> str | None:
                     # terminator that could swallow later fences.
                     i += 2
                     continue
-                return term
+                # At the heredoc opener, quote state is always unquoted (the
+                # guard above requires not in_single and not in_double).
+                return term, False, False, False
         i += 1
-    return None
+    return None, in_single, in_double, in_ansi_c
 
 
 def _extract_codeblocks(
@@ -327,6 +369,13 @@ def _extract_codeblocks(
             # body (e.g. a shell script writing a markdown file) are treated as literal
             # content and never as block closers.
             heredoc_terminator: str | None = None
+            # Cross-line quote state for the heredoc scanner: a shell single-quoted
+            # string can span multiple lines (e.g. ``s='\n<< EOF\n'``).  Without
+            # carrying in_single/in_double across lines, the ``<< EOF`` on the
+            # continuation line is misidentified as a heredoc opener.
+            _qs_in_single: bool = False
+            _qs_in_double: bool = False
+            _qs_in_ansi_c: bool = False
 
             # Collect content until we find the matching closing ```
             while i < len(lines):
@@ -391,7 +440,11 @@ def _extract_codeblocks(
                 # message) and the O(n^2) worst case on very large documents.
                 if lang in _SHELL_LANGS:
                     if heredoc_terminator is None:
-                        candidate = _find_heredoc_terminator(line)
+                        candidate, _qs_in_single, _qs_in_double, _qs_in_ansi_c = (
+                            _find_heredoc_terminator(
+                                line, _qs_in_single, _qs_in_double, _qs_in_ansi_c
+                            )
+                        )
                         _confirm_window = lines[i + 1 : i + 1 + 200]
                         if candidate is not None and any(
                             later.strip() == candidate for later in _confirm_window
@@ -399,6 +452,14 @@ def _extract_codeblocks(
                             heredoc_terminator = candidate
                     elif line.strip() == heredoc_terminator:
                         heredoc_terminator = None
+                        # Heredoc body is verbatim text — it doesn't affect the
+                        # outer shell's quote state.  A heredoc opener always
+                        # appears outside any quoted string (the not-in_single /
+                        # not-in_double guards ensure this), so restoring to
+                        # unquoted after the body closes is always correct.
+                        _qs_in_single = False
+                        _qs_in_double = False
+                        _qs_in_ansi_c = False
 
                 # Check if this line starts with backticks (potential opening or closing)
                 line_fence_match = re.match(r"^(`{3,})", line)
@@ -411,6 +472,12 @@ def _extract_codeblocks(
                     is_outer_close = is_bare_fence and line_fence_len == fence_len
                     if is_outer_close or (is_bare_fence and nesting_depth > 1):
                         # Bare fence - determine if opening or closing based on context
+                        # A fence inside an open quoted string is literal content,
+                        # not a markdown delimiter (same rationale as heredoc bodies).
+                        if _qs_in_single or _qs_in_double or _qs_in_ansi_c:
+                            content_lines.append(line)
+                            i += 1
+                            continue
 
                         # Check next line
                         has_next_line = i + 1 < len(lines)
@@ -523,8 +590,34 @@ def _extract_codeblocks(
                             else:
                                 content_lines.append(line)
                         elif streaming:
-                            # Streaming mode: require blank line to confirm closure
-                            if next_is_blank:
+                            # Exec langs (shell, bash, ipython, …) have no
+                            # triple-backtick syntax of their own, so a bare
+                            # fence at depth 1 is unambiguously a block closer
+                            # even in streaming mode — no blank-line confirmation
+                            # is required.  This makes streaming extraction
+                            # consistent with non-streaming for exec langs and
+                            # prevents the trailing-blank-line sensitivity where
+                            # an extra ``\n`` at end-of-message flips the result
+                            # from no-block to an oversized block.
+                            if (
+                                lang in _EXEC_LANGS
+                                and heredoc_terminator is None
+                                and not _qs_in_single
+                                and not _qs_in_double
+                                and not _qs_in_ansi_c
+                            ):
+                                yield Codeblock(
+                                    lang,
+                                    "\n".join(content_lines),
+                                    start=start_line,
+                                    fence="`" * fence_len,
+                                )
+                                i += 1
+                                break
+                            # For non-exec langs: require blank line to confirm
+                            # closure (a bare fence could be the start of a
+                            # nested block that isn't finished yet).
+                            elif next_is_blank:
                                 # Blank line confirms this is a closing tag
                                 nesting_depth -= 1
                                 if nesting_depth == 0:
