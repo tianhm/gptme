@@ -204,6 +204,17 @@ def test_find_potential_paths_punctuation():
     assert "https://example.com" in paths
 
 
+def test_find_potential_paths_ignores_lone_slash():
+    """Prose/markdown ' / ' is not a filesystem path (#3758)."""
+    assert _find_potential_paths("**Still open / not done:**") == []
+    assert _find_potential_paths("also file the rm -rf / false-positive") == []
+    assert "/" not in _find_potential_paths("use `/` as the separator")
+    assert "//" not in _find_potential_paths("see // for details")
+    # Real absolute paths must still be detected
+    assert "/tmp/foo" in _find_potential_paths("clean /tmp/foo afterwards")
+    assert "/tmp" in _find_potential_paths("rm -rf /tmp,")
+
+
 def test_find_potential_paths_at_prefix(tmp_path, monkeypatch):
     """Test that @-prefixed paths are detected and the @ is stripped."""
     (tmp_path / "main.py").touch()
@@ -1193,3 +1204,54 @@ def test_step_marks_httpx_from_reply_as_provider_error():
     assert not is_provider_error(tool_err)
     mark_llm_reply_origin(tool_err)
     assert is_provider_error(tool_err)
+
+
+def test_get_user_input_interruptible_during_include_paths(monkeypatch):
+    """Path inclusion after prompt_user must run in an interruptible state."""
+    import sys
+
+    from gptme.chat import _get_user_input
+    from gptme.logmanager import Log
+    from gptme.message import Message
+    from gptme.util.interrupt import _interruptible_var, clear_interruptible
+
+    _chat_mod = sys.modules["gptme.chat"]
+    seen: dict[str, bool] = {}
+
+    def fake_include_paths(msg, workspace=None, **kwargs):
+        seen["interruptible"] = _interruptible_var.get()
+        return msg
+
+    monkeypatch.setattr(_chat_mod, "include_paths", fake_include_paths)
+    monkeypatch.setattr(_chat_mod, "prompt_user", lambda value=None: "hello /")
+    clear_interruptible()
+
+    result = _get_user_input(Log(messages=[Message("assistant", "ok")]), None)
+    assert result is not None
+    assert result.content == "hello /"
+    assert seen["interruptible"] is True
+    assert _interruptible_var.get() is False
+
+
+def test_get_user_input_cancels_on_include_paths_interrupt(monkeypatch):
+    """Ctrl-C during path inclusion must cancel preprocessing, not print Ctrl-D."""
+    import sys
+
+    from gptme.chat import _get_user_input
+    from gptme.logmanager import Log
+    from gptme.message import Message
+    from gptme.util.interrupt import _interruptible_var, clear_interruptible
+
+    _chat_mod = sys.modules["gptme.chat"]
+
+    def fake_include_paths(msg, workspace=None, **kwargs):
+        assert _interruptible_var.get() is True
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_chat_mod, "include_paths", fake_include_paths)
+    monkeypatch.setattr(_chat_mod, "prompt_user", lambda value=None: "hello /")
+    clear_interruptible()
+
+    result = _get_user_input(Log(messages=[Message("assistant", "ok")]), None)
+    assert result is None
+    assert _interruptible_var.get() is False

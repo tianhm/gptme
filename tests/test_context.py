@@ -398,20 +398,170 @@ def test_dir_to_listing_all_gitignored(tmp_path, monkeypatch):
 
 
 def test_dir_to_listing_truncation(tmp_path):
-    """Test that large directories are truncated."""
+    """git ls-files listings are truncated after the known total is computed."""
+    from unittest.mock import MagicMock, patch
+
     from gptme.util.context import _dir_to_listing
 
     bigdir = tmp_path / "big"
     bigdir.mkdir()
-    for i in range(60):
-        (bigdir / f"file_{i:03d}.txt").write_text(f"content {i}")
+    files = [f"file_{i:03d}.txt" for i in range(60)]
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "\n".join(files) + "\n"
 
-    result = _dir_to_listing(bigdir, str(bigdir), max_entries=50)
+    with patch("subprocess.run", return_value=mock_result):
+        result = _dir_to_listing(bigdir, str(bigdir), max_entries=50)
     assert result is not None
     assert "10 more files" in result
-    # First 50 should be included
     assert "file_000.txt" in result
     assert "file_049.txt" in result
+    assert "file_059.txt" not in result
+
+
+def test_dir_to_listing_bounds_rglob_walk(tmp_path):
+    """Fallback must stop once max_entries accepted files are collected."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.util.context import _dir_to_listing
+
+    bigdir = tmp_path / "big"
+    bigdir.mkdir()
+    for i in range(80):
+        (bigdir / f"file_{i:03d}.txt").write_text("x")
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+
+    with patch("subprocess.run", return_value=mock_result):
+        result = _dir_to_listing(bigdir, str(bigdir), max_entries=50)
+
+    assert result is not None
+    assert "listing truncated at 50 files" in result
+    assert result.count(".txt") == 50
+
+
+def test_dir_to_listing_bounds_directory_heavy_walk(tmp_path):
+    """Visit budget stops a tree of directories with almost no files."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.util.context import _dir_to_listing
+
+    tree = tmp_path / "dirs"
+    tree.mkdir()
+    cursor = tree
+    for i in range(80):
+        cursor = cursor / f"d{i:02d}"
+        cursor.mkdir()
+    (cursor / "deep.txt").write_text("late")
+    (tree / "early.txt").write_text("early")
+
+    scandir_calls: list[str] = []
+    real_scandir = __import__("os").scandir
+
+    def spy_scandir(path):
+        scandir_calls.append(str(path))
+        if len(scandir_calls) > 40:
+            raise AssertionError("visit budget did not bound directory traversal")
+        return real_scandir(path)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+
+    with (
+        patch("subprocess.run", return_value=mock_result),
+        patch("os.scandir", side_effect=spy_scandir),
+    ):
+        result = _dir_to_listing(
+            tree, str(tree), max_entries=50, max_visited=12, max_seconds=2.0
+        )
+
+    assert result is not None
+    assert "deep.txt" not in result
+    assert len(scandir_calls) < 40
+
+
+def test_dir_to_listing_prunes_git_before_recursion(tmp_path):
+    """`.git` is counted as an excluded entry and never descended into."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.util.context import _dir_to_listing
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "readme.txt").write_text("ok")
+    git_objects = project / ".git" / "objects" / "aa"
+    git_objects.mkdir(parents=True)
+    for i in range(80):
+        (git_objects / f"{i:02d}").write_text("blob")
+
+    scandir_paths: list[str] = []
+    real_scandir = __import__("os").scandir
+
+    def spy_scandir(path):
+        scandir_paths.append(str(path))
+        return real_scandir(path)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+
+    with (
+        patch("subprocess.run", return_value=mock_result),
+        patch("os.scandir", side_effect=spy_scandir),
+    ):
+        result = _dir_to_listing(project, str(project), max_entries=50, max_visited=20)
+
+    assert "readme.txt" in result
+    assert ".git/" not in result
+    assert not any(".git" in path.split("/") for path in scandir_paths)
+
+
+def test_dir_to_listing_bounds_excluded_entries(tmp_path):
+    """Directory entries consume the visit budget even when they yield no files."""
+    from gptme.util.context import _fallback_dir_listing
+
+    tree = tmp_path / "mixed"
+    tree.mkdir()
+    cursor = tree
+    for i in range(30):
+        cursor = cursor / f"dir_{i:02d}"
+        cursor.mkdir()
+    (cursor / "late.txt").write_text("late")
+    (tree / "only.txt").write_text("one")
+
+    entries, truncated = _fallback_dir_listing(
+        tree, max_entries=50, max_visited=10, max_seconds=2.0
+    )
+    assert truncated
+    assert "late.txt" not in entries
+    assert all(not name.endswith("late.txt") for name in entries)
+
+
+def test_dir_to_listing_time_budget(tmp_path):
+    """A zero-second deadline stops the walk without collecting the tree."""
+    from unittest.mock import MagicMock, patch
+
+    from gptme.util.context import _dir_to_listing
+
+    tree = tmp_path / "timed"
+    tree.mkdir()
+    nested = tree / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    (nested / "late.txt").write_text("late")
+
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+
+    with patch("subprocess.run", return_value=mock_result):
+        result = _dir_to_listing(
+            tree, str(tree), max_entries=50, max_visited=1000, max_seconds=0.0
+        )
+
+    assert result is not None
+    assert "late.txt" not in result
 
 
 def test_dir_to_listing_nested(tmp_path):
@@ -578,3 +728,105 @@ def test_include_paths_pre_confirmed_urls_empty_skips_all(tmp_path, monkeypatch)
     mock_confirm.assert_not_called()
     # URL should not be fetched — result content is unchanged (just the original text)
     assert result.content == msg.content
+
+
+def test_is_too_broad_directory_root_and_home():
+    from pathlib import Path
+
+    from gptme.util.context import _is_too_broad_directory
+
+    assert _is_too_broad_directory(Path("/"))
+    assert _is_too_broad_directory(Path.home())
+
+
+def test_is_too_broad_directory_temp_roots():
+    """Temp roots are blocked by resolved identity, not path depth.
+
+    On macOS /tmp resolves to /private/tmp (three parts), which the old
+    len(parts) < 3 heuristic treated as a project directory.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from gptme.util.context import _is_too_broad_directory
+
+    assert _is_too_broad_directory(Path("/tmp"))
+    assert _is_too_broad_directory(Path("/private/tmp"))
+    assert _is_too_broad_directory(Path("/var/tmp"))
+    assert _is_too_broad_directory(Path(tempfile.gettempdir()))
+
+
+def test_is_too_broad_directory_allows_project_subdir(tmp_path):
+    from gptme.util.context import _is_too_broad_directory
+
+    sub = tmp_path / "src"
+    sub.mkdir()
+    assert not _is_too_broad_directory(sub)
+    # Nested temp workspaces must remain attachable.
+    assert not _is_too_broad_directory(tmp_path)
+
+
+def test_include_paths_does_not_scan_root(monkeypatch):
+    """A standalone slash must not trigger recursive root listing.
+
+    Do not enumerate the real root filesystem; mock the listing helper.
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from gptme.message import Message
+    from gptme.util.context import include_paths
+
+    monkeypatch.delenv("GPTME_DISABLE_PATH_INCLUDE", raising=False)
+    with patch(
+        "gptme.util.context._dir_to_listing",
+        return_value="[listing suppressed]",
+    ) as listing:
+        include_paths(
+            Message("user", "also file the rm -rf / false-positive"),
+            Path.cwd(),
+        )
+        called_paths = [Path(c.args[0]).resolve() for c in listing.call_args_list]
+        assert Path("/") not in called_paths
+
+
+def test_include_paths_does_not_scan_root_from_markdown_heading(monkeypatch):
+    """Ordinary markdown ' / ' must not attach filesystem root (#3758)."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from gptme.message import Message
+    from gptme.util.context import include_paths
+
+    monkeypatch.delenv("GPTME_DISABLE_PATH_INCLUDE", raising=False)
+    with patch(
+        "gptme.util.context._dir_to_listing",
+        return_value="[listing suppressed]",
+    ) as listing:
+        include_paths(
+            Message("user", "**Still open / not done:**"),
+            Path.cwd(),
+        )
+        assert listing.call_args_list == []
+
+
+def test_include_paths_does_not_scan_tmp_from_prose(monkeypatch):
+    """Prose mentioning /tmp must not attach the temp root (#3758)."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from gptme.message import Message
+    from gptme.util.context import include_paths
+
+    monkeypatch.delenv("GPTME_DISABLE_PATH_INCLUDE", raising=False)
+    with patch(
+        "gptme.util.context._dir_to_listing",
+        return_value="[listing suppressed]",
+    ) as listing:
+        include_paths(
+            Message("user", "rm -rf /tmp,"),
+            Path.cwd(),
+        )
+        called_paths = [Path(c.args[0]).resolve() for c in listing.call_args_list]
+        tmp_roots = {Path("/tmp").resolve(), Path("/private/tmp").resolve()}
+        assert tmp_roots.isdisjoint(called_paths)

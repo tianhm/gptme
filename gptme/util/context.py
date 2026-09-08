@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 import urllib
 import urllib.parse
 from collections import Counter
@@ -713,6 +715,10 @@ def _find_potential_paths(content: str) -> list[str]:
         w = word.removeprefix("@") if word.startswith("@") else word
 
         def _is_path_like_bare(s: str) -> bool:
+            # A lone slash is prose/markdown ("open / not"), not a path.
+            # Implicitly attaching filesystem root is never useful (#3758).
+            if s.strip("/") == "":
+                return False
             return (
                 # Absolute/home/relative paths
                 any(s.startswith(p) for p in ["/", "~/", "./"])
@@ -806,14 +812,129 @@ def _human_readable_size(size_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _dir_to_listing(path: Path, prompt: str, max_entries: int = 50) -> str:
+def _resolved_or_none(path: Path) -> Path | None:
+    try:
+        return path.expanduser().resolve()
+    except OSError:
+        return None
+
+
+def _broad_temp_directories() -> tuple[Path, ...]:
+    """Resolved temp roots that must never be attached as directory context.
+
+    Includes macOS ``/tmp`` → ``/private/tmp`` so a 3-part resolved temp path
+    is still treated as too broad. Nested temp workspaces remain eligible.
+    """
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for raw in (tempfile.gettempdir(), "/tmp", "/var/tmp", "/private/tmp"):
+        resolved = _resolved_or_none(Path(raw))
+        if resolved is None or resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    return tuple(out)
+
+
+def _is_too_broad_directory(path: Path) -> bool:
+    """True for filesystem roots, home, and temp roots.
+
+    Casual mentions like ``/`` or ``/tmp`` must not trigger recursive listing.
+    Uses explicit resolved paths rather than a path-depth heuristic: on macOS
+    ``/tmp`` resolves to ``/private/tmp`` (three parts) and would otherwise
+    be treated as a project directory. Nested directories under temp/home
+    remain eligible.
+    """
+    resolved = _resolved_or_none(path)
+    if resolved is None:
+        return True
+    if resolved.parent == resolved:
+        return True
+    home = _resolved_or_none(Path.home())
+    if home is not None and resolved == home:
+        return True
+    return resolved in _broad_temp_directories()
+
+
+def _fallback_dir_listing(
+    path: Path,
+    max_entries: int,
+    max_visited: int,
+    max_seconds: float,
+) -> tuple[list[str], bool]:
+    """Walk *path* for regular files, budgeting visits and wall time.
+
+    Counts every scandir entry (directories, files, excluded names, stat
+    failures), prunes ``.git`` before descending, and does not follow
+    symlinks. Returns ``(relative_paths, truncated)``.
+    """
+    entries: list[str] = []
+    visited = 0
+    truncated = False
+    deadline = time.monotonic() + max_seconds
+
+    def rec(current: Path) -> bool:
+        nonlocal visited, truncated
+        if time.monotonic() >= deadline:
+            truncated = True
+            return True
+        try:
+            with os.scandir(current) as iterator:
+                children = list(iterator)
+        except OSError:
+            visited += 1
+            if visited >= max_visited:
+                truncated = True
+            return visited >= max_visited
+
+        for entry in children:
+            visited += 1
+            if visited > max_visited or time.monotonic() >= deadline:
+                truncated = True
+                return True
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+                is_file = entry.is_file(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir:
+                if entry.name == ".git":
+                    continue
+                if rec(Path(entry.path)):
+                    return True
+            elif is_file:
+                try:
+                    rel = Path(entry.path).relative_to(path)
+                except ValueError:
+                    continue
+                entries.append(str(rel))
+                if len(entries) >= max_entries:
+                    truncated = True
+                    return True
+        return False
+
+    rec(path)
+    entries.sort()
+    return entries, truncated
+
+
+def _dir_to_listing(
+    path: Path,
+    prompt: str,
+    max_entries: int = 50,
+    max_visited: int | None = None,
+    max_seconds: float = 2.0,
+) -> str:
     """Generate a file listing for a directory, returned as a codeblock.
 
     Uses ``git ls-files`` when inside a git repo (respects .gitignore),
-    falls back to ``Path.iterdir()`` otherwise.  Output is truncated to
-    *max_entries* to prevent context bloat.
+    falls back to a visit/time-bounded scandir walk otherwise. The fallback
+    budgets accepted files *and* visited entries so directory-heavy or
+    excluded-entry trees cannot walk unboundedly.
     """
+    visit_budget = max_visited if max_visited is not None else max(max_entries * 4, 200)
     entries: list[str] | None = None
+    known_total: int | None = None
     try:
         # Try git ls-files first (respects .gitignore, lists tracked + untracked)
         result = subprocess.run(
@@ -831,31 +952,32 @@ def _dir_to_listing(path: Path, prompt: str, max_entries: int = 50) -> str:
             check=False,
         )
         if result.returncode == 0:
-            entries = sorted(result.stdout.strip().splitlines())
+            git_entries = sorted(line for line in result.stdout.splitlines() if line)
+            known_total = len(git_entries)
+            entries = git_entries[:max_entries]
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
     if entries is None:
-        # Fallback: list directory recursively.
-        # Only exclude .git/ internals to avoid noise; dotfiles like
-        # .pre-commit-config.yaml, .github/, .env etc. are legitimate project files.
-        try:
-            entries = sorted(
-                str(p.relative_to(path))
-                for p in path.rglob("*")
-                if p.is_file() and ".git" not in p.relative_to(path).parts
-            )
-        except PermissionError:
-            entries = []
+        # Fallback: list directory recursively with visit/time budgets.
+        # Only skip .git/ internals; dotfiles like .pre-commit-config.yaml,
+        # .github/, .env etc. are legitimate project files.
+        entries, truncated = _fallback_dir_listing(
+            path, max_entries, visit_budget, max_seconds
+        )
+        if truncated:
+            known_total = None  # remaining count unknown; walk was bounded
+        else:
+            known_total = len(entries)
 
-    total = len(entries)
-    if total == 0:
+    if not entries:
         return md_codeblock(prompt, "(empty directory)")
 
-    truncated = entries[:max_entries]
-    listing = "\n".join(truncated)
-    if total > max_entries:
-        listing += f"\n... ({total - max_entries} more files)"
+    listing = "\n".join(entries)
+    if known_total is not None and known_total > max_entries:
+        listing += f"\n... ({known_total - max_entries} more files)"
+    elif known_total is None:
+        listing += f"\n... (listing truncated at {max_entries} files)"
 
     return md_codeblock(prompt, listing)
 
@@ -881,6 +1003,9 @@ def _resource_to_codeblock(
             file_content = _check_content_size(file_content, str(f))
             return md_codeblock(prompt, file_content)
         if f.exists() and f.is_dir():
+            if _is_too_broad_directory(f):
+                logger.debug("skipping broad directory attachment: %s", f)
+                return None
             return _dir_to_listing(f, prompt)
     except OSError as oserr:
         # some prompts are too long to be a path, so we can't read them
