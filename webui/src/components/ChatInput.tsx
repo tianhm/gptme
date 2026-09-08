@@ -10,7 +10,8 @@ import {
   File,
   ChevronDown,
   SlidersHorizontal,
-  Star,
+  Bookmark,
+  BookmarkCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -375,7 +376,11 @@ const ModelBadge: FC<{
   );
 };
 
-/** Footer in the model dropdown to make the current model the default for new chats. */
+/** Footer in the model dropdown to make the current model the default for new chats.
+ *
+ * Uses a Bookmark icon (not the Star used for favorites) so the two controls
+ * are visually distinct: ⭐ = add to favorites, 🔖 = set as default model.
+ */
 const SetDefaultModelFooter: FC<{ model: string }> = ({ model }) => {
   const { defaultModel, saveDefaultModel } = useModels();
   const { toast } = useToast();
@@ -398,21 +403,32 @@ const SetDefaultModelFooter: FC<{ model: string }> = ({ model }) => {
     }
   };
 
+  // Use Bookmark/BookmarkCheck (distinct from the Star used for favorites)
+  // so users can tell the two controls apart at a glance.
+  const DefaultIcon = isDefault ? BookmarkCheck : Bookmark;
+  const title = isDefault ? 'This is already your default model' : 'Set as default for new chats';
+
   return (
     <div className="border-t p-1">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="h-7 w-full justify-start text-xs font-normal"
-        disabled={isDefault || saving}
-        onClick={() => void handleSetDefault()}
-      >
-        <Star
-          className={`mr-2 h-3.5 w-3.5 ${isDefault ? 'fill-yellow-400 text-yellow-400' : ''}`}
-        />
-        {isDefault ? 'Default for new chats' : 'Set as default for new chats'}
-      </Button>
+      {/* Title lives on a non-disabled wrapper. Button uses
+          `disabled:pointer-events-none`, so a title on the button itself
+          cannot appear when this model is already the default. */}
+      <span className="block w-full" title={title}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-full justify-start text-xs font-normal"
+          disabled={isDefault || saving}
+          data-testid="set-default-model"
+          onClick={() => void handleSetDefault()}
+        >
+          <DefaultIcon
+            className={`mr-2 h-3.5 w-3.5 ${isDefault ? 'fill-current text-primary' : ''}`}
+          />
+          {isDefault ? 'Default for new chats' : 'Set as default for new chats'}
+        </Button>
+      </span>
     </div>
   );
 };
