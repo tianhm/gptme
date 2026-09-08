@@ -5,6 +5,7 @@ import {
   setActiveServer,
   updateServer,
 } from '@/stores/servers';
+import { isViteDev } from '@/utils/viteEnv';
 
 const DEFAULT_API_URL = 'http://127.0.0.1:5700';
 const DEFAULT_CLOUD_APP_BASE_URL = 'https://gptme.ai';
@@ -53,6 +54,28 @@ export function isDemoMode(): boolean {
 /** Test-only: clear the {@link isDemoMode} latch between test cases. */
 export function resetDemoModeForTests(): void {
   demoModeLatch = null;
+}
+
+/** True on the local Vite dev server; false in production builds and Jest. */
+function isDevServer(): boolean {
+  return isViteDev;
+}
+
+/**
+ * Whether demo fixture content (the conversations in `democonversations.ts`)
+ * should be surfaced in the UI.
+ *
+ * Demo content must appear ONLY when demo mode is EXPLICITLY active — never for
+ * a normal signed-in user who is merely connecting or momentarily disconnected
+ * (that caused demo conversations to flash in the sidebar until the real
+ * instance connected). "Explicit" means one of:
+ *   - the `?demo=1` URL flag (see {@link isDemoMode}), which powers the
+ *     no-signup demo on gptme.ai, or
+ *   - the local Vite dev server (`import.meta.env.DEV`), where the fixtures are
+ *     a convenient offline sandbox during development.
+ */
+export function shouldShowDemoContent(): boolean {
+  return isDemoMode() || isDevServer();
 }
 
 // Browser builds can inject runtime env from index.html before this module

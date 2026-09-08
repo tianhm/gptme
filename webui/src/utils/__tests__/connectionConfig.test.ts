@@ -25,6 +25,7 @@ import {
   processConnectionFromHash,
   resetDemoModeForTests,
   resolveCloudExchangeBaseUrl,
+  shouldShowDemoContent,
 } from '../connectionConfig';
 
 const runtimeEnvWindow = window as typeof window & {
@@ -203,5 +204,29 @@ describe('isDemoMode', () => {
 
     window.history.replaceState(null, '', '/?demo=1');
     expect(isDemoMode()).toBe(false);
+  });
+});
+
+describe('shouldShowDemoContent', () => {
+  beforeEach(() => {
+    resetDemoModeForTests();
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+    resetDemoModeForTests();
+  });
+
+  // A normal signed-in user is neither in demo mode nor on the Vite dev
+  // server. Jest maps `viteEnv.ts` to a production-like mock (isViteDev=false).
+  // Demo fixtures must not surface for them — this is the flash-on-connect fix.
+  it('is false for a normal user (no ?demo=1, not the dev server)', () => {
+    window.history.replaceState(null, '', '/');
+    expect(shouldShowDemoContent()).toBe(false);
+  });
+
+  it('is true when the explicit ?demo=1 flag is set', () => {
+    window.history.replaceState(null, '', '/?demo=1');
+    expect(shouldShowDemoContent()).toBe(true);
   });
 });
