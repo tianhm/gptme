@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import cast
 
 from .data import MODELS, OPENAI_COMPAT_PROVIDERS
+from .recommended import get_recommended_model, get_summary_model
 from .types import (
     _DATE_SUFFIX_PATTERN,
     _MODEL_FAMILY_PATTERN,
@@ -157,11 +158,15 @@ def _find_closest_model_properties(
     # Fall back to the recommended model's properties for this provider
     try:
         rec_name = get_recommended_model(provider)
-        if rec_name in provider_models:
+        # Strip provider-routing suffix (e.g. "deepseek/deepseek-v4-flash-0731@deepseek"
+        # → "deepseek/deepseek-v4-flash-0731") before looking up in the registry dict,
+        # whose keys never include an @ suffix.
+        rec_name_bare = rec_name.split("@")[0]
+        if rec_name_bare in provider_models:
             logger.debug(
                 f"Using recommended model {rec_name} as fallback for {model_name}"
             )
-            return provider_models[rec_name]
+            return provider_models[rec_name_bare]
     except ValueError:
         pass
 
@@ -395,56 +400,3 @@ def _resolve_model(model: str) -> ModelMeta:
 
     log_warn_once(f"Unknown model {model}, using fallback metadata")
     return ModelMeta(provider="unknown", model=model, context=128_000)
-
-
-def get_recommended_model(provider: Provider) -> str:  # pragma: no cover
-    if provider == "openai":
-        return "gpt-5"
-    if provider == "openai-subscription":
-        return "gpt-5.6-sol"
-    if provider == "openrouter":
-        return "deepseek/deepseek-v4-pro"
-    if provider == "gemini":
-        return "gemini-2.5-pro"
-    if provider == "anthropic":
-        return "claude-sonnet-4-6"
-    if provider == "xai":
-        return "grok-4"
-    if provider == "grok-subscription":
-        return "grok-4.6"
-    if provider == "gptme":
-        return "claude-sonnet-4-6"
-    if provider == "deepseek":
-        return "deepseek-chat"
-    if provider == "groq":
-        return "llama-3.3-70b-versatile"
-    raise ValueError(
-        f"Provider '{provider}' requires specifying a model, "
-        f"e.g. gptme -m {provider}/your-model-name"
-    )
-
-
-def get_summary_model(provider: Provider) -> str | None:  # pragma: no cover
-    """Get a cheaper/faster summary model for a provider.
-
-    Returns None for providers where no summary model is defined (like local providers),
-    signaling that the caller should use the same model.
-    """
-    if provider == "openai":
-        return "gpt-5-mini"
-    if provider == "openrouter":
-        return "deepseek/deepseek-v4-flash"
-    if provider == "gemini":
-        return "gemini-2.5-flash"
-    if provider == "anthropic":
-        return "claude-haiku-4-5"
-    if provider == "deepseek":
-        return "deepseek-chat"
-    if provider == "xai":
-        return "grok-4-1-fast"
-    if provider == "local":
-        # Local providers don't have predefined summary models
-        # Return None to signal "use the same model"
-        return None
-    # Unknown providers - return None rather than raising
-    return None

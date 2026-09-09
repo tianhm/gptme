@@ -2627,9 +2627,38 @@ class TestExtraBody:
         # Should still have require_parameters (non-reasoning model)
         assert prov["require_parameters"] is True
 
-    def test_openrouter_no_provider_override(self):
+    def test_openrouter_provider_override_multi_pin(self, monkeypatch):
+        """``model@a,b`` becomes an ordered allowlist with fallbacks disabled."""
         from gptme.llm.llm_openai import extra_body
 
+        monkeypatch.delenv("OPENROUTER_PROVIDER_ORDER", raising=False)
+        meta = self._make_model("deepseek/deepseek-v4-flash-0731@together, fireworks,")
+        prov = extra_body("openrouter", meta)["provider"]
+        assert prov["order"] == ["together", "fireworks"]
+        assert prov["allow_fallbacks"] is False
+
+    def test_openrouter_provider_order_env_default(self, monkeypatch):
+        """OPENROUTER_PROVIDER_ORDER is the default allowlist when no pin is given."""
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_PROVIDER_ORDER", "fireworks,together")
+        meta = self._make_model("deepseek/deepseek-v4-flash-0731")
+        prov = extra_body("openrouter", meta)["provider"]
+        assert prov["order"] == ["fireworks", "together"]
+        assert prov["allow_fallbacks"] is False
+
+    def test_openrouter_pin_beats_provider_order_env(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_PROVIDER_ORDER", "fireworks,together")
+        meta = self._make_model("deepseek/deepseek-v4-flash-0731@deepseek")
+        prov = extra_body("openrouter", meta)["provider"]
+        assert prov["order"] == ["deepseek"]
+
+    def test_openrouter_no_provider_override(self, monkeypatch):
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.delenv("OPENROUTER_PROVIDER_ORDER", raising=False)
         meta = self._make_model("anthropic/claude-sonnet-4-20250514")
         result = extra_body("openrouter", meta)
         prov = result["provider"]
@@ -3429,6 +3458,33 @@ class TestMakeResolvedModel:
 
         result = _make_resolved_model(
             f"openrouter/moonshotai/kimi-k2.5@{suffix}", "Moonshot AI"
+        )
+        assert result is None
+
+    def test_multi_pin_first_provider_records_resolved(self):
+        """Multi-provider allowlist: first entry served → record which one ran."""
+        from gptme.llm.llm_openai import _make_resolved_model
+
+        result = _make_resolved_model(
+            "openrouter/deepseek/deepseek-v4-flash@together,fireworks", "Together AI"
+        )
+        assert result == "openrouter/deepseek/deepseek-v4-flash@together-ai"
+
+    def test_multi_pin_second_provider_records_resolved(self):
+        """Multi-provider allowlist: fallback entry served → record which one ran."""
+        from gptme.llm.llm_openai import _make_resolved_model
+
+        result = _make_resolved_model(
+            "openrouter/deepseek/deepseek-v4-flash@together,fireworks", "Fireworks"
+        )
+        assert result == "openrouter/deepseek/deepseek-v4-flash@fireworks"
+
+    def test_single_pin_still_returns_none_on_match(self):
+        """Single-provider pin: a match still returns None (no new info)."""
+        from gptme.llm.llm_openai import _make_resolved_model
+
+        result = _make_resolved_model(
+            "openrouter/deepseek/deepseek-v4-flash@deepseek", "DeepSeek"
         )
         assert result is None
 
