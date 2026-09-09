@@ -795,3 +795,78 @@ class TestAdjustThinkingBudgetAdaptive:
         )
         assert use_thinking is False
         assert budget == 8000
+
+
+class TestReasoningEffortStamp:
+    """metadata.reasoning_effort records the level that shaped the request."""
+
+    def setup_method(self):
+        self._saved = os.environ.pop("GPTME_THINKING_EFFORT", None)
+
+    def teardown_method(self):
+        if self._saved is None:
+            os.environ.pop("GPTME_THINKING_EFFORT", None)
+        else:
+            os.environ["GPTME_THINKING_EFFORT"] = self._saved
+
+    def test_effective_level_requires_thinking_and_env(self):
+        from gptme.llm.llm_anthropic import _effective_effort_level
+
+        assert _effective_effort_level(use_thinking=True) is None
+        os.environ["GPTME_THINKING_EFFORT"] = "XHIGH"
+        assert _effective_effort_level(use_thinking=True) == "xhigh"
+        # thinking disabled (model/tools/max_tokens clamp) → level had no effect
+        assert _effective_effort_level(use_thinking=False) is None
+
+    def test_stamp_adds_level_string_not_budget(self):
+        from gptme.llm.llm_anthropic import _stamp_reasoning_effort
+
+        base = {"model": "claude-sonnet-4-6", "usage": {"output_tokens": 5}}
+        stamped = _stamp_reasoning_effort(dict(base), "claude-sonnet-4-6", "high")  # type: ignore[arg-type]
+        assert stamped == {**base, "reasoning_effort": "high"}
+        # no usage metadata at all → minimal record still names the level
+        assert _stamp_reasoning_effort(None, "claude-sonnet-4-6", "low") == {
+            "model": "claude-sonnet-4-6",
+            "reasoning_effort": "low",
+        }
+        # no level → untouched
+        assert _stamp_reasoning_effort(None, "claude-sonnet-4-6", None) is None
+        assert _stamp_reasoning_effort(dict(base), "claude-sonnet-4-6", None) == base  # type: ignore[arg-type]
+
+    def test_partial_stream_metadata_includes_effort_and_usage(self):
+        """message_start fallback must carry the request's effort, not just usage."""
+        from types import SimpleNamespace
+
+        from gptme.llm.llm_anthropic import _partial_stream_metadata
+
+        os.environ["GPTME_THINKING_EFFORT"] = "high"
+        usage = SimpleNamespace(
+            input_tokens=12,
+            cache_read_input_tokens=3,
+            cache_creation_input_tokens=None,
+        )
+        stamped = _partial_stream_metadata(
+            "claude-sonnet-4-6", usage, use_thinking=True
+        )
+        assert stamped["model"] == "claude-sonnet-4-6"
+        assert stamped["usage"] == {"input_tokens": 12, "cache_read_tokens": 3}
+        assert stamped["reasoning_effort"] == "high"
+
+    def test_partial_stream_metadata_effort_without_usage(self):
+        from gptme.llm.llm_anthropic import _partial_stream_metadata
+
+        os.environ["GPTME_THINKING_EFFORT"] = "low"
+        stamped = _partial_stream_metadata("claude-sonnet-4-6", None, use_thinking=True)
+        assert stamped == {"model": "claude-sonnet-4-6", "reasoning_effort": "low"}
+
+    def test_partial_stream_metadata_omits_effort_when_thinking_off(self):
+        from gptme.llm.llm_anthropic import _partial_stream_metadata
+
+        os.environ["GPTME_THINKING_EFFORT"] = "high"
+        stamped = _partial_stream_metadata(
+            "claude-sonnet-4-6",
+            None,
+            use_thinking=False,
+        )
+        assert stamped == {"model": "claude-sonnet-4-6"}
+        assert "reasoning_effort" not in stamped

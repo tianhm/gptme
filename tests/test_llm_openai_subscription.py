@@ -537,10 +537,16 @@ def test_stream_returns_usage_from_response_done():
     assert metadata.get("usage", {}).get("output_tokens") == 50
 
 
-def test_stream_returns_none_when_response_done_has_no_usage():
-    """response.done without usage must return None so the caller falls back."""
+def test_stream_records_effort_when_response_done_has_no_usage():
+    """response.done without usage still records the explicit Codex effort."""
     _, metadata = _drain_stream([{"type": "response.done"}])
-    assert metadata is None
+    assert metadata == {"reasoning_effort": "medium"}
+
+
+def test_stream_records_effort_when_usage_has_no_counts():
+    """Empty usage object is treated as no usage, but effort stays on the record."""
+    _, metadata = _drain_stream([{"type": "response.done", "response": {"usage": {}}}])
+    assert metadata == {"reasoning_effort": "medium"}
 
 
 def test_stream_captures_usage_without_cache_fields():
@@ -732,3 +738,25 @@ def test_codex_session_id_prefers_server_context_over_telemetry():
         clear_conversation_context()
 
     assert server != cli
+
+
+def test_stream_records_reasoning_tokens_and_effort():
+    """Codex usage carries output_tokens_details.reasoning_tokens; effort is always explicit."""
+    _, metadata = _drain_stream(
+        [
+            {
+                "type": "response.done",
+                "response": {
+                    "usage": {
+                        "input_tokens": 200,
+                        "output_tokens": 75,
+                        "output_tokens_details": {"reasoning_tokens": 60},
+                    }
+                },
+            }
+        ]
+    )
+    assert metadata is not None
+    assert metadata["usage"]["reasoning_tokens"] == 60
+    # _drain_stream uses bare "gpt-5.4" → default Codex effort
+    assert metadata["reasoning_effort"] == "medium"
