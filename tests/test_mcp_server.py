@@ -21,7 +21,7 @@ from gptme.mcp.server import (
     _toolspec_to_mcp_tool,
     create_server,
 )
-from gptme.tools.base import Parameter, ToolSpec
+from gptme.tools.base import Parameter, ToolSpec, ToolUse
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -333,8 +333,175 @@ class TestMCPServerHandlers:
             "Second call must reuse the same session"
         )
 
+    @pytest.mark.asyncio
+    async def test_call_tool_binds_current_tool_use(
+        self, server_with_mock_tools: GptmeMCPServer
+    ) -> None:
+        """MCP must bind a ToolUse so TOOL_CONFIRM (guardrails) can dispatch."""
+        import mcp.types as types
 
-class TestMCPServerCLI:
+        from gptme.message import Message
+        from gptme.tools.base import get_current_tool_use
+
+        captured: list[ToolUse | None] = []
+
+        def spy(code, args, kwargs):
+            captured.append(get_current_tool_use())
+            yield Message("system", "ok")
+
+        server_with_mock_tools._loaded_tools[0] = ToolSpec(
+            name="shell",
+            desc="Shell.",
+            execute=spy,
+            block_types=["shell"],
+            parameters=[Parameter(name="command", type="string", required=True)],
+        )
+
+        req = types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(
+                name="shell", arguments={"command": "echo test"}
+            ),
+        )
+        await server_with_mock_tools._server.request_handlers[types.CallToolRequest](
+            req
+        )
+
+        assert captured, "spy must run"
+        tu = captured[0]
+        assert tu is not None
+        assert tu.tool == "shell"
+        assert tu.kwargs == {"command": "echo test"}
+
+    @pytest.mark.asyncio
+    async def test_mcp_shell_enforces_guardrails(self, monkeypatch) -> None:
+        """MCP shell must run TOOL_CONFIRM before calling the executor."""
+        import mcp.types as types
+
+        from gptme.message import Message
+        from gptme.tools.shell import tool as shell_tool
+
+        monkeypatch.setenv("GPTME_GUARDRAILS", "enforce")
+        executed = False
+
+        def execution_spy(code, args, kwargs):
+            nonlocal executed
+            executed = True
+            yield Message("system", "executed")
+
+        server = GptmeMCPServer(tool_names=["shell"])
+        server._init_tools()
+        server._loaded_tools = [
+            ToolSpec(
+                name=shell_tool.name,
+                desc=shell_tool.desc,
+                execute=execution_spy,
+                block_types=shell_tool.block_types,
+                parameters=shell_tool.parameters,
+            )
+        ]
+
+        req = types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(
+                name="shell", arguments={"command": "cat ~/.ssh/id_rsa"}
+            ),
+        )
+        result = await server._server.request_handlers[types.CallToolRequest](req)
+        assert isinstance(result.root, types.CallToolResult)
+        text = " ".join(
+            c.text for c in result.root.content if hasattr(c, "text") and c.text
+        )
+        assert not executed
+        assert "guardrail" in text.lower(), f"Expected guardrail skip; got: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_mcp_read_enforces_guardrails(self, monkeypatch) -> None:
+        """MCP read of a secret path must skip under GPTME_GUARDRAILS=enforce."""
+        import mcp.types as types
+
+        from gptme.hooks.auto_confirm import register as register_auto_confirm
+        from gptme.hooks.guardrails import register as register_guardrails
+        from gptme.tools.read import tool as read_tool
+
+        monkeypatch.setenv("GPTME_GUARDRAILS", "enforce")
+        register_guardrails()
+        register_auto_confirm()
+
+        server = GptmeMCPServer(tool_names=["read"])
+        server._loaded_tools = [read_tool]
+        from gptme.hooks.registry import get_registry
+
+        server._hook_registry = get_registry()
+
+        req = types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(
+                name="read", arguments={"path": "/nonexistent/.ssh/id_rsa"}
+            ),
+        )
+        result = await server._server.request_handlers[types.CallToolRequest](req)
+        assert isinstance(result.root, types.CallToolResult)
+        text = " ".join(
+            c.text for c in result.root.content if hasattr(c, "text") and c.text
+        )
+        assert "guardrail" in text.lower(), f"Expected guardrail skip; got: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_mcp_confirm_hooks_run_once(
+        self, server_with_mock_tools: GptmeMCPServer
+    ) -> None:
+        """MCP confirms at the boundary; inner tool confirmation must not re-dispatch."""
+        import mcp.types as types
+
+        from gptme.hooks import (
+            HookType,
+            get_confirmation,
+            register_hook,
+            unregister_hook,
+        )
+        from gptme.hooks.registry import get_registry
+        from gptme.message import Message
+
+        calls: list[str] = []
+
+        def counting_hook(tool_use, preview=None, workspace=None):
+            calls.append(tool_use.tool)
+
+        register_hook(
+            "count-confirm", HookType.TOOL_CONFIRM, counting_hook, priority=50
+        )
+        server_with_mock_tools._hook_registry = get_registry()
+        try:
+
+            def spy(code, args, kwargs):
+                inner = get_confirmation()
+                assert inner.action.value == "confirm"
+                yield Message("system", "ok")
+
+            server_with_mock_tools._loaded_tools[0] = ToolSpec(
+                name="shell",
+                desc="Shell.",
+                execute=spy,
+                block_types=["shell"],
+                parameters=[Parameter(name="command", type="string", required=True)],
+            )
+
+            req = types.CallToolRequest(
+                method="tools/call",
+                params=types.CallToolRequestParams(
+                    name="shell", arguments={"command": "echo test"}
+                ),
+            )
+            result = await server_with_mock_tools._server.request_handlers[
+                types.CallToolRequest
+            ](req)
+            assert isinstance(result.root, types.CallToolResult)
+            assert not result.root.isError
+            assert calls == ["shell"], f"TOOL_CONFIRM must fire once, got {calls!r}"
+        finally:
+            unregister_hook("count-confirm", HookType.TOOL_CONFIRM)
+
     """Tests for the gptme-mcp-server CLI command."""
 
     def test_cli_help(self) -> None:
