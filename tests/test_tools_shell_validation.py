@@ -383,6 +383,42 @@ class TestIsDenylisted:
         denied, _, _ = is_denylisted('git commit -m "fix: something"')
         assert not denied
 
+    def test_git_commit_allow_empty_ok(self):
+        denied, _, matched = is_denylisted("git commit --allow-empty -m x")
+        assert not denied, matched
+
+    def test_git_commit_amend_ok(self):
+        denied, _, matched = is_denylisted("git commit --amend -m x")
+        assert not denied, matched
+
+    def test_git_commit_all_with_message_still_denied(self):
+        denied, _, _ = is_denylisted("git commit -am x")
+        assert denied
+
+    def test_git_bulk_with_separators_still_denied(self):
+        for cmd in (
+            "git add -A; git commit",
+            "git commit --all&&git push",
+            "git commit -am|cat",
+        ):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
+
+    def test_git_bulk_grouped_commands_still_denied(self):
+        for cmd in (
+            "(git add -A)",
+            "$(git commit --all)",
+            "(git add .)",
+            "$(git commit -am x)",
+        ):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
+
+    def test_git_commit_message_value_starting_with_a_ok(self):
+        for cmd in ("git commit -ma", "git commit -mabc"):
+            denied, _, matched = is_denylisted(cmd)
+            assert not denied, (cmd, matched)
+
     # --- Destructive git operations ---
 
     def test_git_reset_hard(self):
@@ -437,15 +473,46 @@ class TestIsDenylisted:
         denied, _, _ = is_denylisted("rm file.txt")
         assert not denied
 
-    def test_rm_rf_specific_dir_also_denied(self):
-        # rm -rf /path matches the "rm -rf /" pattern — any absolute path is blocked
-        denied, _, _ = is_denylisted("rm -rf /tmp/build")
-        assert denied
+    def test_rm_rf_specific_absolute_dir_ok(self):
+        denied, _, matched = is_denylisted("rm -rf /tmp/gptme-fp-example")
+        assert not denied, matched
+
+    def test_rm_rf_nested_absolute_dir_ok(self):
+        denied, _, matched = is_denylisted("rm -rf /Users/foo/bar")
+        assert not denied, matched
 
     def test_rm_rf_relative_dir_ok(self):
         # rm -rf of a relative dir should be allowed (not matching /path pattern)
         denied, _, _ = is_denylisted("rm -rf build/")
         assert not denied
+
+    def test_rm_rf_root_with_separators_denied(self):
+        for cmd in ("rm -rf /;", "rm -rf / && echo x", "rm -rf /|true"):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
+
+    def test_rm_rf_grouped_root_denied(self):
+        for cmd in ("(rm -rf /)", "$(sudo rm -rf /)", "(sudo rm -rf /)"):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
+
+    def test_rm_rf_grouped_tmp_ok(self):
+        denied, _, matched = is_denylisted("(rm -rf /tmp/gptme-fp-example)")
+        assert not denied, matched
+
+    def test_rm_rf_quoted_root_denied(self):
+        for cmd in ("rm -rf '/'", 'rm -rf "/"'):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
+
+    def test_rm_rf_root_aliases_denied(self):
+        for cmd in ("rm -rf /./", "rm -rf /..", 'rm -rf /""', "rm -rf /''"):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
+
+    def test_sudo_rm_rf_tmp_ok(self):
+        denied, _, matched = is_denylisted("sudo rm -rf /tmp/gptme-fp-example")
+        assert not denied, matched
 
     # --- Permission operations ---
 
@@ -527,6 +594,28 @@ class TestIsDenylisted:
     def test_dangerous_pattern_in_double_quotes(self):
         denied, _, _ = is_denylisted('echo "rm -rf /"')
         assert not denied
+
+    def test_quoted_closing_paren_is_data_not_delimiter(self):
+        # `)` is a grouping delimiter only when unquoted. Inert text that
+        # merely looks protected must not hard-deny.
+        for cmd in (
+            "printf '%s\\n' 'git commit --all)'",
+            "echo '(rm -rf /)'",
+            "echo '(git add -A)'",
+            "echo '(git commit --all)'",
+        ):
+            denied, _, matched = is_denylisted(cmd)
+            assert not denied, (cmd, matched)
+
+    def test_quoted_then_real_dangerous_command_still_denied(self):
+        # Skipping a quoted match must not hide a later unquoted command.
+        for cmd in (
+            "echo '(rm -rf /)'; rm -rf /",
+            "echo 'git commit --all)'; git commit --all",
+            'echo "rm -rf /"; rm -rf /',
+        ):
+            denied, _, matched = is_denylisted(cmd)
+            assert denied, (cmd, matched)
 
     def test_dangerous_in_heredoc(self):
         cmd = "cat << EOF\ngit add .\nrm -rf /\nEOF"
