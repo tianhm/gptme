@@ -143,6 +143,35 @@ def test_create_mcp_tools_connection_error(mock_config):
         assert isinstance(tools, list)
 
 
+def test_create_mcp_tools_strict_closes_earlier_clients():
+    """A later strict-setup failure must close servers that already connected."""
+    config = Config()
+    servers = [
+        MCPServerConfig(name="ok", enabled=True, command="ok-cmd"),
+        MCPServerConfig(name="bad", enabled=True, command="bad-cmd"),
+    ]
+    config.user.mcp = MCPConfig(enabled=True, servers=servers)
+
+    ok_client = MagicMock()
+    ok_tools = MagicMock()
+    ok_tools.tools = []
+    ok_client.connect.return_value = (ok_tools, MagicMock())
+
+    bad_client = MagicMock()
+    bad_client.connect.side_effect = Exception("boom")
+
+    registry: dict = {}
+    with (
+        patch("gptme.mcp.client.MCPClient", side_effect=[ok_client, bad_client]),
+        pytest.raises(RuntimeError, match="Failed to connect to MCP server 'bad'"),
+    ):
+        create_mcp_tools(config, servers=servers, clients=registry, strict=True)
+
+    ok_client.close.assert_called_once_with()
+    bad_client.close.assert_called_once_with()
+    assert registry == {}
+
+
 def test_create_mcp_execute_function(mock_config):
     """Test create_mcp_execute_function creates valid execute function."""
     mock_client = MagicMock()
@@ -297,6 +326,29 @@ def test_unload_mcp_server_success():
     result = unload_mcp_server("test-server")
     assert "Successfully unloaded" in result or "unloaded" in result
     assert "test-server" not in _dynamic_servers
+
+
+def test_session_client_retry_stays_in_session_registry(mock_config):
+    """Connection recovery must replace only the supplied session client."""
+    from gptme.mcp.client import MCPClient
+    from gptme.tools.mcp_adapter import _call_mcp_tool_with_retry
+
+    old_client = MagicMock(spec=MCPClient)
+    old_client.call_tool.side_effect = RuntimeError("connection closed")
+    replacement = MagicMock(spec=MCPClient)
+    replacement.call_tool.return_value = "recovered"
+    clients: dict[str, MCPClient] = {"test-server": old_client}
+
+    with patch("gptme.mcp.client.MCPClient", return_value=replacement):
+        result = _call_mcp_tool_with_retry(
+            "test-server", "test_tool", {}, mock_config, clients=clients
+        )
+
+    assert result == "recovered"
+    old_client.close.assert_called_once_with()
+    replacement.connect.assert_called_once_with("test-server")
+    assert clients == {"test-server": replacement}
+    assert "test-server" not in _mcp_clients
 
 
 def test_restart_mcp_client_survives_cleanup_failure_and_reconnects(mock_config):
