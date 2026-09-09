@@ -409,6 +409,313 @@ output here
     ]
 
 
+def test_extract_codeblocks_ipython_triple_double_quote_contains_fence():
+    """A bare fence inside an IPython triple-double-quoted string is literal content.
+
+    Regression for gptme/gptme#3704: before this fix the closing ``` of the
+    triple-quoted string was treated as the block closer, so the ipython command
+    was truncated and the trailing print + closing fence were lost.
+    """
+    markdown = '''```ipython
+text = """
+```
+some markdown
+```
+"""
+print(text)
+```
+'''
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock(
+            "ipython",
+            'text = """\n```\nsome markdown\n```\n"""\nprint(text)',
+        )
+    ]
+
+
+def test_extract_codeblocks_ipython_triple_single_quote_contains_fence():
+    """A bare fence inside an IPython triple-single-quoted string is literal content."""
+    markdown = """```ipython
+text = '''
+```
+markdown here
+```
+'''
+result = text
+```
+"""
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock(
+            "ipython",
+            "text = '''\n```\nmarkdown here\n```\n'''\nresult = text",
+        )
+    ]
+
+
+def test_extract_codeblocks_ipython_triple_quote_single_line_does_not_keep_open():
+    """A triple-quoted string that opens and closes on the same line leaves state clean.
+
+    After ``x = \"\"\"hello\"\"\"`` the parser must NOT treat subsequent bare fences
+    as inside a triple-quoted string — the string closed on the same line.
+    """
+    markdown = '''```ipython
+x = """hello"""
+```
+output
+```
+'''
+    blocks = Codeblock.iter_from_markdown(markdown)
+    # The ipython block closes at the first bare ```, then "output" is prose and
+    # the trailing ``` opens a block with no closing fence → only the ipython
+    # block is emitted.
+    assert blocks == [
+        Codeblock("ipython", 'x = """hello"""'),
+    ]
+
+
+def test_scan_ipython_ordinary_string_hides_triple_quotes():
+    """Ordinary quoted strings must not be mistaken for triple-quote openers."""
+    from gptme.codeblock import _scan_ipython_triple_quote
+
+    assert _scan_ipython_triple_quote('value = \'"""\'', False, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+    assert _scan_ipython_triple_quote('prefix = "#"; text = """', False, False) == (
+        True,
+        False,
+        False,
+        False,
+    )
+    assert _scan_ipython_triple_quote('x = """hello"""', False, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+    assert _scan_ipython_triple_quote("value = \"'''\"", False, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+
+
+def test_scan_ipython_backslash_continued_ordinary_string_hides_triple():
+    """A backslash-continued ordinary string must not open triple-quote state.
+
+    Regression for gptme/gptme#3773 (Greptile P1): after ``s = 'abc \\`` the
+    next line's ``\"\"\"`` is still ordinary-string content.
+    """
+    from gptme.codeblock import _scan_ipython_triple_quote
+
+    # Trailing unescaped backslash keeps ordinary-single state.
+    assert _scan_ipython_triple_quote("s = 'abc \\", False, False) == (
+        False,
+        False,
+        True,
+        False,
+    )
+    # Carried ordinary-single makes ``"""`` literal; no closer → reset after line.
+    assert _scan_ipython_triple_quote('"""', False, False, True, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+    # Same, but the continuation line closes the ordinary string.
+    assert _scan_ipython_triple_quote('"""\'', False, False, True, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+    # Unterminated ordinary string WITHOUT continuation must not persist.
+    assert _scan_ipython_triple_quote("s = 'hello", False, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+    # Even number of trailing backslashes is a literal backslash, not continuation.
+    assert _scan_ipython_triple_quote("s = 'abc \\\\", False, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+
+
+def test_scan_ipython_escaped_quote_in_ordinary_string_does_not_desync():
+    """A backslash-escaped quote inside an ordinary string must not close it.
+
+    Consensus-gate finding on gptme/gptme#3773 claimed ``\"`` would close
+    ordinary-double state prematurely. The scanner already skips the escaped
+    character; this pins that so a later ``\"\"\"`` still opens triple-double.
+    """
+    from gptme.codeblock import _scan_ipython_triple_quote
+
+    # ``"a\""`` is a complete ordinary string containing ``a"``. Then ``"""``
+    # opens triple-double.
+    assert _scan_ipython_triple_quote(r'x = "a\""; y = """', False, False) == (
+        True,
+        False,
+        False,
+        False,
+    )
+    assert _scan_ipython_triple_quote(r"x = 'a\''; y = '''", False, False) == (
+        False,
+        True,
+        False,
+        False,
+    )
+    # Escaped quote with more content before the real closer.
+    assert _scan_ipython_triple_quote(r'x = "hello \" world"', False, False) == (
+        False,
+        False,
+        False,
+        False,
+    )
+
+
+def test_extract_codeblocks_ipython_ordinary_string_does_not_open_triple():
+    """Ordinary quoted strings must not be mistaken for triple-quote openers.
+
+    Regression for gptme/gptme#3773 (Greptile P1): ``value = '\"\"\"'`` used
+    to open triple-double state, so the real block closer was retained as
+    source and later Markdown was swallowed.
+    """
+    markdown = '''```ipython
+value = '"""'
+print(value)
+```
+
+```output
+"""
+```
+'''
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock("ipython", 'value = \'"""\'\nprint(value)'),
+        Codeblock("output", '"""'),
+    ]
+
+
+def test_extract_codeblocks_ipython_hash_in_string_does_not_hide_triple_opener():
+    """A ``#`` inside an ordinary string must not stop the triple-quote scan.
+
+    Regression for gptme/gptme#3773 (Greptile P1): ``prefix = "#"; text = \"\"\"``
+    used to treat ``#`` as a comment, never see the real opener, then close
+    the IPython block at the first fence inside that string.
+    """
+    markdown = '''```ipython
+prefix = "#"; text = """
+```
+inside
+```
+"""
+print(text)
+```
+'''
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock(
+            "ipython",
+            'prefix = "#"; text = """\n```\ninside\n```\n"""\nprint(text)',
+        ),
+    ]
+
+
+def test_extract_codeblocks_ipython_continued_ordinary_string_hides_triple():
+    """A backslash-continued ordinary string must not open triple-quote state.
+
+    Regression for gptme/gptme#3773 (Greptile P1): after ``s = 'abc \\`` the
+    next line's ``\"\"\"`` is still ordinary-string content. Treating it as a
+    triple-double opener used to retain the real closer as source (the IPython
+    block was never emitted) and swallow later Markdown.
+    """
+    markdown = (
+        '```ipython\ns = \'abc \\\n"""\'\nprint(s)\n```\n\n```output\nlater\n```\n'
+    )
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock("ipython", 's = \'abc \\\n"""\'\nprint(s)'),
+        Codeblock("output", "later"),
+    ]
+
+
+def test_extract_codeblocks_ipython_escaped_quote_in_ordinary_string():
+    """An escaped quote inside an ordinary string must not desync fence matching.
+
+    If ``\"`` closed ordinary-double state, the trailing ``"`` of ``"a\\""``
+    would open a new string and a later triple-quoted fence would be treated
+    as a real closer (or the block would never be emitted).
+    """
+    markdown = '''```ipython
+x = "a\\""
+y = """
+```
+inside
+```
+"""
+print(y)
+```
+'''
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock(
+            "ipython",
+            'x = "a\\""\ny = """\n```\ninside\n```\n"""\nprint(y)',
+        ),
+    ]
+
+
+def test_extract_codeblocks_ipython_tagged_fence_inside_triple_quote_is_literal():
+    """A language-tagged fence inside a triple-quoted string is literal content.
+
+    Regression for gptme/gptme#3773 (Greptile P1): `` ```python `` inside
+    ``\"\"\"...\"\"\"`` incremented nesting_depth, but the matching bare
+    closer was treated as literal, so the IPython block was never emitted.
+    """
+    markdown = '''```ipython
+text = """
+```python
+print("hi")
+```
+"""
+print(text)
+```
+'''
+    blocks = Codeblock.iter_from_markdown(markdown)
+    assert blocks == [
+        Codeblock(
+            "ipython",
+            'text = """\n```python\nprint("hi")\n```\n"""\nprint(text)',
+        ),
+    ]
+
+
+def test_extract_codeblocks_ipython_fence_outside_triple_quote_still_closes():
+    """A bare fence that is NOT inside a triple-quoted string still closes the block."""
+    markdown = """```ipython
+x = 1 + 1
+```
+prose after
+```
+"""
+    blocks = Codeblock.iter_from_markdown(markdown)
+    # The ipython block closes correctly at the bare ```.  "prose after" is
+    # prose; the trailing ``` opens a block with no closing fence so it is not
+    # emitted.
+    assert blocks == [
+        Codeblock("ipython", "x = 1 + 1"),
+    ]
+
+
 def test_extract_codeblocks_shift_operand_alone_is_not_a_heredoc():
     """A shift operand that later appears alone on a line must not mint a
     phantom heredoc terminator and swallow the closing fence.
