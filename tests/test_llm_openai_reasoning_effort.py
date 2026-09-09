@@ -120,14 +120,37 @@ def test_openai_rejects_unknown_effort(monkeypatch):
 
 def test_openrouter_effort_replaces_budget(monkeypatch):
     monkeypatch.setenv("GPTME_THINKING_EFFORT", "high")
+    monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+    monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
     body = extra_body(
         "openrouter", _meta("openai/o3", "openrouter", True), max_tokens=64
     )
     assert body["reasoning"] == {"effort": "high"}
     assert body["usage"] == {"include": True}
-    # reasoning present → same provider-pref interplay as the budget path
+    # reasoning present → privacy constraints still apply (fail toward privacy)
+    assert body["provider"]["require_parameters"] is True
+    assert body["provider"]["data_collection"] == "deny"
+
+
+def test_openrouter_effort_relaxed_privacy_keeps_deny(monkeypatch):
+    """relaxed_privacy=True drops require_parameters but PRESERVES data_collection=deny.
+
+    The relaxed 404-fallback path only drops the require_parameters capability
+    guard.  The deny-by-default data_collection policy is kept so a retry can
+    never silently route prompts to a training host; relaxing data_collection
+    requires an explicit OPENROUTER_DATA_COLLECTION override.
+    """
+    monkeypatch.setenv("GPTME_THINKING_EFFORT", "high")
+    monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+    monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
+    body = extra_body(
+        "openrouter",
+        _meta("openai/o3", "openrouter", True),
+        max_tokens=64,
+        relaxed_privacy=True,
+    )
     assert "require_parameters" not in body["provider"]
-    assert "data_collection" not in body["provider"]
+    assert body["provider"]["data_collection"] == "deny"
 
 
 def test_openrouter_non_reasoning_model_ignores_effort(monkeypatch):

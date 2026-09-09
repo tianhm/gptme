@@ -1179,13 +1179,39 @@ def chat(
     if max_tokens is not None:
         optional_kwargs[_max_tokens_param_name(provider, api_model)] = max_tokens
 
-    raw_response = client.chat.completions.with_raw_response.create(
-        model=api_model.split("@")[0],
-        messages=cast(list, messages_dicts),
-        extra_headers=extra_headers(provider),
-        extra_body=extra_body(provider, model_meta, max_tokens=max_tokens),
-        **optional_kwargs,
-    )
+    def _chat_create(relaxed_privacy: bool = False) -> Any:
+        return client.chat.completions.with_raw_response.create(
+            model=api_model.split("@")[0],
+            messages=cast(list, messages_dicts),
+            extra_headers=extra_headers(provider),
+            extra_body=extra_body(
+                provider,
+                model_meta,
+                max_tokens=max_tokens,
+                relaxed_privacy=relaxed_privacy,
+            ),
+            **optional_kwargs,
+        )
+
+    try:
+        raw_response = _chat_create()
+    except Exception as _e:
+        if _uses_openrouter_backend(
+            provider, model_meta
+        ) and _is_openrouter_no_endpoints_error(_e):
+            _dc_configured = get_config().get_env("OPENROUTER_DATA_COLLECTION", "deny")
+            logger.warning(
+                "OpenRouter: no endpoints matched the strict constraints "
+                "(require_parameters=True + data_collection=%s) for %s — "
+                "retrying with only the capability guard dropped (data_collection "
+                "stays at its configured default). Set OPENROUTER_PROVIDER_ORDER "
+                "or use model@provider to pin a no-training host.",
+                _dc_configured,
+                model_meta.model,
+            )
+            raw_response = _chat_create(relaxed_privacy=True)
+        else:
+            raise
     response = raw_response.parse()
     _or_provider = (
         raw_response.headers.get("x-openrouter-provider")
@@ -1296,10 +1322,47 @@ def _resolve_reasoning_effort(provider: Provider, model_meta: ModelMeta) -> str 
     return effort
 
 
+def _is_openrouter_no_endpoints_error(e: Exception) -> bool:
+    """Return True when OpenRouter reports no provider matched the constraints.
+
+    OpenRouter returns a 4xx (404 "No endpoints found", or 400 in some routing
+    configurations) when the combination of provider preferences
+    (data_collection, require_parameters, provider order, etc.) eliminates every
+    available host.  Matching both 404 and 400 covers the range documented in
+    the original code comment (the triple constraint "eliminates all available
+    providers and causes 400 errors").  The message check keeps this distinct
+    from a genuine model-not-found or other 4xx error.
+    """
+    from openai import APIStatusError  # fmt: skip
+
+    if not isinstance(e, APIStatusError) or e.status_code not in (400, 404):
+        return False
+    error_text = " ".join(
+        [
+            str(getattr(e, "message", "")),
+            str(e.body) if e.body else "",
+            str(e),
+        ]
+    ).lower()
+    return "no endpoints" in error_text or "no providers" in error_text
+
+
 def extra_body(
-    provider: Provider, model_meta: ModelMeta, max_tokens: int | None = None
+    provider: Provider,
+    model_meta: ModelMeta,
+    max_tokens: int | None = None,
+    relaxed_privacy: bool = False,
 ) -> dict[str, Any]:
-    """Return extra body for the OpenAI API based on the model."""
+    """Return extra body for the OpenAI API based on the model.
+
+    ``relaxed_privacy=True`` drops the ``require_parameters`` capability guard
+    (routing to providers that may not support every request parameter) as a
+    one-shot fallback when the strict defaults cause a 404 "No endpoints found"
+    error.  The deny-by-default ``data_collection`` policy is **preserved** even
+    in the relaxed path — prompts are never silently routed to a training host.
+    Relaxing ``data_collection`` requires an explicit
+    ``OPENROUTER_DATA_COLLECTION`` override, which is honoured in both modes.
+    """
     body: dict[str, Any] = {}
     _maybe_apply_verbosity(body, model_meta)
     effort = _resolve_reasoning_effort(provider, model_meta)
@@ -1307,7 +1370,7 @@ def extra_body(
         # Chat Completions parameter (OpenAI reasoning models, Kimi K3).
         # The Responses API path sets ``reasoning.effort`` in chat()/stream().
         body["reasoning_effort"] = effort
-    if provider == "openrouter":
+    if _uses_openrouter_backend(provider, model_meta):
         # Enable detailed usage info including cached tokens
         # See: https://openrouter.ai/docs/guides/usage-accounting
         body["usage"] = {"include": True}
@@ -1356,24 +1419,31 @@ def extra_body(
             provider_prefs["order"] = provider_order
             provider_prefs["allow_fallbacks"] = False
 
-        # Ensure routed provider supports all request parameters (tools,
-        # response_format, etc.) — prevents silent failures when OpenRouter
-        # falls back to a provider that doesn't support function calling.
-        # NOTE: only set when reasoning is NOT enabled, because the
-        # combination of require_parameters=True + reasoning extension can
-        # eliminate all available providers (the reasoning body parameter
-        # is not universally supported).
-        if "reasoning" not in body:
+        if not relaxed_privacy:
+            # Ensure routed provider supports all request parameters (tools,
+            # response_format, etc.) — prevents silent failures when OpenRouter
+            # falls back to a provider that doesn't support function calling.
+            # Sent for all models including reasoning models: as of 2026-09-09,
+            # 20+ hosts of common reasoning models (DeepSeek V4, GLM-5.3, etc.)
+            # support the reasoning parameter and honour this constraint.
             provider_prefs["require_parameters"] = True
 
-        # Privacy: default to "deny" for non-reasoning models to preserve
-        # user privacy. For reasoning models, skip the default — the triple
-        # constraint (require_parameters + reasoning + data_collection="deny")
-        # eliminates all available providers and causes 400 errors.
-        if "reasoning" not in body:
+            # Privacy: always default to "deny" so prompts stay off training
+            # pipelines.  This applies to reasoning models too — the earlier
+            # concern that the triple constraint (require_parameters + reasoning
+            # + data_collection=deny) would eliminate all providers no longer
+            # holds for current open-weight model hosts (verified 2026-09-09).
+            # If a future model has no matching privacy-respecting host,
+            # OpenRouter returns 404 "No endpoints found"; gptme catches that
+            # and retries once with relaxed_privacy=True (see chat()/stream()).
             data_collection = get_config().get_env("OPENROUTER_DATA_COLLECTION", "deny")
         else:
-            data_collection = get_config().get_env("OPENROUTER_DATA_COLLECTION")
+            # Relaxed fallback: drop only the require_parameters capability guard.
+            # The deny-by-default data_collection policy is PRESERVED so a retry
+            # can never silently route prompts to a training host.  To genuinely
+            # relax data_collection, the user must set an explicit
+            # OPENROUTER_DATA_COLLECTION override (e.g. "allow"), honoured below.
+            data_collection = get_config().get_env("OPENROUTER_DATA_COLLECTION", "deny")
         if data_collection:
             provider_prefs["data_collection"] = data_collection
 
@@ -1540,15 +1610,41 @@ def stream(
         optional_kwargs[_max_tokens_param_name(provider, api_model)] = max_tokens
     reasoning_effort = _resolve_reasoning_effort(provider, model_meta)
 
-    _stream_obj = client.chat.completions.create(
-        model=api_model.split("@")[0],
-        messages=cast(list, messages_dicts),
-        stream=True,
-        extra_headers=extra_headers(provider),
-        extra_body=extra_body(provider, model_meta, max_tokens=max_tokens),
-        stream_options={"include_usage": True},
-        **optional_kwargs,
-    )
+    def _stream_create(relaxed_privacy: bool = False) -> Any:
+        return client.chat.completions.create(
+            model=api_model.split("@")[0],
+            messages=cast(list, messages_dicts),
+            stream=True,
+            extra_headers=extra_headers(provider),
+            extra_body=extra_body(
+                provider,
+                model_meta,
+                max_tokens=max_tokens,
+                relaxed_privacy=relaxed_privacy,
+            ),
+            stream_options={"include_usage": True},
+            **optional_kwargs,
+        )
+
+    try:
+        _stream_obj = _stream_create()
+    except Exception as _e:
+        if _uses_openrouter_backend(
+            provider, model_meta
+        ) and _is_openrouter_no_endpoints_error(_e):
+            _dc_configured = get_config().get_env("OPENROUTER_DATA_COLLECTION", "deny")
+            logger.warning(
+                "OpenRouter: no endpoints matched the strict constraints "
+                "(require_parameters=True + data_collection=%s) for %s — "
+                "retrying with only the capability guard dropped (data_collection "
+                "stays at its configured default). Set OPENROUTER_PROVIDER_ORDER "
+                "or use model@provider to pin a no-training host.",
+                _dc_configured,
+                model_meta.model,
+            )
+            _stream_obj = _stream_create(relaxed_privacy=True)
+        else:
+            raise
     # Capture which subprovider OpenRouter actually used before consuming the
     # stream. The x-openrouter-provider header is available on the initial
     # HTTP response (before the stream body starts).

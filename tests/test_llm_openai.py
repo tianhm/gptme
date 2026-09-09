@@ -4,7 +4,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock, Mock, patch
 
 import openai  # warm import cache before per-test 10s timeout
-import openai._types  # noqa: F401  # warm openai._types (NOT_GIVEN) before per-test 10s timeout
+import openai._types  # warm openai._types (NOT_GIVEN) before per-test 10s timeout
 import pytest
 from pydantic import BaseModel
 
@@ -2604,17 +2604,22 @@ class TestExtraBody:
         result = extra_body("openrouter", meta)
         assert result["provider"]["require_parameters"] is True
 
-    def test_openrouter_has_data_collection_deny_by_default_for_non_reasoning(
-        self, monkeypatch
-    ):
-        """Non-reasoning models default to data_collection='deny' for privacy."""
+    def test_openrouter_has_data_collection_deny_by_default(self, monkeypatch):
+        """All models default to data_collection='deny' for privacy."""
         from gptme.llm.llm_openai import extra_body
 
         monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
         monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
+        # Non-reasoning model
         meta = self._make_model("anthropic/claude-sonnet-4-20250514")
         result = extra_body("openrouter", meta)
         assert result["provider"]["data_collection"] == "deny"
+        # Reasoning model — privacy constraints now apply regardless of reasoning
+        meta_r = self._make_model(
+            "deepseek/deepseek-v4-flash-0731", supports_reasoning=True
+        )
+        result_r = extra_body("openrouter", meta_r)
+        assert result_r["provider"]["data_collection"] == "deny"
 
     def test_openrouter_provider_override_with_at_sign(self):
         from gptme.llm.llm_openai import extra_body
@@ -2680,21 +2685,22 @@ class TestExtraBody:
         assert "reasoning" in result
         assert result["reasoning"]["enabled"] is True
 
-    def test_openrouter_reasoning_model_no_require_parameters(self):
-        """Reasoning models must not set require_parameters=True.
+    def test_openrouter_reasoning_model_has_require_parameters(self):
+        """Reasoning models now also set require_parameters=True (fail toward privacy).
 
-        The combination of require_parameters + reasoning extension can
-        eliminate all available providers — the reasoning body parameter
-        is not universally supported by all OpenRouter providers.
+        As of 2026-09-09, 20+ hosts of common reasoning models (DeepSeek V4,
+        GLM-5.3, etc.) support the reasoning parameter, so the constraint no
+        longer eliminates all providers.  If it does, the caller retries with
+        relaxed_privacy=True (see chat()/stream()).
         """
         from gptme.llm.llm_openai import extra_body
 
         meta = self._make_model(
-            "anthropic/claude-sonnet-4-20250514", supports_reasoning=True
+            "deepseek/deepseek-v4-flash-0731", supports_reasoning=True
         )
         result = extra_body("openrouter", meta)
         assert "reasoning" in result
-        assert "require_parameters" not in result["provider"]
+        assert result["provider"]["require_parameters"] is True
 
     def test_openrouter_non_reasoning_model_has_require_parameters(self):
         """Non-reasoning models should still set require_parameters=True."""
@@ -2704,6 +2710,41 @@ class TestExtraBody:
         result = extra_body("openrouter", meta)
         assert "reasoning" not in result
         assert result["provider"]["require_parameters"] is True
+
+    def test_openrouter_relaxed_privacy_drops_require_parameters_keeps_deny(
+        self, monkeypatch
+    ):
+        """relaxed_privacy=True drops require_parameters but PRESERVES data_collection=deny.
+
+        The relaxed 404-fallback path only drops the require_parameters
+        capability guard.  The deny-by-default data_collection policy is kept so
+        a retry can never silently route prompts to a training host; relaxing
+        data_collection requires an explicit OPENROUTER_DATA_COLLECTION override.
+        """
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+        monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
+        meta = self._make_model(
+            "deepseek/deepseek-v4-flash-0731", supports_reasoning=True
+        )
+        result = extra_body("openrouter", meta, relaxed_privacy=True)
+        assert "require_parameters" not in result["provider"]
+        # deny-by-default preserved even in the relaxed fallback path
+        assert result["provider"]["data_collection"] == "deny"
+
+    def test_openrouter_relaxed_privacy_honors_explicit_env_override(self, monkeypatch):
+        """relaxed_privacy=True honours an explicit OPENROUTER_DATA_COLLECTION=allow override."""
+        from gptme.llm.llm_openai import extra_body
+
+        monkeypatch.setenv("OPENROUTER_DATA_COLLECTION", "allow")
+        monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
+        meta = self._make_model(
+            "deepseek/deepseek-v4-flash-0731", supports_reasoning=True
+        )
+        result = extra_body("openrouter", meta, relaxed_privacy=True)
+        assert "require_parameters" not in result["provider"]
+        assert result["provider"]["data_collection"] == "allow"
 
     def test_openrouter_data_collection_env_override_allow(self, monkeypatch):
         from gptme.llm.llm_openai import extra_body
@@ -2721,24 +2762,28 @@ class TestExtraBody:
         result = extra_body("openrouter", meta)
         assert result["provider"]["data_collection"] == "deny"
 
-    def test_openrouter_reasoning_model_no_data_collection_by_default(
+    def test_openrouter_reasoning_model_has_data_collection_deny_by_default(
         self, monkeypatch
     ):
-        """Reasoning models don't set data_collection by default.
+        """Reasoning models now default to data_collection='deny' (fail toward privacy).
 
-        The triple constraint (require_parameters + reasoning + data_collection="deny")
-        eliminates all available OpenRouter providers, causing 400 errors.
+        The earlier concern that the triple constraint (require_parameters +
+        reasoning + data_collection=deny) would eliminate all OpenRouter providers
+        no longer holds: as of 2026-09-09, 20+ hosts support reasoning and
+        no-training policy simultaneously.  If a model has no matching host,
+        OpenRouter returns 404 "No endpoints found" and gptme retries once with
+        relaxed_privacy=True.
         """
         from gptme.llm.llm_openai import extra_body
 
         monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
         monkeypatch.delenv("GPTME_OPENROUTER_DATA_COLLECTION", raising=False)
         meta = self._make_model(
-            "anthropic/claude-sonnet-4-20250514", supports_reasoning=True
+            "deepseek/deepseek-v4-flash-0731", supports_reasoning=True
         )
         result = extra_body("openrouter", meta)
         assert "reasoning" in result
-        assert "data_collection" not in result["provider"]
+        assert result["provider"]["data_collection"] == "deny"
 
     def test_openrouter_data_collection_gptme_prefixed_env(self, monkeypatch):
         """GPTME_OPENROUTER_DATA_COLLECTION takes precedence over bare form."""
@@ -2806,6 +2851,263 @@ class TestExtraBody:
         meta = self._make_model("anthropic/claude-sonnet-4-20250514")
         result = extra_body("openrouter", meta)
         assert result["provider"]["quantizations"] == ["int4"]
+
+
+def _make_api_status_error(message: str, status_code: int, body: object = None):
+    """Build an openai.APIStatusError without a real httpx.Response."""
+    import httpx
+    from openai import APIStatusError
+
+    response = httpx.Response(
+        status_code,
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+    )
+    return APIStatusError(message, response=response, body=body)
+
+
+class TestOpenRouterNoEndpointsError:
+    """Tests for _is_openrouter_no_endpoints_error helper."""
+
+    def test_detects_no_endpoints_in_message(self):
+        from gptme.llm.llm_openai import _is_openrouter_no_endpoints_error
+
+        e = _make_api_status_error(
+            "No endpoints found that match your data policies",
+            404,
+            body={
+                "error": {"message": "No endpoints found that match your data policies"}
+            },
+        )
+        assert _is_openrouter_no_endpoints_error(e)
+
+    def test_detects_no_providers_in_body(self):
+        from gptme.llm.llm_openai import _is_openrouter_no_endpoints_error
+
+        e = _make_api_status_error(
+            "No providers available",
+            404,
+            body={"error": "No providers available for this model"},
+        )
+        assert _is_openrouter_no_endpoints_error(e)
+
+    def test_matches_no_endpoints_on_400(self):
+        """A 400 with the no-endpoints message matches (broadened beyond 404).
+
+        The original code comment documented that the triple constraint
+        "eliminates all available providers and causes 400 errors", so the
+        fallback must also fire on a 400 that carries the no-endpoints signal.
+        """
+        from gptme.llm.llm_openai import _is_openrouter_no_endpoints_error
+
+        e = _make_api_status_error(
+            "No endpoints found",
+            400,
+            body={"error": "No endpoints found"},
+        )
+        assert _is_openrouter_no_endpoints_error(e)
+
+    def test_does_not_match_other_400(self):
+        from gptme.llm.llm_openai import _is_openrouter_no_endpoints_error
+
+        e = _make_api_status_error(
+            "Bad request",
+            400,
+            body={"error": "Unsupported parameter"},
+        )
+        assert not _is_openrouter_no_endpoints_error(e)
+
+    def test_does_not_match_other_404(self):
+        from gptme.llm.llm_openai import _is_openrouter_no_endpoints_error
+
+        e = _make_api_status_error(
+            "Model not found",
+            404,
+            body={"error": "Model not found"},
+        )
+        assert not _is_openrouter_no_endpoints_error(e)
+
+    def test_does_not_match_non_api_error(self):
+        from gptme.llm.llm_openai import _is_openrouter_no_endpoints_error
+
+        assert not _is_openrouter_no_endpoints_error(ValueError("No endpoints"))
+        assert not _is_openrouter_no_endpoints_error(RuntimeError("404"))
+
+
+class TestOpenRouterPrivacyFallbackRetry:
+    """Caller-level tests for the chat()/stream() relaxed-privacy retry.
+
+    Regression guard for the Greptile finding that the fallback wiring was
+    untested: chat()/stream() receiving an OpenRouter "No endpoints found" 404
+    must retry strict-first then relaxed, keep data_collection=deny in the
+    relaxed retry (never silently route to a training host), and only retry on
+    the OpenRouter backend.
+    """
+
+    @staticmethod
+    def _success_completion():
+        from openai.types.completion_usage import CompletionUsage
+
+        return SimpleNamespace(
+            usage=CompletionUsage.model_validate(
+                {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                }
+            ),
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content="Hello",
+                        tool_calls=None,
+                        reasoning_content=None,
+                    ),
+                )
+            ],
+        )
+
+    def _chat_error(self):
+        return _make_api_status_error(
+            "No endpoints found that match your data policies",
+            404,
+            body={
+                "error": {"message": "No endpoints found that match your data policies"}
+            },
+        )
+
+    def _setup_openrouter_chat(self, monkeypatch, side_effect):
+        """Wire a mock openrouter chat-completions client with the given side_effect."""
+        completions_create = Mock(side_effect=side_effect)
+        mock_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    with_raw_response=SimpleNamespace(create=completions_create)
+                )
+            )
+        )
+        monkeypatch.setattr(llm_openai, "get_client", lambda provider: mock_client)
+        monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
+        monkeypatch.setattr(
+            llm_openai, "_should_use_responses_api", lambda *args: False
+        )
+        return completions_create
+
+    def test_chat_retries_relaxed_on_no_endpoints_and_keeps_deny(self, monkeypatch):
+        """chat() retries once relaxed on a no-endpoints 404, keeping data_collection=deny."""
+        completion = self._success_completion()
+        raw_ok = SimpleNamespace(parse=lambda: completion, headers={})
+
+        err = self._chat_error()
+        calls = []
+
+        def _create(**kwargs):
+            calls.append(kwargs.get("extra_body", {}))
+            if len(calls) == 1:
+                raise err
+            return raw_ok
+
+        completions_create = self._setup_openrouter_chat(monkeypatch, _create)
+
+        result, _ = llm_openai.chat(
+            [Message(role="user", content="Hi")],
+            "openrouter/deepseek/deepseek-v4-flash-0731",
+            None,
+        )
+
+        # Strict-first, relaxed-second: two create calls
+        assert completions_create.call_count == 2
+        # First (strict) request had require_parameters + data_collection=deny
+        assert calls[0]["provider"]["require_parameters"] is True
+        assert calls[0]["provider"]["data_collection"] == "deny"
+        # Relaxed retry drops require_parameters but keeps deny (privacy preserved)
+        assert "require_parameters" not in calls[1]["provider"]
+        assert calls[1]["provider"]["data_collection"] == "deny"
+        assert result == "Hello"
+
+    def test_chat_reraises_non_endpoint_error(self, monkeypatch):
+        """chat() re-raises a 404 that is not an OpenRouter no-endpoints error."""
+        other_err = _make_api_status_error(
+            "Model not found",
+            404,
+            body={"error": "Model not found"},
+        )
+        calls = []
+
+        def _create(**kwargs):
+            calls.append(kwargs.get("extra_body", {}))
+            raise other_err
+
+        completions_create = self._setup_openrouter_chat(monkeypatch, _create)
+
+        with pytest.raises(openai.APIStatusError):
+            llm_openai.chat(
+                [Message(role="user", content="Hi")],
+                "openrouter/deepseek/deepseek-v4-flash-0731",
+                None,
+            )
+        # No retry happened
+        assert completions_create.call_count == 1
+
+    def test_stream_retries_relaxed_on_no_endpoints_and_keeps_deny(self, monkeypatch):
+        """stream() retries once relaxed on a no-endpoints 404, keeping data_collection=deny."""
+        from gptme.message import Message
+
+        err = self._chat_error()
+        calls = []
+
+        class _FakeStream:
+            """Iterable that yields a single content chunk then ends."""
+
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    usage=None,
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason=None,
+                            delta=SimpleNamespace(
+                                reasoning_content=None,
+                                reasoning=None,
+                                content="Hello",
+                                tool_calls=None,
+                            ),
+                        )
+                    ],
+                )
+
+        def _create(**kwargs):
+            calls.append(kwargs.get("extra_body", {}))
+            if len(calls) == 1:
+                raise err
+            return _FakeStream()
+
+        mock_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+        )
+        monkeypatch.setattr(llm_openai, "get_client", lambda provider: mock_client)
+        monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
+        monkeypatch.setattr(
+            llm_openai, "_should_use_responses_api", lambda *args: False
+        )
+
+        result = "".join(
+            llm_openai.stream(
+                [Message(role="user", content="Hi")],
+                "openrouter/deepseek/deepseek-v4-flash-0731",
+                None,
+            )
+        )
+
+        # Strict-first, relaxed-second
+        assert len(calls) == 2
+        assert calls[0]["provider"]["require_parameters"] is True
+        assert calls[0]["provider"]["data_collection"] == "deny"
+        # Relaxed retry keeps deny (privacy preserved), only drops require_parameters
+        assert "require_parameters" not in calls[1]["provider"]
+        assert calls[1]["provider"]["data_collection"] == "deny"
+        assert result == "Hello"
 
 
 class TestRecordUsageCacheTokens:
