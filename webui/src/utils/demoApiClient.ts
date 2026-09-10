@@ -33,6 +33,65 @@ export class DemoModeError extends Error {
   }
 }
 
+// Session-scoped persistence key. Uses sessionStorage so generated conversations
+// survive page reload within the same browser tab, but are discarded when the
+// tab is closed (appropriate for ephemeral demo state).
+const DEMO_SESSION_KEY = 'gptme:demo-conversations';
+const DEMO_PENDING_INITIAL_STEPS_KEY = 'gptme:demo-pending-initial-steps';
+
+interface PendingInitialStep {
+  stream?: boolean;
+}
+
+/** Load persisted demo conversations from sessionStorage (best-effort). */
+function loadDemoSessionStorage(): Map<string, ConversationResponse> {
+  try {
+    const raw = sessionStorage.getItem(DEMO_SESSION_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as Record<string, ConversationResponse>;
+    return new Map(Object.entries(parsed).filter(([id]) => id.startsWith('demo/')));
+  } catch {
+    return new Map();
+  }
+}
+
+/** Persist demo conversations from the in-memory client state (best-effort). */
+function saveDemoSessionStorage(conversations: Map<string, ConversationResponse>): void {
+  try {
+    const obj: Record<string, ConversationResponse> = {};
+    for (const [id, conversation] of conversations) {
+      if (id.startsWith('demo/')) {
+        obj[id] = conversation;
+      }
+    }
+    sessionStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(obj));
+  } catch {
+    // sessionStorage may be unavailable (private browsing, storage quota, test env).
+  }
+}
+
+function loadPendingInitialSteps(): Map<string, PendingInitialStep> {
+  try {
+    const raw = sessionStorage.getItem(DEMO_PENDING_INITIAL_STEPS_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as Record<string, PendingInitialStep>;
+    return new Map(Object.entries(parsed));
+  } catch {
+    return new Map();
+  }
+}
+
+function savePendingInitialSteps(steps: Map<string, PendingInitialStep>): void {
+  try {
+    sessionStorage.setItem(
+      DEMO_PENDING_INITIAL_STEPS_KEY,
+      JSON.stringify(Object.fromEntries(steps))
+    );
+  } catch {
+    // sessionStorage may be unavailable (private browsing, storage quota, test env).
+  }
+}
+
 const DEMO_BASE_URL = 'demo://offline';
 const DEMO_CONV_ID = 'demo/gptme-intro';
 
@@ -173,7 +232,18 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
   const userInfo$ = observable<UserInfo | null>(DEMO_USER_INFO);
 
   // In-memory store for conversations created during the demo session.
-  const localConversations = new Map<string, ConversationResponse>();
+  // Pre-populated from sessionStorage so generated demo URLs survive page reload.
+  const localConversations = loadDemoSessionStorage();
+  const pendingInitialSteps = loadPendingInitialSteps();
+  for (const [id, pending] of pendingInitialSteps) {
+    const conversation = localConversations.get(id);
+    if (conversation) {
+      initConversation(id, clone(conversation), {
+        needsInitialStep: true,
+        initialStepStream: pending.stream,
+      });
+    }
+  }
   const eventCallbacks = new Map<string, DemoEventCallbacks>();
 
   const localSummary = (conv: ConversationResponse): ConversationSummary => ({
@@ -208,6 +278,9 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
     delete cleanMessage._error;
     conv.log.push(cleanMessage);
     conv.branches = { ...conv.branches, main: conv.log };
+    if (logfile.startsWith('demo/')) {
+      saveDemoSessionStorage(localConversations);
+    }
   };
 
   const notImpl = (method: string): never => {
@@ -288,6 +361,30 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
       if (logfile === DEMO_CONV_ID) return clone(DEMO_CONV_RESPONSE);
       const local = localConversations.get(logfile);
       if (local) return clone(local);
+      // Generated demo conversation IDs (e.g. demo/conv-<timestamp>) are not in
+      // the static fixture set and are not persisted beyond the browser session.
+      // Instead of throwing (which triggers the global error boundary), return the
+      // static fixture under the requested ID so the user lands in a usable demo
+      // state.  A notice message at the top of the log explains what happened.
+      if (logfile.startsWith('demo/')) {
+        const notice: Message = {
+          role: 'system',
+          content:
+            '⚠️ This demo conversation was not found — it may have expired or been opened in a new tab. Showing the demo introduction instead. You can start a new conversation at any time.',
+          timestamp: new Date().toISOString(),
+        };
+        const recovered: ConversationResponse = {
+          ...clone(DEMO_CONV_RESPONSE),
+          id: logfile,
+          name: 'Recovered demo conversation',
+          logfile,
+          log: [notice, ...clone(DEMO_MESSAGES)],
+          branches: { main: [notice, ...clone(DEMO_MESSAGES)] },
+        };
+        localConversations.set(logfile, recovered);
+        saveDemoSessionStorage(localConversations);
+        return clone(recovered);
+      }
       throw new DemoModeError(`getConversation(${logfile})`);
     },
     forkConversation: async (logfile, afterMessage, branch = 'main') => {
@@ -310,6 +407,7 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
         workspace: source.workspace,
       };
       localConversations.set(forkId, forked);
+      saveDemoSessionStorage(localConversations);
       sessions$.set(forkId, `demo-session-${forkId}`);
       return forkId;
     },
@@ -331,6 +429,9 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
       };
       if (!existing) {
         localConversations.set(logfile, conv);
+        if (logfile.startsWith('demo/')) {
+          saveDemoSessionStorage(localConversations);
+        }
       }
       sessions$.set(logfile, `demo-session-${logfile}`);
       return { status: 'ok', session_id: logfile };
@@ -351,6 +452,9 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
         workspace: '/demo',
       };
       localConversations.set(logfile, conv);
+      saveDemoSessionStorage(localConversations);
+      pendingInitialSteps.set(logfile, { stream: opts?.stream });
+      savePendingInitialSteps(pendingInitialSteps);
       sessions$.set(logfile, `demo-session-${logfile}`);
       initConversation(logfile, clone(conv), {
         needsInitialStep: true,
@@ -398,6 +502,8 @@ export function createDemoApiClient(baseUrl: string = DEMO_BASE_URL): IApiClient
       );
       streamAssistant(callbacks, final);
       appendLocalMessage(logfile, final);
+      pendingInitialSteps.delete(logfile);
+      savePendingInitialSteps(pendingInitialSteps);
     },
     confirmTool: async () => {},
     deleteConversation: async () => {},

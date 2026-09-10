@@ -22,6 +22,11 @@ const createEventCallbacks = () => ({
   onConnected: jest.fn(),
 });
 
+beforeEach(() => {
+  sessionStorage.clear();
+  conversations$.set(new Map());
+});
+
 describe('createDemoApiClient', () => {
   it('reports a connected, no-auth offline client', async () => {
     const client = createDemoApiClient();
@@ -194,5 +199,130 @@ describe('createDemoApiClient', () => {
     await expect(client.interruptGeneration('chat-1')).resolves.toBeUndefined();
     client.setConnected(false);
     expect(client.isConnected$.get()).toBe(false);
+  });
+});
+
+describe('createDemoApiClient — page reload / session recovery', () => {
+  it('restores pending initial-step state after client reinit', async () => {
+    // First client instance — simulates the original page load where the user
+    // typed a prompt and the demo created a generated conversation.
+    const client1 = createDemoApiClient();
+    const logfile = await client1.createConversationWithPlaceholder('What is gptme?', {
+      stream: false,
+    });
+    expect(logfile).toMatch(/^demo\/conv-/);
+
+    // Second client instance — simulates a page reload (fresh Map, same sessionStorage).
+    conversations$.set(new Map());
+    const client2 = createDemoApiClient();
+    const conv = await client2.getConversation(logfile);
+    expect(conv.id).toBe(logfile);
+    expect(conv.log[0].content).toBe('What is gptme?');
+    expect(conversations$.get(logfile)?.needsInitialStep.get()).toBe(true);
+    expect(conversations$.get(logfile)?.initialStepStream.get()).toBe(false);
+
+    await client2.step(logfile);
+    conversations$.set(new Map());
+    createDemoApiClient();
+    expect(conversations$.get(logfile)?.peek()).toBeUndefined();
+  });
+
+  it('keeps pending initial-step state when generation fails', async () => {
+    const client1 = createDemoApiClient();
+    const logfile = await client1.createConversationWithPlaceholder('What is gptme?');
+    const callbacks = createEventCallbacks();
+    callbacks.onMessageStart.mockImplementation(() => {
+      throw new Error('stream failed');
+    });
+    await client1.subscribeToEvents(logfile, callbacks);
+
+    await expect(client1.step(logfile)).rejects.toThrow('stream failed');
+
+    conversations$.set(new Map());
+    createDemoApiClient();
+    expect(conversations$.get(logfile)?.needsInitialStep.get()).toBe(true);
+  });
+
+  it('restores a conversation created via createConversation after client reinit', async () => {
+    const client1 = createDemoApiClient();
+    await client1.createConversation('demo/my-saved-conv', [
+      { role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00Z' },
+    ]);
+
+    const client2 = createDemoApiClient();
+    const conv = await client2.getConversation('demo/my-saved-conv');
+    expect(conv.id).toBe('demo/my-saved-conv');
+    expect(conv.log[0].content).toBe('hello');
+  });
+
+  it('restores a forked conversation after client reinit', async () => {
+    const client1 = createDemoApiClient();
+    const forkId = await client1.forkConversation('demo/gptme-intro', 2);
+    expect(forkId).toMatch(/^demo\/conv-/);
+
+    const client2 = createDemoApiClient();
+    const conv = await client2.getConversation(forkId);
+    expect(conv.id).toBe(forkId);
+    expect(conv.log.length).toBeGreaterThan(0);
+  });
+
+  it('persists a recovered missing generated demo conversation', async () => {
+    // A generated ID that was never created — e.g. the sessionStorage was cleared
+    // or the URL was shared across browsers. The client must not throw here and
+    // the recovered history must survive subsequent mutations and client reinit.
+    const logfile = 'demo/conv-unknown-1234567890';
+    const client1 = createDemoApiClient();
+    const recovered = await client1.getConversation(logfile);
+    expect(recovered.id).toBe(logfile);
+    expect(recovered.name).toBe('Recovered demo conversation');
+    expect(recovered.log.length).toBeGreaterThan(0);
+    expect(recovered.log[0].role).toBe('system');
+    expect(recovered.log[0].content).toMatch(/not found|expired/i);
+
+    await client1.sendMessage(logfile, { role: 'user', content: 'continue' });
+
+    const client2 = createDemoApiClient();
+    const restored = await client2.getConversation(logfile);
+    expect(restored.log).toEqual([
+      ...recovered.log,
+      expect.objectContaining({ role: 'user', content: 'continue' }),
+    ]);
+    await expect(client2.forkConversation(logfile, 0)).resolves.toMatch(/^demo\/conv-/);
+  });
+
+  it('does not persist non-demo conversations when later saving a demo conversation', async () => {
+    const client1 = createDemoApiClient();
+    await client1.createConversation('unknown/chat', []);
+    await client1.sendMessage('unknown/chat', { role: 'user', content: 'hello' });
+    await client1.createConversation('demo/saved-after-non-demo', []);
+
+    const client2 = createDemoApiClient();
+    await expect(client2.getConversation('unknown/chat')).rejects.toBeInstanceOf(DemoModeError);
+    await expect(client2.getConversation('demo/saved-after-non-demo')).resolves.toMatchObject({
+      id: 'demo/saved-after-non-demo',
+    });
+  });
+
+  it('ignores non-demo entries already present in persisted storage', async () => {
+    sessionStorage.setItem(
+      'gptme:demo-conversations',
+      JSON.stringify({
+        'unknown/chat': {
+          id: 'unknown/chat',
+          name: 'invalid persisted conversation',
+          logfile: 'unknown/chat',
+          log: [],
+          branches: { main: [] },
+        },
+      })
+    );
+
+    const client = createDemoApiClient();
+    await expect(client.getConversation('unknown/chat')).rejects.toBeInstanceOf(DemoModeError);
+  });
+
+  it('does NOT apply graceful recovery to non-demo IDs (still throws)', async () => {
+    const client = createDemoApiClient();
+    await expect(client.getConversation('unknown/chat')).rejects.toBeInstanceOf(DemoModeError);
   });
 });
