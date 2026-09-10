@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import config_path, get_config, get_project_config
-from ..dirs import get_cc_memory_file
+from ..memory import MemoryStore, resolve_roots
+from ..memory.policy import POLICY_FILENAME
 from ..message import Message
 from ..util.context import md_codeblock
 from ..util.context_dedup import _content_hash
@@ -16,7 +17,7 @@ from . import AGENT_FILES, DEFAULT_CONTEXT_FILES, _loaded_agent_files_var
 from .context_cmd import get_project_context_cmd_output
 
 _HASH_PREFIX = "ch:"
-_CC_MEMORY_MAX_BYTES = 64 * 1024  # 64 KB cap to avoid consuming excessive prompt budget
+_MEMORY_BUDGET_BYTES = 64 * 1024  # 64 KB cap to avoid consuming excessive prompt budget
 
 if TYPE_CHECKING:
     from ..util.uri import FilePath
@@ -416,32 +417,86 @@ def prompt_workspace(
             files=valid_context_files,
         )
 
-    # Load Claude Code memory if present — makes CC-written memories accessible in gptme
+    # Load persistent memories from all layered roots (project, CC, agent, user).
+    # This makes memories written by any harness (gptme, Claude Code, Codex) visible
+    # in gptme sessions — the cross-harness read path for #3625.
     if include_user_context:
-        cc_memory_file = get_cc_memory_file(workspace_resolved)
-        if cc_memory_file.exists():
-            try:
-                # Read at most MAX+1 bytes to detect oversized files without loading them fully
-                with open(cc_memory_file, "rb") as _f:
-                    raw = _f.read(_CC_MEMORY_MAX_BYTES + 1)
-                truncated = len(raw) > _CC_MEMORY_MAX_BYTES
-                if truncated:
-                    raw = raw[:_CC_MEMORY_MAX_BYTES]
-                    logger.warning(
-                        f"CC memory file {cc_memory_file} exceeds "
-                        f"{_CC_MEMORY_MAX_BYTES // 1024}KB; truncating"
-                    )
-                memory_content = raw.decode("utf-8", errors="ignore").strip()
+        try:
+            roots = resolve_roots(workspace_resolved)
+            existing_roots = [r for r in roots if r.exists]
+            if existing_roots:
+                parts: list[str] = []
+                remaining = _MEMORY_BUDGET_BYTES
+                for root in existing_roots:
+                    # Separators count against the shared prompt budget too.
+                    separator_bytes = 2 if parts else 0
+                    available = remaining - separator_bytes
+                    if available <= 0:
+                        break
+                    try:
+                        root_store = MemoryStore([root])
+                        charged_bytes: int | None = None
+                        policy_path = root.path / POLICY_FILENAME
+                        if policy_path.is_symlink():
+                            raise ValueError(
+                                "memory index policy must not be a symlink"
+                            )
+                        # Check for individual entry files (any .md that isn't
+                        # the index or policy). When entries() silently returns []
+                        # due to parse errors, this prevents the legacy MEMORY.md
+                        # fallback from injecting stale content: render_root_index()
+                        # will return empty for a broken root, which is correct.
+                        _has_entry_files = any(
+                            f.is_file() and not f.is_symlink()
+                            for f in root.path.glob("*.md")
+                            if f.name not in ("MEMORY.md", POLICY_FILENAME)
+                        )
+                        if policy_path.exists() or _has_entry_files:
+                            # A policy is authoritative even with no entries.
+                            # Missing selections or overflow must never revive
+                            # an obsolete on-disk MEMORY.md through fallback.
+                            root_content = root_store.render_root_index(
+                                budget=available
+                            ).strip()
+                        else:
+                            # Keep legacy index-only roots compatible, bounding
+                            # the read itself rather than slicing a full read.
+                            index_path = root.path / "MEMORY.md"
+                            if not index_path.is_file() or index_path.is_symlink():
+                                continue
+                            with index_path.open("rb") as index_file:
+                                raw = index_file.read(available)
+                            root_content = raw.decode("utf-8", errors="ignore").strip()
+                            charged_bytes = len(raw)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to load memory root %s: %s", root.path, e
+                        )
+                        continue
+                    if root_content:
+                        parts.append(root_content)
+                        remaining -= separator_bytes + (
+                            charged_bytes
+                            if charged_bytes is not None
+                            else len(root_content.encode("utf-8"))
+                        )
+                memory_content = "\n\n".join(parts).strip()
                 if memory_content:
+                    root_paths = ", ".join(f"`{r.path}`" for r in existing_roots)
                     yield Message(
                         "system",
                         f"## Persistent Memory\n\n"
-                        f"The following memory was saved across sessions "
-                        f"(from `{cc_memory_file}`):\n\n{memory_content}",
+                        f"The following memories are shared across sessions "
+                        f"(from {root_paths}):\n\n{memory_content}",
                     )
-                    logger.debug(f"Loaded CC memory from {cc_memory_file}")
-            except OSError as e:
-                logger.debug(f"Failed to read CC memory file {cc_memory_file}: {e}")
+                    logger.debug(
+                        "Loaded %d memory indexes from %d root(s): %s",
+                        len(parts),
+                        len(existing_roots),
+                        [r.scope for r in existing_roots],
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to load layered memory: {e}")
 
     # Computed context last (changes most often, least cacheable)
     if (

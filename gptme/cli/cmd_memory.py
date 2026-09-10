@@ -125,6 +125,9 @@ def memory_show(name: str, as_json: bool):
 )
 @click.option("--title", help="Index link text (defaults to the name).")
 @click.option(
+    "--metadata", help="JSON object merged into entry metadata (e.g. provenance)."
+)
+@click.option(
     "--body-file",
     type=click.Path(exists=True, dir_okay=False),
     help="Read the body from this file instead of stdin.",
@@ -136,6 +139,7 @@ def memory_save(
     type_: str | None,
     scope: str | None,
     title: str | None,
+    metadata: str | None,
     body_file: str | None,
     as_json: bool,
 ):
@@ -147,6 +151,20 @@ def memory_save(
         gptme-util memory save prefer-short-answers \\
           "User prefers short, direct answers." --type feedback < body.md
     """
+    parsed_metadata = None
+    if metadata is not None:
+        try:
+            parsed_metadata = json.loads(metadata)
+        except ValueError as exc:
+            raise click.BadParameter(
+                "must be a JSON object", param_hint="--metadata"
+            ) from exc
+        if not isinstance(parsed_metadata, dict):
+            raise click.BadParameter("must be a JSON object", param_hint="--metadata")
+        if "type" in parsed_metadata:
+            raise click.BadParameter(
+                "type is reserved; use --type", param_hint="--metadata"
+            )
     if body_file:
         with open(body_file, encoding="utf-8") as f:
             body = f.read()
@@ -154,10 +172,20 @@ def memory_save(
         body = sys.stdin.read()
     else:
         body = ""
+    from ..memory.schema import MemoryParseError  # fmt: skip
+
     store = _store()
     try:
-        path = store.save(name, description, body, type=type_, scope=scope, title=title)
-    except (KeyError, OSError, ValueError) as e:
+        path = store.save(
+            name,
+            description,
+            body,
+            type=type_,
+            scope=scope,
+            title=title,
+            metadata=parsed_metadata,
+        )
+    except (KeyError, OSError, ValueError, MemoryParseError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     if as_json:
@@ -271,9 +299,11 @@ def memory_recall(
 @click.option("--scope", help="Root containing both entries (default: write root).")
 def memory_supersede(old_name: str, new_name: str, scope: str | None):
     """Mark OLD_NAME superseded by NEW_NAME and link both entries."""
+    from ..memory.schema import MemoryParseError  # fmt: skip
+
     try:
         old, new = _store().supersede(old_name, new_name, scope=scope)
-    except (KeyError, OSError, ValueError) as e:
+    except (KeyError, OSError, ValueError, MemoryParseError) as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"Superseded {_clean(old.name)} -> {_clean(new.name)}")
 
@@ -314,6 +344,8 @@ def memory_index(scope: str | None, write: bool, check: bool, budget: int | None
     Prints to stdout by default so a hand-curated MEMORY.md is never
     overwritten by accident; pass --write to replace it, --check to verify.
     """
+    from ..memory.schema import MemoryParseError  # fmt: skip
+
     store = _store()
     try:
         if check:
@@ -331,6 +363,6 @@ def memory_index(scope: str | None, write: bool, check: bool, budget: int | None
             ),
             nl=False,
         )
-    except (KeyError, OSError, ValueError) as e:
+    except (KeyError, OSError, ValueError, MemoryParseError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
