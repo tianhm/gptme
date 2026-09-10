@@ -243,7 +243,7 @@ def test_get_model_openrouter_subprovider_suffix_not_in_static():
         ("openai", "gpt-5.6-sol"),
         ("anthropic", "claude-sonnet-4-6"),
         ("gemini", "gemini-3.1-pro-preview"),
-        ("openrouter", "deepseek/deepseek-v4-flash-0731@deepseek"),
+        ("openrouter", "deepseek/deepseek-v4-flash-0731"),
         ("xai", "grok-4.6"),
         ("deepseek", "deepseek-v4-flash"),
         ("groq", "llama-3.3-70b-versatile"),
@@ -281,6 +281,17 @@ def test_recommended_models_have_metadata(provider):
         assert not MODELS[provider][name].get("deprecated"), (
             f"{provider}/{name} is deprecated"
         )
+
+
+def test_deepseek_v41_aliases_share_current_capabilities():
+    """Retired DeepSeek model IDs resolve to V4.1 Flash capabilities."""
+    direct = get_model("deepseek/deepseek-v4-flash")
+    assert direct.supports_vision
+    assert direct.max_output == 384_000
+
+    openrouter = get_model("openrouter/deepseek/deepseek-v4-flash")
+    assert openrouter.context == 1_048_576
+    assert openrouter.max_output == 384_000
 
 
 def test_recommended_models_resolve_via_get_model():
