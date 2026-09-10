@@ -713,6 +713,16 @@ Same overrides for stderr. Defaults: 2000 / 2000. Lowering these makes the
 truncation path fire on smaller outputs, which surfaces savings telemetry
 in <cite>context-savings.jsonl</cite> and the <cite>/context</cite> command. Invalid values fall
 back to defaults.</p>
+<dl class="simple">
+<dt>GPTME_SHELL_MAX_OUTPUT_BYTES: Hard cap on the total bytes (stdout + stderr</dt><dd><p>combined) captured into the in-process buffer before the subprocess is
+killed and the output is truncated. Accepts a plain byte count or a
+binary suffix (e.g. “32M”, “1G”). Default: 32 MiB. This prevents a
+runaway <code class="docutils literal notranslate"><span class="pre">cat</span></code> of a multi-GiB file from exhausting gptme’s RSS.
+The process receives SIGTERM then SIGKILL; the returned output contains
+a <code class="docutils literal notranslate"><span class="pre">[output</span> <span class="pre">truncated</span> <span class="pre">at</span> <span class="pre">N</span> <span class="pre">MiB,</span> <span class="pre">process</span> <span class="pre">killed]</span></code> marker. Token-level
+truncation (GPTME_SHELL_TRUNC_*) is applied on top as a second stage.</p>
+</dd>
+</dl>
 </dd>
 </dl>
 <p class="rubric">Instructions</p>
@@ -1025,6 +1035,16 @@ the shell in a conversation-level registry for cleanup via SESSION_END hooks.</p
 <p>Call this before any shell creation to ensure the shell subprocess
 starts in the correct directory, even with concurrent sessions.
 This is the thread-safe replacement for os.chdir() in server contexts.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">gptme.tools.shell.</span></span><span class="sig-name descname"><span class="pre">split_commands</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">script</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">]</span></span></span></span></dt>
+<dd><p>Split at top-level newlines, preserving Bash lists and original source.</p>
+<p>Tree-sitter spans include heredoc bodies and use byte offsets, so slicing
+UTF-8 source preserves quoted delimiters and non-ASCII text without rewrites.
+Keep bashlex as a compatibility fallback for one release: tree-sitter’s
+error recovery must never turn an incomplete tree into executable fragments.</p>
 </dd></dl>
 
 <dl class="py function">
