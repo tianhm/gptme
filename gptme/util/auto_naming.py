@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from ..message import Message
@@ -11,8 +12,6 @@ from ..telemetry import trace_function
 from .generate_name import generate_name
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ..config import ChatConfig
 
 logger = logging.getLogger(__name__)
@@ -332,8 +331,21 @@ def try_auto_name(
     try:
         display_name = auto_generate_display_name(messages, model)
         if display_name:
-            config.name = display_name
-            config.save()
+            logdir = getattr(config, "_logdir", None)
+            if logdir:
+                from ..config import ChatConfig as _ChatConfig
+                from ..config.chat import chat_config_lock
+
+                with chat_config_lock(Path(logdir)):
+                    current = _ChatConfig.from_logdir(Path(logdir))
+                    if current.name:
+                        logger.debug("Conversation was named concurrently; keeping it")
+                        return None
+                    config.name = display_name
+                    config.save()
+            else:
+                config.name = display_name
+                config.save()
             logger.info(f"Auto-generated conversation name: {display_name}")
             return display_name
         logger.debug("Auto-naming returned no result, will retry on next message")

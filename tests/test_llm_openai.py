@@ -3853,3 +3853,79 @@ class TestIsProxy:
         client.base_url = "http://127.0.0.1:8080/messages/"
         assert not _is_proxy(client)
         _is_proxy.cache_clear()
+
+
+def test_handle_tools_keeps_pairing_for_unavailable_tool_call():
+    """A structured call to a tool that is not loaded must still become a tool_call.
+
+    gptme answers such a call with a paired error tool_result ("Tool 'read' is
+    not available for execution"). If the extractor dropped the call because
+    the tool is not runnable, that result would be an orphan `tool` message and
+    strict providers (DeepSeek) 400 every later request: "Messages with role
+    'tool' must be a response to a preceding message with 'tool_calls'".
+    """
+    init_tools(allowlist=["shell"])
+    assert get_tool("read") is None
+
+    messages = [
+        Message(role="user", content="Read calc.py"),
+        Message(role="assistant", content='@read(call_007): {"path": "calc.py"}'),
+        Message(
+            role="system",
+            content="Tool 'read' is not available for execution.",
+            call_id="call_007",
+        ),
+    ]
+
+    tool_shell = get_tool("shell")
+    assert tool_shell
+    model = get_model("openai/gpt-4o")
+    messages_dicts, _ = _prepare_messages_for_api(messages, model.full, [tool_shell])
+
+    assert messages_dicts[1]["role"] == "assistant"
+    tool_calls = messages_dicts[1].get("tool_calls")
+    assert tool_calls and tool_calls[0]["id"] == "call_007"
+    assert tool_calls[0]["function"]["name"] == "read"
+    assert messages_dicts[2]["role"] == "tool"
+    assert messages_dicts[2]["tool_call_id"] == "call_007"
+
+
+def test_handle_tools_demotes_orphan_tool_result_to_user_text():
+    """A buffered orphan result is moved after the valid tool-response run."""
+    init_tools(allowlist=["shell"])
+
+    messages = [
+        Message(role="user", content="hi"),
+        Message(role="assistant", content='@shell(call_live): {"command": "true"}'),
+        # Result whose assistant call was lost (old log / interrupted turn).
+        # Put it before the valid result to exercise the buffered path without
+        # leaving the live call unanswered in the API transcript.
+        Message(role="system", content="stale output", call_id="call_gone"),
+        Message(role="system", content="live output", call_id="call_live"),
+    ]
+
+    tool_shell = get_tool("shell")
+    assert tool_shell
+    model = get_model("openai/gpt-4o")
+    messages_dicts, _ = _prepare_messages_for_api(messages, model.full, [tool_shell])
+
+    assert [m["role"] for m in messages_dicts] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert messages_dicts[2]["tool_call_id"] == "call_live"
+    demoted = messages_dicts[-1]
+    assert "tool_call_id" not in demoted
+    assert demoted["role"] == "user"
+    content = demoted["content"]
+    text: str | None
+    if isinstance(content, list):
+        first = content[0]
+        assert isinstance(first, dict)
+        text = first["text"]
+    else:
+        text = content
+    assert isinstance(text, str)
+    assert "stale output" in text
