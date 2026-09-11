@@ -383,6 +383,192 @@ class TestCcMemoryInWorkspacePrompt:
         # Legacy MEMORY.md root content is also present — not dropped
         assert "legacy-note" in combined or "CC legacy memory" in combined
 
+    def test_mixed_root_entries_and_memory_md_both_shown(self, tmp_path):
+        """An unmanaged MEMORY.md and entries missing from it are both shown."""
+        from gptme.prompts.workspace import prompt_workspace
+
+        workspace = tmp_path / "myproject"
+        workspace.mkdir()
+
+        # A single cc root that has BOTH per-entry files (gptme-written) AND a
+        # MEMORY.md (Claude Code-written content not yet represented as entries).
+        cc_dir = tmp_path / "cc_root"
+        cc_dir.mkdir()
+        _make_entry(cc_dir, "gptme-fact", "A gptme-written entry", type="user")
+        # Simulate CC writing its own memories to MEMORY.md in the same directory
+        (cc_dir / "MEMORY.md").write_text(
+            "# Persistent Memory\n\n- [cc-note](cc-note.md) — CC-written memory note\n"
+        )
+
+        cc_root = MemoryRoot("cc", cc_dir)
+
+        with (
+            patch("gptme.prompts.workspace.resolve_roots", return_value=[cc_root]),
+            patch("gptme.prompts.workspace.get_config") as mock_config,
+            patch("gptme.prompts.workspace.get_project_config", return_value=None),
+            patch("gptme.prompts.workspace.get_tree_output", return_value=None),
+            patch("gptme.prompts.workspace._get_git_status", return_value=None),
+            patch("gptme.prompts.workspace.find_agent_files_in_tree", return_value=[]),
+        ):
+            mock_config.return_value.user = None
+            messages = list(
+                prompt_workspace(
+                    workspace=workspace,
+                    include_user_context=True,
+                    include_context_cmd=False,
+                )
+            )
+
+        combined = "\n".join(m.content for m in messages)
+        assert "Persistent Memory" in combined
+        # gptme entries are visible
+        assert "gptme-fact" in combined
+        # CC-written MEMORY.md content is also visible — not silently dropped
+        assert "cc-note" in combined or "CC-written memory note" in combined
+
+    def test_unmanaged_memory_md_does_not_duplicate_entry_pointers(self, tmp_path):
+        """Equivalent relative links keep an unmanaged pointer authoritative."""
+        from gptme.prompts.workspace import prompt_workspace
+
+        workspace = tmp_path / "myproject"
+        workspace.mkdir()
+        memory_dir = tmp_path / "memory"
+        memory_dir.mkdir()
+        for name in (
+            "plain",
+            "dot-relative",
+            "angled",
+            "anchored",
+            "subdirectory",
+            "external",
+            "missing",
+        ):
+            _make_entry(memory_dir, name, f"Entry {name}", type="user")
+        (memory_dir / "MEMORY.md").write_text(
+            "# Persistent Memory\n\n"
+            "- [plain](plain.md) — plain link\n"
+            "- [dot](./dot-relative.md) — dot-relative link\n"
+            "- [angle](<angled.md>) — angle-delimited link\n"
+            "- [anchor](anchored.md#detail) — link with an anchor\n"
+            "- [nested](nested/subdirectory.md) — different file in a subdirectory\n"
+            "- [external](https://example.com/external.md) — unrelated URL\n"
+            "\nOperator guidance that is not represented by an entry.\n"
+        )
+        root = MemoryRoot("cc", memory_dir)
+
+        with (
+            patch("gptme.prompts.workspace.resolve_roots", return_value=[root]),
+            patch("gptme.prompts.workspace.get_config") as mock_config,
+            patch("gptme.prompts.workspace.get_project_config", return_value=None),
+            patch("gptme.prompts.workspace.get_tree_output", return_value=None),
+            patch("gptme.prompts.workspace._get_git_status", return_value=None),
+            patch("gptme.prompts.workspace.find_agent_files_in_tree", return_value=[]),
+        ):
+            mock_config.return_value.user = None
+            messages = list(
+                prompt_workspace(
+                    workspace=workspace,
+                    include_user_context=True,
+                    include_context_cmd=False,
+                )
+            )
+
+        combined = "\n".join(m.content for m in messages)
+        generated_index = combined.rsplit("# Persistent Memory", 1)[-1]
+        for name in ("plain", "dot-relative", "angled", "anchored"):
+            assert f"]({name}.md)" not in generated_index
+        # The URL does not point at the local entry despite sharing its basename:
+        # both the external URL and a generated local pointer must be present.
+        assert "nested/subdirectory.md" in combined
+        assert "](subdirectory.md)" in generated_index
+        assert combined.count("subdirectory.md") == 2
+        assert "https://example.com/external.md" in combined
+        assert "](external.md)" in generated_index
+        assert combined.count("external.md") == 2
+        assert "](missing.md)" in generated_index
+        assert "Operator guidance" in combined
+
+    def test_parenthesized_markdown_target_does_not_hide_local_entry(self, tmp_path):
+        """A partial parse of a complex target must not suppress an entry."""
+        from gptme.prompts.workspace import prompt_workspace
+
+        workspace = tmp_path / "myproject"
+        workspace.mkdir()
+        memory_dir = tmp_path / "memory"
+        memory_dir.mkdir()
+        _make_entry(memory_dir, "a-b", "Local entry", type="user")
+        (memory_dir / "MEMORY.md").write_text(
+            "- [complex](<a(b).md>) — unrelated complex Markdown target\n"
+        )
+        root = MemoryRoot("cc", memory_dir)
+
+        with (
+            patch("gptme.prompts.workspace.resolve_roots", return_value=[root]),
+            patch("gptme.prompts.workspace.get_config") as mock_config,
+            patch("gptme.prompts.workspace.get_project_config", return_value=None),
+            patch("gptme.prompts.workspace.get_tree_output", return_value=None),
+            patch("gptme.prompts.workspace._get_git_status", return_value=None),
+            patch("gptme.prompts.workspace.find_agent_files_in_tree", return_value=[]),
+        ):
+            mock_config.return_value.user = None
+            messages = list(
+                prompt_workspace(
+                    workspace=workspace,
+                    include_user_context=True,
+                    include_context_cmd=False,
+                )
+            )
+
+        combined = "\n".join(m.content for m in messages)
+        assert "<a(b).md>" in combined
+        assert "](a-b.md)" in combined
+
+    def test_truncated_unmanaged_index_does_not_append_duplicate_pointers(
+        self, tmp_path
+    ):
+        """A partial compatibility index consumes the remaining root budget."""
+        from gptme.prompts.workspace import prompt_workspace
+
+        workspace = tmp_path / "myproject"
+        workspace.mkdir()
+        memory_dir = tmp_path / "memory"
+        memory_dir.mkdir()
+        _make_entry(memory_dir, "linked-late", "Entry linked late", type="user")
+        (memory_dir / "MEMORY.md").write_text(
+            "legacy content that fills most of the budget\n- [late](linked-late.md)\n"
+        )
+        root = MemoryRoot("cc", memory_dir)
+
+        with (
+            patch("gptme.prompts.workspace.resolve_roots", return_value=[root]),
+            patch("gptme.prompts.workspace.get_config") as mock_config,
+            patch("gptme.prompts.workspace.get_project_config", return_value=None),
+            patch("gptme.prompts.workspace.get_tree_output", return_value=None),
+            patch("gptme.prompts.workspace._get_git_status", return_value=None),
+            patch("gptme.prompts.workspace.find_agent_files_in_tree", return_value=[]),
+            patch("gptme.prompts.workspace._MEMORY_BUDGET_BYTES", 50),
+        ):
+            mock_config.return_value.user = None
+            messages = list(
+                prompt_workspace(
+                    workspace=workspace,
+                    include_user_context=True,
+                    include_context_cmd=False,
+                )
+            )
+
+        combined = "\n".join(m.content for m in messages)
+        assert "legacy content" in combined
+        assert "[late](linked-late.md)" not in combined
+        assert combined.count("linked-late.md") == 0
+        memory_message = next(
+            message
+            for message in messages
+            if message.content.startswith("## Persistent Memory")
+        )
+        payload = memory_message.content.split("):\n\n", 1)[1]
+        assert len(payload.encode("utf-8")) <= 50
+
     def test_no_memory_when_no_roots_exist(self, tmp_path):
         """No memory message is emitted when no memory roots have files."""
         from gptme.prompts.workspace import prompt_workspace
@@ -526,10 +712,8 @@ class TestCcMemoryInWorkspacePrompt:
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
 
-        # Write entries with long descriptions so their combined index exceeds
-        # _MEMORY_BUDGET_BYTES (~4000 chars × 20 entries ≈ 80 KB > 64 KB cap).
-        # Short bodies + short descriptions (the original) never triggered the
-        # budget limit because only descriptions appear in the rendered index line.
+        # The rendered index contains descriptions, not bodies. Make their combined
+        # size exceed the 64 KB cap so the omission path must execute.
         long_desc = "x" * 4000
         for i in range(20):
             _make_entry(
@@ -560,14 +744,8 @@ class TestCcMemoryInWorkspacePrompt:
 
         memory_msgs = [m for m in messages if "Persistent Memory" in m.content]
         assert len(memory_msgs) == 1
-        # The rendered index (not individual entries) is included — it should be bounded
+        # The rendered index (not individual entries) is included — it should be bounded,
+        # and the omission marker proves this is not a trivially undersized fixture.
         injected_bytes = len(memory_msgs[0].content.encode("utf-8"))
-        # Verify the budget cap actually fired: combined raw descriptions are
-        # ~80 KB (20 × 4000 chars), so without truncation we'd far exceed 64 KB.
-        # A passing assertion from a trivially-small index would mean the budget
-        # logic is untested.
-        assert "omitted" in memory_msgs[0].content.lower(), (
-            "expected the index to be truncated and report omitted entries, "
-            "but the 'omitted' marker is absent — budget limit may not have fired"
-        )
-        assert injected_bytes <= _MEMORY_BUDGET_BYTES + 512  # small header overhead
+        assert "omitted" in memory_msgs[0].content.lower()
+        assert injected_bytes <= _MEMORY_BUDGET_BYTES + 512  # header overhead allowed

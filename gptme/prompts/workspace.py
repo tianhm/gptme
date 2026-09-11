@@ -1,5 +1,6 @@
 import fnmatch
 import logging
+import re
 import subprocess
 from collections.abc import Generator
 from pathlib import Path
@@ -441,31 +442,86 @@ def prompt_workspace(
                             raise ValueError(
                                 "memory index policy must not be a symlink"
                             )
-                        # Check for individual entry files (any .md that isn't
-                        # the index or policy). When entries() silently returns []
-                        # due to parse errors, this prevents the legacy MEMORY.md
-                        # fallback from injecting stale content: render_root_index()
-                        # will return empty for a broken root, which is correct.
-                        _has_entry_files = any(
-                            f.is_file() and not f.is_symlink()
-                            for f in root.path.glob("*.md")
-                            if f.name not in ("MEMORY.md", POLICY_FILENAME)
-                        )
-                        if policy_path.exists() or _has_entry_files:
+                        entries = list(root_store.entries())
+                        if policy_path.exists():
                             # A policy is authoritative even with no entries.
                             # Missing selections or overflow must never revive
                             # an obsolete on-disk MEMORY.md through fallback.
                             root_content = root_store.render_root_index(
                                 budget=available
                             ).strip()
+                        elif entries:
+                            # Preserve an unmanaged MEMORY.md as the authoritative
+                            # compatibility view, then add entries it does not link.
+                            # Normal saves already put their pointers in MEMORY.md;
+                            # rendering every entry before appending that file would
+                            # inject those memories twice and consume the shared budget.
+                            index_path = root.path / "MEMORY.md"
+                            raw = b""
+                            if index_path.is_file() and not index_path.is_symlink():
+                                with index_path.open("rb") as binary_index_file:
+                                    raw = binary_index_file.read(available + 1)
+                            legacy = (
+                                raw[:available].decode("utf-8", errors="ignore").strip()
+                            )
+
+                            if len(raw) > available:
+                                # The compatibility index consumed this root's budget.
+                                # Do not parse a partial link or append pointers that may
+                                # duplicate links in the undisplayed suffix.
+                                root_content = legacy
+                            else:
+                                # Match only local .md destinations, including relative
+                                # paths and optional anchors. Parenthesized destinations,
+                                # URLs, and Markdown titles stay unmatched; parsing arbitrary
+                                # Markdown correctly would require a real parser.
+                                linked_filenames = set()
+                                for match in re.finditer(
+                                    r"]\((?:<(?P<angle>[^<>():]+\.md)>|"
+                                    r"(?P<plain>[^<>():]+\.md))(?:#[^)]+)?\)",
+                                    legacy,
+                                ):
+                                    target = (
+                                        match.group("angle") or match.group("plain")
+                                    ).removeprefix("./")
+                                    # Only root-relative links identify an entry in
+                                    # this root; a subdirectory basename can collide.
+                                    if "/" not in target:
+                                        linked_filenames.add(target.split("#", 1)[0])
+                                missing_entries = [
+                                    entry
+                                    for entry in entries
+                                    if entry.filename not in linked_filenames
+                                ]
+                                root_content = legacy
+                                entry_budget = available - len(legacy.encode("utf-8"))
+                                if legacy:
+                                    entry_budget -= (
+                                        2  # separator before generated entries
+                                    )
+                                if missing_entries and entry_budget > 0:
+                                    try:
+                                        generated = root_store.render_index(
+                                            missing_entries, budget=entry_budget
+                                        ).strip()
+                                    except ValueError:
+                                        # The preserved legacy view leaves too little room
+                                        # even for the generated index header.
+                                        generated = ""
+                                    if generated:
+                                        root_content = (
+                                            legacy + "\n\n" + generated
+                                            if legacy
+                                            else generated
+                                        )
                         else:
                             # Keep legacy index-only roots compatible, bounding
                             # the read itself rather than slicing a full read.
                             index_path = root.path / "MEMORY.md"
                             if not index_path.is_file() or index_path.is_symlink():
                                 continue
-                            with index_path.open("rb") as index_file:
-                                raw = index_file.read(available)
+                            with index_path.open("rb") as binary_index_file:
+                                raw = binary_index_file.read(available)
                             root_content = raw.decode("utf-8", errors="ignore").strip()
                             charged_bytes = len(raw)
                     except Exception as e:

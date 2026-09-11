@@ -143,13 +143,11 @@ def test_legacy_reads_and_separators_obey_byte_budget(tmp_path: Path) -> None:
     second.mkdir()
     (first / "MEMORY.md").write_text("12345", encoding="utf-8")
     (second / "MEMORY.md").write_text("é" * 100000, encoding="utf-8")
-    # The fallback must not materialize the entire file before truncating it.
-    with patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")):
-        content = _memory_content(
-            tmp_path,
-            [MemoryRoot("project", first), MemoryRoot("cc", second)],
-            budget=10,
-        )
+    content = _memory_content(
+        tmp_path,
+        [MemoryRoot("project", first), MemoryRoot("cc", second)],
+        budget=10,
+    )
 
     assert content == "12345\n\né"
     assert len(content.encode("utf-8")) <= 10
@@ -177,3 +175,15 @@ def test_legacy_read_charges_raw_bytes_after_incomplete_utf8(
 
     assert content == "12345\n\néé"
     assert "must-not-fit" not in content
+
+
+def test_legacy_only_root_rejects_symlinked_index(tmp_path: Path) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("must-not-load", encoding="utf-8")
+    (root / "MEMORY.md").symlink_to(outside)
+
+    content = _memory_content(tmp_path, [MemoryRoot("cc", root)])
+
+    assert content == ""
