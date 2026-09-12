@@ -899,6 +899,47 @@ class TestSubagentCancel:
         assert result.input_tokens == 123
         assert result.output_tokens == 45
 
+    def test_subprocess_monitor_surfaces_bounded_stderr_tail(self, tmp_path):
+        stderr_path = tmp_path / "stderr.log"
+        stderr_path.write_text(
+            "ignored prefix\n" + "\n".join(f"traceback line {i}" for i in range(25))
+        )
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 1
+        mock_proc.returncode = 1
+        sa = self._register(
+            "proc-crash",
+            process=mock_proc,
+            execution_mode="subprocess",
+            logdir=tmp_path,
+        )
+
+        _monitor_subprocess(sa)
+
+        with _subagent_results_lock:
+            result = _subagent_results["proc-crash"]
+        assert result.status == "failure"
+        assert isinstance(result.result, str)
+        assert "Process exited with code 1" in result.result
+        assert "Child stderr tail:" in result.result
+        assert "traceback line 24" in result.result
+        assert "traceback line 4" not in result.result
+        assert "ignored prefix" not in result.result
+
+    def test_stderr_failure_tail_bounds_single_long_line(self, tmp_path):
+        from gptme.tools.subagent.execution import (
+            _SUBPROCESS_STDERR_TAIL_BYTES,
+            _stderr_failure_tail,
+        )
+
+        stderr_path = tmp_path / "stderr.log"
+        stderr_path.write_bytes(b"x" * (_SUBPROCESS_STDERR_TAIL_BYTES * 2))
+
+        tail = _stderr_failure_tail(stderr_path)
+
+        assert tail.startswith("\nChild stderr tail:\n")
+        assert len(tail.encode()) <= _SUBPROCESS_STDERR_TAIL_BYTES + 32
+
     def test_cancel_thread_marks_result(self):
         mock_thread = MagicMock(spec=threading.Thread)
         mock_thread.is_alive.return_value = True

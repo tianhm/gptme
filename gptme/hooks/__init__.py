@@ -135,12 +135,17 @@ def init_hooks(
     from ..config import get_config  # fmt: skip
 
     config = get_config()
+    managed_subprocess = bool(config.get_env("GPTME_SUBAGENT_AGENT_ID"))
 
-    # Get allowlist from parameter, environment, or config
+    # Get allowlist from parameter, environment, or config. Managed subprocesses
+    # extend inherited configuration with their required control protocol, while
+    # a caller-provided allowlist remains an exact API-level restriction.
     if allowlist is None:
         env_allowlist = config.get_env("HOOK_ALLOWLIST")
         if env_allowlist:
             allowlist = env_allowlist.split(",")
+            if managed_subprocess and "subagent_control" not in allowlist:
+                allowlist.append("subagent_control")
         # Note: hooks are not yet in chat config, but could be added later
         # elif config.chat and config.chat.hooks:
         #     allowlist = config.chat.hooks
@@ -211,6 +216,17 @@ def init_hooks(
         "server_elicit": lambda: __import__(
             "gptme.hooks.server_elicit", fromlist=["register"]
         ).register(),
+        # The parent loads subagent hooks through its ToolSpec. Subprocess children
+        # do not load that tool, but still need the control hook to receive steer
+        # and cancel operations written to their log directory.
+        "subagent_control": lambda: register_hook(
+            "subagent.control",
+            HookType.STEP_PRE,
+            __import__(
+                "gptme.tools.subagent.hooks", fromlist=["_subagent_control_hook"]
+            )._subagent_control_hook,
+            0,
+        ),
         # NOTE: subagent_completion is now registered via ToolSpec in tools/subagent.py
         "test": lambda: __import__(
             "gptme.hooks.test", fromlist=["register_test_hooks"]
@@ -221,15 +237,16 @@ def init_hooks(
     if allowlist is not None:
         hooks_to_register = allowlist
     else:
-        # Register all default hooks except test and mode-specific confirmation hooks
-        # Confirmation hooks (cli_confirm, auto_confirm, server_confirm) should be
-        # registered explicitly based on the mode (CLI, server, autonomous)
+        # Register all default hooks except test and mode-specific hooks.
+        # Confirmation hooks (cli_confirm, auto_confirm, server_confirm) and the
+        # subprocess-only control hook are registered from runtime mode below.
         mode_specific_hooks = {
             "test",
             "cli_confirm",
             "auto_confirm",
             "server_confirm",
             "server_elicit",
+            "subagent_control",
         }
         hooks_to_register = [h for h in available_hooks if h not in mode_specific_hooks]
 
@@ -242,6 +259,16 @@ def init_hooks(
             hooks_to_register.append("server_elicit")
         elif interactive and not no_confirm:
             hooks_to_register.append("cli_confirm")
+
+    # Without configured restrictions, managed subprocess children add their
+    # control protocol to the normal defaults. Configured allowlists were extended
+    # above; a direct API allowlist remains exact.
+    if (
+        allowlist is None
+        and managed_subprocess
+        and "subagent_control" not in hooks_to_register
+    ):
+        hooks_to_register.append("subagent_control")
 
     # Register the hooks
     for hook_name in hooks_to_register:
