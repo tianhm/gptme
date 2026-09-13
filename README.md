@@ -390,7 +390,7 @@ This command scaffolds:
 
 The scaffolded workspace is self-contained and runs as generated — edit `prompt.md` to say what the agent should do each run; all you need is gptme installed. Perfect for automation, monitoring, CI/CD orchestration, or running background agents on headless servers.
 
-See the [Headless Agents guide](https://gptme.org/docs/agents/headless.html) for advanced configurations and troubleshooting.
+See [Running agents autonomously](https://gptme.org/docs/agents/autonomous.html) for scheduling, monitoring, and guardrails.
 
 [**Bob**](https://github.com/TimeToBuildBob) is the reference implementation — a production autonomous agent that's been running continuously since late 2024. Bob opens PRs, reviews code, fixes CI, manages his own task queue, maintains a growing set of behavioral lessons, posts on [Twitter](https://twitter.com/TimeToBuildBob), responds on Discord, and writes [blog posts](https://timetobuildbob.github.io/).
 
@@ -696,13 +696,13 @@ Contributions welcome! See the [contributing guide](https://gptme.org/docs/contr
 [docs-examples]: https://gptme.org/docs/examples.html
 [docs-demos]: https://gptme.org/docs/demos.html
 [docs-providers]: https://gptme.org/docs/providers.html
-[docs-model-routing]: https://gptme.org/docs/model-routing.html
+[docs-model-routing]: https://gptme.org/docs/models.html
 [docs-tools]: https://gptme.org/docs/tools.html
-[docs-tools-python]: https://gptme.org/docs/tools.html#python
-[docs-tools-shell]: https://gptme.org/docs/tools.html#shell
-[docs-tools-patch]: https://gptme.org/docs/tools.html#patch
-[docs-tools-browser]: https://gptme.org/docs/tools.html#browser
-[docs-tools-computer]: https://gptme.org/docs/tools.html#computer
+[docs-tools-python]: https://gptme.org/docs/tools/python.html
+[docs-tools-shell]: https://gptme.org/docs/tools/shell.html
+[docs-tools-patch]: https://gptme.org/docs/tools/patch.html
+[docs-tools-browser]: https://gptme.org/docs/tools/browser.html
+[docs-tools-computer]: https://gptme.org/docs/tools/computer.html
 [docs-lessons]: https://gptme.org/docs/lessons.html
 [docs-skills]: https://gptme.org/docs/skills.html
 [docs-bot]: https://gptme.org/docs/bot.html
