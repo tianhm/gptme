@@ -27,6 +27,7 @@ from .llm.models import (
     Provider,
     get_model,
     get_recommended_model,
+    log_warn_once,
     set_default_model,
 )
 from .message import is_output_json
@@ -355,15 +356,38 @@ def _record_selection_trace(
         from model_capability_registry import (
             lookup_model,
         )
-
-        ref = lookup_model(model_meta.model)
-        if ref is not None:
-            registry_record = ref.record_id
-            catalog_observed_at = ref.observed_at
-            if ref.verification_status == "verified":
-                attestation_level = "provider_claim"
-    except Exception as e:
-        logger.warning("registry lookup failed for %s: %s", model_meta.model, e)
+    except ModuleNotFoundError as e:
+        # ModuleNotFoundError covers two very different cases and only one is
+        # benign. `e.name` separates them: our own module missing means the
+        # optional package simply is not installed (the normal case, since it is
+        # not a dependency) and attestation degrades to "selection_only" by
+        # design. Any other name means the package is installed but imports
+        # something that is not — a broken install, which must stay visible.
+        # An absent `name` is treated as broken too: fail loud, not silent.
+        if e.name == "model_capability_registry":
+            logger.debug("model_capability_registry not installed, skipping lookup")
+        else:
+            log_warn_once(f"model_capability_registry import failed: {e}")
+    except ImportError as e:
+        # Installed, but does not export lookup_model — a version mismatch.
+        # A missing *name* raises plain ImportError, not ModuleNotFoundError.
+        log_warn_once(f"model_capability_registry import failed: {e}")
+    else:
+        try:
+            ref = lookup_model(model_meta.model)
+            if ref is not None:
+                registry_record = ref.record_id
+                catalog_observed_at = ref.observed_at
+                if ref.verification_status == "verified":
+                    attestation_level = "provider_claim"
+        except Exception as e:
+            # The registry is installed but the lookup failed. Dedupe on the
+            # error alone, not the model: the same fault across many models is
+            # one problem and should be said once, while a genuinely different
+            # fault later still gets reported. The model goes on the debug line
+            # so the detail is not lost.
+            log_warn_once(f"registry lookup failed: {e}")
+            logger.debug("registry lookup failed for %s: %s", model_meta.model, e)
 
     trace = create_selection_trace(
         requested_model=source_value,
