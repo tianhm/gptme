@@ -3121,13 +3121,21 @@ The ``settings`` section contains user-level CLI defaults. Currently supported:
 How model selection works
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When you start gptme, the model is resolved in this priority order:
+When you start gptme, the model is resolved in this priority order. The layers
+run from most specific (this one command) to most general (your global config):
 
 1. ``--model`` / ``-m`` CLI flag (highest priority, per-session)
 2. Per-chat model saved with ``/model`` — persists across session resumes
-3. ``[models].default`` in your global config
-4. ``MODEL`` env var (in shell or ``[env]`` section of config)
-5. Auto-detection based on which API keys are configured
+3. ``MODEL`` / ``GPTME_MODEL`` env var set in your shell
+4. ``[env].MODEL`` in the chat's own config
+5. ``[env].MODEL`` in the project's ``gptme.toml``
+6. ``[models].default`` in your global config
+7. ``[env].MODEL`` in your global config
+8. Auto-detection based on which API keys are configured
+
+So a variable exported for one command, or a model pinned by a project's
+``gptme.toml``, wins over the global default — while ``[models].default`` still
+wins over ``[env].MODEL`` set in that *same* global config.
 
 **Setting a permanent default model:**
 
@@ -3203,7 +3211,7 @@ the ``local/`` prefix — it does not affect OpenAI, Anthropic, or other provide
 
 The ``models`` section configures model selection preferences:
 
-- ``default``: The default chat model, as a fully-qualified model ID (e.g. ``"anthropic/claude-sonnet-4-6"``). A formal alternative to the ``MODEL`` env var; ``models.default`` takes precedence over the ``MODEL`` env var (and ``[env].MODEL`` in the config file), but is itself overridden by an explicit per-chat model or the ``--model`` CLI flag.
+- ``default``: The default chat model, as a fully-qualified model ID (e.g. ``"anthropic/claude-sonnet-4-6"``). A formal alternative to ``[env].MODEL`` in the same config file, which it takes precedence over. It is overridden by anything more specific: the ``--model`` CLI flag, a per-chat model, a ``MODEL`` env var in your shell, or ``[env].MODEL`` in a project's ``gptme.toml``. See :ref:`how-model-selection-works`.
 - ``favorites``: A list of fully-qualified model IDs (e.g. ``["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]``) curated by the user. These are surfaced prominently in model pickers such as the web UI model selector.
 
 If you want to configure MCP servers, you can do so in a ``mcp`` section. See :ref:`mcp` for more information.
@@ -3542,9 +3550,10 @@ without per-call flags:
     [env]
     MODEL = "anthropic/claude-sonnet-4-6"
 
-To pin a model regardless of other configuration (such as a global
-``[models].default``), pass ``--model`` in the command that runs the agent. See
-:ref:`how-model-selection-works` for how gptme resolves the model.
+A model set this way wins over a global ``[models].default``: the project's
+``gptme.toml`` is the more specific layer. To override it for a single run, pass
+``--model`` in the command that runs the agent, or export ``MODEL`` for that
+command. See :ref:`how-model-selection-works` for the full order.
 
 This is how an agent "brain" pins its default model: configure it once in the
 agent's config, override per session only when a specific task needs a different
@@ -5584,6 +5593,44 @@ spawning subagents programmatically:
     # gptme.toml
     [env]
     TOOL_ALLOWLIST = "shell,patch,save,read,hint:read-only"
+
+Tools that reference other tools
+--------------------------------
+
+Tool instructions and examples often describe how tools interact ("fetch the
+URL with ``read``", "use ``hashline_edit`` after ``read``"). Such text is only
+true when the other tool is loaded, and a model that reads it will happily call
+a tool it does not have. Two mechanisms keep this coherent:
+
+**Conditional blocks** in ``instructions``, ``instructions_format`` and
+``examples`` are rendered against the loaded toolset when the prompt is built::
+
+    Do **not** use vision for:
+    {% if tools: read, browser %}
+    - Images at a URL — fetch with `read` or visit with `browser` instead
+    {% elif tools: read %}
+    - Images at a URL — fetch with `read` first, then pass the local path
+    {% endif %}
+
+A branch is taken when *all* the listed tools are loaded; ``{% elif %}`` and
+``{% else %}`` behave as expected; blocks do not nest. A marker on its own
+line removes the whole line, so lists stay tidy. Generated documentation
+renders every branch as if all tools were loaded.
+
+**Companion tools** are declared with ``requires_tools`` on the ``ToolSpec``.
+Enabling ``hashline_edit`` loads ``read`` as well (its edits are anchored to
+``read``'s snapshot tags), even though ``read`` is disabled by default on its
+own. A startup allowlist must include every required companion; otherwise
+initialization fails rather than widening the configured capability boundary.
+An explicit ``/tools load`` user action may load the requested tool and its
+companions together::
+
+    tool = ToolSpec(
+        name="hashline_edit",
+        ...,
+        disabled_by_default=True,
+        requires_tools=["read"],
+    )
 
 
 :audience: power-user
@@ -10255,6 +10302,43 @@ selection of community skills from gptme-contrib.
 
    Gallery <skills-gallery>
 
+Explicit invocation telemetry
+-----------------------------
+
+``/skill:<name>`` writes lifecycle evidence to ``skill-events.jsonl`` beside the
+conversation log. Ambient matching and instruction injection do not count as
+invocations. Each invocation has a stable ID; queueing records ``queued``, while
+terminal adapters record ``completed``, ``failed``, or ``abandoned``. Completed
+means the runtime finished responding, not that arbitrary skill instructions
+achieved their intended outcome.
+
+Accounting fields use schema version 2. Readers accept version 1 history without
+rewriting it. Upgrade processes sharing a conversation before resuming writes:
+older version 1 writers reject the newer ledger and stop recording events.
+
+When telemetry is enabled, successful ledger appends also emit
+``gptme_skill_invocations``, ``gptme_skill_completions``,
+``gptme_skill_duration_seconds``, ``gptme_skill_tokens``, and
+``gptme_skill_cost_usd`` through the existing metrics exporter. Labels are limited
+to skill name and surface, plus terminal status, the boolean ``usage_available``
+on completions, and token type on token counters. Session IDs, invocation IDs,
+paths, and error details remain in the ledger. Export failure does not prevent
+invocation; these live metrics are best-effort and are not replayed from history.
+
+Cost and token fields are deltas from the existing ``CostTracker`` over the
+inclusive admission-to-terminal window. They are available only when both ends
+observe the same tracker for the same conversation. A reset, missing tracker, or
+foreign conversation produces ``usage: null`` and ``usage_available=false``;
+it does not produce a zero-cost measurement. Overlapping invocations can have
+overlapping cost windows, so these values must not be summed as exclusive billing.
+
+Frontend accounting coverage remains separate from lifecycle coverage. In
+particular, the TUI does not yet initialize session cost tracking, and native
+server request workers do not consistently retain its ownership. Their lifecycle
+counts and durations remain useful while unmeasurable costs stay unknown. CLI
+invocations can use their existing session tracker. Cross-harness adapters and
+end-to-end accounting parity are separate work.
+
 .. note::
 
    Skills are a **special case of lessons** using the Agent Skills open standard format.
@@ -13316,6 +13400,36 @@ Install
 You can now start ``gptme`` from your development environment using the regular commands.
 
 You can also install it in editable mode with ``pipx`` using ``pipx install -e .`` which will let you use your development version of gptme regardless of venv.
+
+Keeping your environment in sync
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``poetry.lock`` pins the toolchain, and ``.pre-commit-config.yaml`` pins the
+hook versions separately. A virtualenv that has drifted from the lockfile will
+disagree with CI, usually in confusing ways:
+
+- ``make lint`` reports errors CI does not have, or misses errors CI finds —
+  most often a lint rule that was added or removed between versions.
+- ``pre-commit`` keeps reformatting a file you just formatted, and the commit
+  aborts every time with "files were modified by this hook".
+
+Run ``poetry install`` before concluding that a lint or test result is a
+problem with the repository, and check the version you are actually reasoning
+about:
+
+.. code-block:: bash
+
+   poetry install
+   poetry run ruff --version   # must match poetry.lock
+
+Two things worth knowing when this happens:
+
+- **Let the hooks own formatting.** Do not run a formatter yourself and then
+  commit. If your version differs from the pinned hook's, the two rewrite each
+  other's output and every commit fails.
+- **A commit rejected by a hook does not exist.** The hook output scrolls past
+  and a subsequent ``git push`` succeeds while pushing nothing. Check
+  ``git log -1`` before reporting a commit as made.
 
 Tests
 -----
