@@ -290,16 +290,20 @@ class Subagent:
     execution_mode: Literal["thread", "subprocess", "acp"] = "thread"
     # ACP mode fields
     acp_command: str | None = None
-    # Working directory: the resolved path passed via workdir=; None means cwd at spawn time.
-    # Stored so subagent_reply() can re-spawn in the same directory.
+    # Durable ACP session identifier, used to reload a child in a fresh process.
+    acp_session_id: str | None = None
+    # Effective working directory used by the child at spawn time.
     workdir: Path | None = None
+    # Original workspace requested before isolation replaced it with a temporary
+    # directory/worktree. Needed to recreate cleaned isolation for replies.
+    base_workdir: Path | None = None
     # Worktree isolation fields
     isolated: bool = False
     worktree_path: Path | None = None
     repo_path: Path | None = None
     # String isolation mode ("worktree" or None). When set, cleanup uses smart
     # behaviour: auto-remove if unchanged, preserve branch if changes exist.
-    isolation_mode: str | None = None
+    isolation_mode: Literal["worktree"] | None = None
     # Maximum time (seconds) the subprocess monitor will wait before killing
     timeout: int = 1800  # 30 minutes
     role: Role | None = None
