@@ -1,10 +1,11 @@
 import json
 import os
 import shlex
+import subprocess
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -1850,8 +1851,8 @@ def test_list_background_jobs():
     reset_background_jobs()
 
 
-def test_bg_command_executes_remaining_commands():
-    """Commands after a bg line are passed back to execute_shell correctly."""
+def test_shell_background_flag_starts_whole_command():
+    """The structured flag backgrounds the complete tool-call script."""
     from unittest.mock import patch
 
     from gptme.hooks.confirm import ConfirmationResult
@@ -1862,67 +1863,132 @@ def test_bg_command_executes_remaining_commands():
             "gptme.hooks.get_confirmation",
             return_value=ConfirmationResult.confirm(),
         ),
-        patch("gptme.tools.shell.execute_bg_command", return_value=iter([])),
-        patch("gptme.tools.shell.execute_shell_impl", return_value=iter([])) as execute,
+        patch("gptme.tools.shell.start_background_job") as start,
     ):
-        list(execute_shell("bg sleep 1\nprintf remaining", [], None))
+        start.return_value.id = 7
+        messages = list(
+            execute_shell(
+                None,
+                None,
+                {"command": "cd /tmp\nprintf ready", "background": "true"},
+            )
+        )
+
+    start.assert_called_once()
+    assert start.call_args.args[0] == "cd /tmp\nprintf ready"
+    assert "background shell job #7" in messages[-1].content
+    assert "automatically" in messages[-1].content
+
+
+def test_bg_text_is_plain_bash_not_an_overlay():
+    """A command beginning with bg is no longer parsed by gptme."""
+    from unittest.mock import patch
+
+    from gptme.hooks.confirm import ConfirmationResult
+    from gptme.tools.shell import execute_shell
+
+    with (
+        patch(
+            "gptme.hooks.get_confirmation",
+            return_value=ConfirmationResult.confirm(),
+        ),
+        patch("gptme.tools.shell.execute_shell_impl", return_value=iter([])) as execute,
+        patch("gptme.tools.shell.start_background_job") as start,
+    ):
+        list(execute_shell("bg sleep 1", [], None))
 
     execute.assert_called_once()
-    assert execute.call_args.args[0] == "printf remaining"
+    assert execute.call_args.args[0] == "bg sleep 1"
+    start.assert_not_called()
 
 
-def test_wait_command_dispatches_timeout():
-    """The shell control command passes job ID and timeout to the wait handler."""
+@pytest.mark.parametrize(
+    ("command", "handler"),
+    [
+        ("jobs", "execute_jobs_command"),
+        ("output 7", "execute_output_command"),
+        ("wait 7", "execute_wait_command"),
+        ("kill 7", "execute_kill_command"),
+    ],
+)
+def test_control_commands_require_a_matching_background_job(command, handler):
+    """Bash builtins and executables win when no harness job ID matches."""
+    from unittest.mock import patch
+
+    from gptme.hooks.confirm import ConfirmationResult
+    from gptme.tools.shell import execute_shell
+
+    with (
+        patch(
+            "gptme.hooks.get_confirmation",
+            return_value=ConfirmationResult.confirm(),
+        ),
+        patch("gptme.tools.shell.execute_shell_impl", return_value=iter([])) as execute,
+        patch(f"gptme.tools.shell.{handler}") as control,
+    ):
+        list(execute_shell(command, [], None))
+
+    execute.assert_called_once()
+    assert execute.call_args.args[0] == command
+    control.assert_not_called()
+
+
+def test_wait_command_dispatches_timeout_for_matching_job():
+    """A complete control call passes job ID and timeout to the handler."""
     from unittest.mock import patch
 
     from gptme.tools.shell import execute_shell
 
-    with patch(
-        "gptme.tools.shell.execute_wait_command", return_value=iter([])
-    ) as execute_wait:
+    with (
+        patch("gptme.tools.shell.get_background_job", return_value=object()),
+        patch(
+            "gptme.tools.shell.execute_wait_command", return_value=iter([])
+        ) as execute_wait,
+    ):
         list(execute_shell("wait 7 2m", [], None))
 
     execute_wait.assert_called_once_with("7", "2m")
 
 
-def test_execute_bg_command():
-    """Test the bg command handler."""
-    from gptme.tools.shell import execute_bg_command, reset_background_jobs
+def test_control_word_inside_script_is_plain_bash():
+    """Control names do not hijack multi-command scripts or heredoc data."""
+    from unittest.mock import patch
 
-    reset_background_jobs()
+    from gptme.hooks.confirm import ConfirmationResult
+    from gptme.tools.shell import execute_shell
 
-    # Execute bg command
-    messages = list(execute_bg_command("echo 'test'"))
+    command = "printf before\njobs\nprintf after"
+    with (
+        patch(
+            "gptme.hooks.get_confirmation",
+            return_value=ConfirmationResult.confirm(),
+        ),
+        patch("gptme.tools.shell.execute_shell_impl", return_value=iter([])) as execute,
+        patch("gptme.tools.shell.execute_jobs_command") as jobs,
+    ):
+        list(execute_shell(command, [], None))
 
-    assert len(messages) == 1
-    assert "Started background job" in messages[0].content
-    assert "#" in messages[0].content  # Check job ID format exists
-
-    # Cleanup
-    reset_background_jobs()
+    execute.assert_called_once()
+    assert execute.call_args.args[0] == command
+    jobs.assert_not_called()
 
 
-def test_execute_jobs_command():
-    """Test the jobs command handler."""
+def test_completed_job_remains_available():
+    """Completion notification must not destroy output before inspection."""
     from gptme.tools.shell import (
-        execute_jobs_command,
+        get_background_job,
         reset_background_jobs,
         start_background_job,
     )
 
     reset_background_jobs()
+    job = start_background_job("printf done")
+    job.process.wait(timeout=5)
+    if job._reader_thread:
+        job._reader_thread.join(timeout=5)
 
-    # No jobs
-    messages = list(execute_jobs_command())
-    assert "No background jobs" in messages[0].content
-
-    # With a job
-    job = start_background_job("sleep 0.1")
-    messages = list(execute_jobs_command())
-    assert f"#{job.id}" in messages[0].content  # Use actual job ID
-    assert "Running" in messages[0].content
-
-    job.kill()
+    assert get_background_job(job.id) is job
+    assert job.get_output()[0] == "done"
     reset_background_jobs()
 
 
@@ -2315,3 +2381,274 @@ def test_set_e_does_not_persist_across_blocks(shell):
     ret, out, err = shell.run("false; echo block2_done")
     assert ret == 0, f"Expected rc=0 (errexit scoped), got rc={ret}"
     assert "block2_done" in out
+
+
+# Persistent-shell exit/pipe recovery regressions (gptme/gptme#3802)
+def _mock_windows_eof_shell(monkeypatch):
+    """Build a minimal ShellSession whose Windows readers immediately hit EOF."""
+    from gptme.tools import shell as shell_module
+
+    shell = object.__new__(shell_module.ShellSession)
+    shell.stdout_fd = 10
+    shell.stderr_fd = 11
+    shell.delimiter = "END_OF_COMMAND_OUTPUT"
+    shell.process = Mock()
+
+    monkeypatch.setattr(shell_module, "_is_windows", True)
+    monkeypatch.setattr(shell_module.os, "set_blocking", Mock())
+    monkeypatch.setattr(shell_module.os, "read", Mock(return_value=b""))
+    return shell
+
+
+def test_windows_reader_restarts_after_shell_eof(monkeypatch):
+    """Windows EOF before the delimiter must not return a silent None status."""
+    shell = _mock_windows_eof_shell(monkeypatch)
+    shell.process.wait.return_value = 3
+
+    with patch.object(shell, "restart") as restart:
+        rc, stdout, stderr = shell._read_output_windows(
+            "exit 3",
+            False,
+            [],
+            [],
+            None,
+            False,
+            "START_123",
+            "END_OF_COMMAND_OUTPUT",
+            None,
+            20.0,
+        )
+
+    assert rc == 3
+    assert stdout == ""
+    assert "shell exited" in stderr
+    restart.assert_called_once_with()
+
+
+def test_windows_reader_does_not_replace_unreaped_shell(monkeypatch):
+    """Windows EOF must retain an old process that cannot be reaped."""
+    shell = _mock_windows_eof_shell(monkeypatch)
+    shell.process.wait.side_effect = subprocess.TimeoutExpired("cmd", 1.0)
+
+    with (
+        patch.object(shell, "_terminate_process") as terminate,
+        patch.object(shell, "restart") as restart,
+    ):
+        rc, stdout, stderr = shell._read_output_windows(
+            "exit 3",
+            False,
+            [],
+            [],
+            None,
+            False,
+            "START_123",
+            "END_OF_COMMAND_OUTPUT",
+            None,
+            20.0,
+        )
+
+    assert rc == -1
+    assert stdout == ""
+    assert "could not be reaped" in stderr
+    terminate.assert_called_once_with()
+    restart.assert_not_called()
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("closed_fd", [10, 11], ids=["stdout", "stderr"])
+def test_windows_reader_recovers_when_one_pipe_eof(monkeypatch, closed_fd):
+    """A single closed Windows pipe must recover, not stall until timeout.
+
+    Unix recovers on per-fd EOF. The Windows reader used to wait for both
+    producer threads to die, so `exec 1>&-` hung until GPTME_SHELL_TIMEOUT.
+    """
+    import time
+
+    shell = object.__new__(shell_module.ShellSession)
+    shell.stdout_fd = 10
+    shell.stderr_fd = 11
+    shell.delimiter = "END_OF_COMMAND_OUTPUT"
+    shell.process = Mock()
+    shell.process.wait.return_value = 3
+
+    def read_side_effect(fd, _n):
+        if fd == closed_fd:
+            return b""
+        raise BlockingIOError
+
+    monkeypatch.setattr(shell_module, "_is_windows", True)
+    monkeypatch.setattr(shell_module.os, "set_blocking", Mock())
+    monkeypatch.setattr(shell_module.os, "read", Mock(side_effect=read_side_effect))
+
+    start = time.monotonic()
+    with patch.object(shell, "restart") as restart:
+        rc, stdout, stderr = shell._read_output_windows(
+            "exec 1>&-",
+            False,
+            [],
+            [],
+            None,
+            False,
+            "START_123",
+            "END_OF_COMMAND_OUTPUT",
+            None,
+            20.0,
+        )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5.0
+    assert rc == 3
+    assert stdout == ""
+    assert "shell exited" in stderr
+    restart.assert_called_once_with()
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    ("cmd", "code"), [("exit", 0), ("exit 3", 3), ("false || exit 1", 1)]
+)
+def test_shell_exit_returns_promptly_and_restarts(cmd, code):
+    """A command that kills bash must not stall until the command timeout.
+
+    Before the EOF check, `exit` spun on the closed pipe for the full
+    GPTME_SHELL_TIMEOUT (20 min by default), returned -124, and only the next
+    command's BrokenPipeError restarted the shell.
+    """
+    import time
+
+    from gptme.tools.shell import ShellSession
+
+    shell = ShellSession()
+    try:
+        old_pid = shell.process.pid
+        start = time.monotonic()
+        rc, stdout, stderr = shell.run(cmd, timeout=20.0)
+        assert time.monotonic() - start < 5.0
+        assert rc == code
+        assert stdout == ""
+        assert "shell exited" in stderr
+        assert shell.process.pid != old_pid
+        rc, stdout, _ = shell.run("echo alive")
+        assert (rc, stdout) == (0, "alive")
+    finally:
+        shell.close()
+
+
+@pytest.mark.timeout(30)
+def test_shell_exit_drains_both_output_pipes():
+    """An EOF on one pipe must not discard delayed output from the other."""
+    from gptme.tools.shell import ShellSession
+
+    shell = ShellSession()
+    try:
+        # The diagnostic arrives after the initial drain deadline, while the
+        # reader is waiting for bash to exit. It still must be drained before
+        # the persistent shell is restarted.
+        rc, stdout, stderr = shell.run(
+            "exec 1>&-; sleep 1.1; printf 'stderr diagnostic\\n' >&2; exit 7",
+            timeout=20.0,
+        )
+        assert rc == 7
+        assert stdout == ""
+        assert "stderr diagnostic" in stderr
+        assert "shell exited" in stderr
+    finally:
+        shell.close()
+
+
+@pytest.mark.timeout(30)
+def test_closing_output_pipe_restart_tolerates_slow_reap():
+    """A failed post-kill wait must not escape the shell recovery path."""
+    from unittest.mock import patch
+
+    from gptme.tools.shell import ShellSession
+
+    shell = ShellSession()
+    original_wait = shell.process.wait
+    wait_calls = 0
+
+    def delayed_wait(timeout=None):
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls <= 2:
+            raise subprocess.TimeoutExpired(str(shell.process.args), timeout)
+        return original_wait(timeout=timeout)
+
+    try:
+        with patch.object(shell.process, "wait", side_effect=delayed_wait):
+            rc, _stdout, stderr = shell.run(
+                "exec 1>&-; while :; do sleep 1; done", timeout=20.0
+            )
+        assert rc == -1
+        assert "output pipe" in stderr
+        assert wait_calls >= 2
+    finally:
+        shell.close()
+
+
+@pytest.mark.timeout(30)
+def test_closing_output_pipe_does_not_replace_unreaped_shell():
+    """Do not lose the process handle or late diagnostics after failed reaping."""
+    from unittest.mock import patch
+
+    from gptme.tools.shell import ShellSession
+
+    shell = ShellSession()
+    old_process = shell.process
+    real_drain = shell._drain_closed_shell_pipes
+    drain_calls = 0
+
+    def drain_with_late_diagnostic(*args, **kwargs):
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 2:
+            args[1].append("late diagnostic\n")
+        return real_drain(*args, **kwargs)
+
+    try:
+        with (
+            patch.object(
+                old_process,
+                "wait",
+                side_effect=subprocess.TimeoutExpired(str(old_process.args), 1.0),
+            ),
+            patch.object(
+                shell,
+                "_drain_closed_shell_pipes",
+                side_effect=drain_with_late_diagnostic,
+            ),
+            patch.object(shell, "restart", wraps=shell.restart) as restart,
+        ):
+            rc, _stdout, stderr = shell.run(
+                "exec 1>&-; while :; do sleep 1; done", timeout=20.0
+            )
+        assert rc == -1
+        assert "late diagnostic" in stderr
+        assert "could not be reaped" in stderr
+        assert drain_calls == 2
+        assert shell.process is old_process
+        restart.assert_not_called()
+    finally:
+        shell.close()
+
+
+@pytest.mark.timeout(30)
+def test_closing_output_pipe_restarts_broken_shell():
+    """A live shell with a permanently closed output pipe must be replaced."""
+    from gptme.tools.shell import ShellSession
+
+    shell = ShellSession()
+    try:
+        old_pid = shell.process.pid
+        rc, _stdout, stderr = shell.run(
+            "exec 1>&-; while :; do sleep 1; done", timeout=20.0
+        )
+        assert rc == -1
+        assert "output pipe" in stderr
+        assert "fresh shell" in stderr
+        assert shell.process.pid != old_pid
+
+        rc, stdout, _stderr = shell.run("echo alive", timeout=5.0)
+        assert (rc, stdout) == (0, "alive")
+    finally:
+        shell.close()

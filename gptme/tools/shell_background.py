@@ -10,13 +10,15 @@ import atexit
 import importlib
 import logging
 import os
+import queue
 import re
+import signal
 import subprocess
 import threading
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from ..message import Message
 from ..sandbox import apply_memory_limit
@@ -87,6 +89,8 @@ class BackgroundJob:
     _stderr_buffer_start: int = field(default=0, repr=False)
     _stdout_read_offset: int = field(default=0, repr=False)
     _stderr_read_offset: int = field(default=0, repr=False)
+    conversation_id: str | None = None
+    process_group_id: int | None = field(default=None, repr=False)
     _reader_thread: threading.Thread | None = field(default=None, repr=False)
     _stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _buffer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -96,81 +100,77 @@ class BackgroundJob:
         self._reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self._reader_thread.start()
 
+    def _append_output(self, fd: int, stdout_fd: int, data: bytes) -> None:
+        """Decode and append one output chunk while maintaining offsets."""
+        text = data.decode("utf-8", errors="replace")
+        with self._buffer_lock:
+            if fd == stdout_fd:
+                self._stdout_buffer_start += self._append_to_buffer(
+                    self.stdout_buffer, text
+                )
+            else:
+                self._stderr_buffer_start += self._append_to_buffer(
+                    self.stderr_buffer, text
+                )
+
     def _read_output(self) -> None:
-        """Read stdout/stderr in background thread."""
+        """Read stdout/stderr until the child exits, then drain briefly."""
         stdout_fd = self.process.stdout.fileno() if self.process.stdout else -1
         stderr_fd = self.process.stderr.fileno() if self.process.stderr else -1
-        fds = [fd for fd in [stdout_fd, stderr_fd] if fd >= 0]
+        open_fds = {fd for fd in (stdout_fd, stderr_fd) if fd >= 0}
 
         if _is_windows:
-            # Windows: use non-blocking reads with polling
-            for fd in fds:
+            # Windows: use non-blocking reads with polling.
+            for fd in open_fds:
                 try:
                     os.set_blocking(fd, False)
                 except OSError:
                     pass
-            while not self._stop_event.is_set() and self.process.poll() is None:
-                for fd in fds:
-                    try:
-                        data = os.read(fd, 4096).decode("utf-8", errors="replace")
-                        if data:
-                            with self._buffer_lock:
-                                if fd == stdout_fd:
-                                    self._stdout_buffer_start += self._append_to_buffer(
-                                        self.stdout_buffer, data
-                                    )
-                                else:
-                                    self._stderr_buffer_start += self._append_to_buffer(
-                                        self.stderr_buffer, data
-                                    )
-                    except BlockingIOError:
-                        pass
-                    except (OSError, ValueError):
-                        return
-                time.sleep(0.1)
-        else:
-            assert select is not None
-            while not self._stop_event.is_set() and self.process.poll() is None:
-                try:
-                    readable = _wait_readable(fds, 0.1)
-                    for fd in readable:
-                        data = os.read(fd, 4096).decode("utf-8", errors="replace")
-                        if data:
-                            with self._buffer_lock:
-                                if fd == stdout_fd:
-                                    self._stdout_buffer_start += self._append_to_buffer(
-                                        self.stdout_buffer, data
-                                    )
-                                else:
-                                    self._stderr_buffer_start += self._append_to_buffer(
-                                        self.stderr_buffer, data
-                                    )
-                except (OSError, ValueError):
-                    break
 
-        # Final read after process exits
-        if self.process.stdout:
+        exited_at: float | None = None
+        while not self._stop_event.is_set():
+            if self.process.poll() is None:
+                exited_at = None
+            elif not open_fds:
+                break
+            elif exited_at is None:
+                exited_at = time.monotonic()
+            elif time.monotonic() - exited_at >= 1.0:
+                # A descendant may inherit the pipes after the direct child exits.
+                # Bound the drain so that completion notification cannot stall on it.
+                break
+
+            if not open_fds:
+                # Closing both streams does not itself mean that the process exited.
+                time.sleep(0.1)
+                continue
+
             try:
-                remaining = self.process.stdout.read()
-                if remaining:
-                    with self._buffer_lock:
-                        self._stdout_buffer_start += self._append_to_buffer(
-                            self.stdout_buffer,
-                            remaining.decode("utf-8", errors="replace"),
-                        )
+                readable = (
+                    list(open_fds)
+                    if _is_windows
+                    else _wait_readable(list(open_fds), 0.1)
+                )
+                read_any = False
+                for fd in readable:
+                    try:
+                        raw = os.read(fd, 4096)
+                    except BlockingIOError:
+                        continue
+                    except (OSError, ValueError):
+                        open_fds.discard(fd)
+                        continue
+                    if not raw:
+                        open_fds.discard(fd)
+                        continue
+                    read_any = True
+                    self._append_output(fd, stdout_fd, raw)
+                if _is_windows and not read_any:
+                    time.sleep(0.1)
             except (OSError, ValueError):
-                pass
-        if self.process.stderr:
-            try:
-                remaining = self.process.stderr.read()
-                if remaining:
-                    with self._buffer_lock:
-                        self._stderr_buffer_start += self._append_to_buffer(
-                            self.stderr_buffer,
-                            remaining.decode("utf-8", errors="replace"),
-                        )
-            except (OSError, ValueError):
-                pass
+                break
+
+        _notify_completion(self)
 
     def _append_to_buffer(self, buffer: list[str], data: str) -> int:
         """Append data to buffer, enforcing size limit."""
@@ -213,42 +213,80 @@ class BackgroundJob:
         return time.time() - self.start_time
 
     def kill(self) -> None:
-        """Terminate the background job."""
-        self._stop_event.set()
-        try:
-            self.process.terminate()
-            self.process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
-        # Join reader thread to ensure clean shutdown
+        """Terminate the background job and its process group."""
+        if self.process.poll() is None:
+            try:
+                if _is_windows:
+                    self.process.terminate()
+                else:
+                    assert self.process_group_id is not None
+                    os.killpg(self.process_group_id, signal.SIGTERM)
+                self.process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                if _is_windows:
+                    self.process.kill()
+                else:
+                    assert self.process_group_id is not None
+                    os.killpg(self.process_group_id, signal.SIGKILL)
+                self.process.wait()
+            except ProcessLookupError:
+                pass
+        # Let the reader drain regular completed jobs. Force inherited pipes to
+        # stop only when their post-exit grace has elapsed.
         if self._reader_thread and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=1.0)
+            self._reader_thread.join(timeout=1.5)
+            if self._reader_thread.is_alive():
+                self._stop_event.set()
+                self._reader_thread.join(timeout=1.0)
+        if self._reader_thread and self._reader_thread.is_alive():
+            logger.warning("Background output reader did not stop for job #%s", self.id)
 
 
-# Global storage for background jobs
-_background_jobs: dict[int, BackgroundJob] = {}
-_next_job_id: int = 1
-_job_lock: threading.Lock = threading.Lock()
+# Jobs are scoped to the active conversation. A ``None`` key covers direct
+# library/tests calls that have no conversation context.
+_background_jobs: dict[str | None, dict[int, BackgroundJob]] = {}
+_next_job_ids: dict[str | None, int] = {}
+_completion_queue: queue.Queue[BackgroundJob] = queue.Queue()
+_job_lock: threading.RLock = threading.RLock()
 
 
-def _get_next_job_id() -> int:
-    """Get next available job ID (thread-safe)."""
-    global _next_job_id
+def _current_conversation_id() -> str | None:
+    from ..hooks import current_conversation_id
+    from ..logmanager import LogManager
+
+    # Server tool calls bind the owning conversation explicitly. CLI calls use
+    # the context-local LogManager established by chat().
+    manager = LogManager.get_current_log()
+    return current_conversation_id.get() or (manager.chat_id if manager else None)
+
+
+def _get_next_job_id_locked(conversation_id: str | None) -> int:
+    """Get the next conversation-local job ID while holding ``_job_lock``."""
+    job_id = _next_job_ids.get(conversation_id, 1)
+    _next_job_ids[conversation_id] = job_id + 1
+    return job_id
+
+
+def _notify_completion(job: BackgroundJob) -> None:
+    _completion_queue.put(job)
+
+
+def _jobs_for(conversation_id: str | None) -> dict[int, BackgroundJob]:
+    return _background_jobs.setdefault(conversation_id, {})
+
+
+def _get_background_job(
+    conversation_id: str | None, job_id: int
+) -> BackgroundJob | None:
     with _job_lock:
-        job_id = _next_job_id
-        _next_job_id += 1
-        return job_id
+        return _background_jobs.get(conversation_id, {}).get(job_id)
 
 
 def start_background_job(
     command: str, memory_limit: int | None = None
 ) -> BackgroundJob:
     """Start a command as a background job (thread-safe)."""
-    # Proactively clean up finished jobs to prevent memory accumulation
-    cleanup_finished_jobs()
-
-    job_id = _get_next_job_id()
+    conversation_id = _current_conversation_id()
 
     # Start process with separate stdout/stderr pipes
     popen_kwargs: dict = {}
@@ -265,59 +303,135 @@ def start_background_job(
         **popen_kwargs,
     )
 
-    job = BackgroundJob(
-        id=job_id,
-        command=command,
-        process=process,
-        start_time=time.time(),
-    )
-    job.start_reader()
-
     with _job_lock:
-        _background_jobs[job_id] = job
-
+        job_id = _get_next_job_id_locked(conversation_id)
+        job = BackgroundJob(
+            id=job_id,
+            command=command,
+            process=process,
+            start_time=time.time(),
+            conversation_id=conversation_id,
+            # ``start_new_session`` makes the child PID its process-group ID.
+            # Capture it at creation rather than resolving the PID during kill,
+            # after the leader may have exited and its PID may have been reused.
+            process_group_id=None if _is_windows else process.pid,
+        )
+        _jobs_for(conversation_id)[job_id] = job
+    job.start_reader()
     return job
 
 
 def get_background_job(job_id: int) -> BackgroundJob | None:
-    """Get a background job by ID."""
+    """Get a background job in the active conversation."""
     with _job_lock:
-        return _background_jobs.get(job_id)
+        return _jobs_for(_current_conversation_id()).get(job_id)
 
 
 def list_background_jobs() -> list[BackgroundJob]:
-    """List all background jobs, cleaning up finished ones first."""
-    cleanup_finished_jobs()
+    """List jobs in the active conversation, including completed jobs."""
     with _job_lock:
-        return list(_background_jobs.values())
+        return list(_jobs_for(_current_conversation_id()).values())
 
 
 def cleanup_finished_jobs() -> None:
-    """Remove finished jobs from tracking (thread-safe)."""
-    with _job_lock:
-        finished = [
-            job_id
-            for job_id, job in _background_jobs.items()
-            if not job.is_running() and job.is_output_complete()
-        ]
-        for job_id in finished:
-            del _background_jobs[job_id]
+    """Compatibility no-op: completed jobs remain available until session end."""
+    return
 
 
-def reset_background_jobs() -> None:
-    """Stop and clean up all background jobs. Called on exit and for testing."""
-    global _next_job_id
+def _purge_completion_queue(conversation_ids: set[str | None] | None) -> None:
+    """Remove queued completions for conversations whose jobs were reset.
+
+    Pass ``None`` to clear all pending completions unconditionally (used when
+    resetting all conversations so that entries from conversations that were
+    never registered in ``_background_jobs`` don't linger across tests/resets).
+    """
+    with _completion_queue.mutex:
+        if conversation_ids is None:
+            _completion_queue.queue.clear()
+        else:
+            retained = type(_completion_queue.queue)(
+                job
+                for job in _completion_queue.queue
+                if job.conversation_id not in conversation_ids
+            )
+            _completion_queue.queue = retained
+
+
+def reset_background_jobs(
+    conversation_id: str | None = None, *, all_conversations: bool = True
+) -> None:
+    """Stop and remove jobs globally, or only for ``conversation_id``."""
     with _job_lock:
-        # Kill any running jobs
-        for job in _background_jobs.values():
+        if all_conversations:
+            groups = list(_background_jobs.values())
+            _background_jobs.clear()
+            _next_job_ids.clear()
+            # Clear all pending completions: filtering by currently-tracked
+            # conversation IDs would leave entries from jobs created outside
+            # start_background_job (e.g. via _make_job in tests).
+            _purge_completion_queue(None)
+        else:
+            conversation_ids = {conversation_id}
+            groups = [_background_jobs.pop(conversation_id, {})]
+            _next_job_ids.pop(conversation_id, None)
+            _purge_completion_queue(conversation_ids)
+    for jobs in groups:
+        for job in jobs.values():
             if job.is_running():
                 job.kill()
-        _background_jobs.clear()
-        _next_job_id = 1
 
 
 # Register cleanup handler to prevent orphaned bg jobs when gptme exits (Issue #993)
 atexit.register(reset_background_jobs)
+
+
+def _completion_message(job: BackgroundJob) -> Message:
+    status = f"exit code {job.process.returncode}"
+    stdout, stderr = job.get_output()
+    details: list[str] = []
+    if stdout:
+        details.append(md_codeblock("stdout", stdout[-8000:]))
+    if stderr:
+        details.append(md_codeblock("stderr", stderr[-2000:]))
+    suffix = "\n\n" + "\n\n".join(details) if details else ""
+    return Message(
+        "system",
+        f"Background shell job #{job.id} finished ({status}): `{job.command}`{suffix}",
+    )
+
+
+def background_job_completion_hook(
+    manager: object,
+    interactive: bool,
+    prompt_queue: object,
+    no_confirm: bool = False,
+) -> Generator[Message, None, None]:
+    """Deliver completed jobs only to the conversation that started them."""
+    del interactive, prompt_queue, no_confirm
+    from ..hooks import current_conversation_id
+
+    # The hook's manager identifies the conversation being advanced. Some server
+    # paths also bind an explicit context for tools; use that only when the
+    # manager cannot provide an ID. Never use process-local LogManager state here.
+    conversation_id = getattr(manager, "chat_id", None) or current_conversation_id.get()
+    # Reset takes these locks in the same order. Holding both while claiming and
+    # validating completions makes delivery atomic with conversation teardown.
+    with _job_lock, _completion_queue.mutex:
+        own_jobs = cast(
+            list[BackgroundJob],
+            [
+                job
+                for job in _completion_queue.queue
+                if job.conversation_id == conversation_id
+                and _background_jobs.get(conversation_id, {}).get(job.id) is job
+            ],
+        )
+        own_job_ids = {id(job) for job in own_jobs}
+        _completion_queue.queue = type(_completion_queue.queue)(
+            job for job in _completion_queue.queue if id(job) not in own_job_ids
+        )
+        messages = [_completion_message(job) for job in own_jobs]
+    yield from messages
 
 
 # Background command handlers
