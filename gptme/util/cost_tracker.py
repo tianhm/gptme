@@ -8,10 +8,27 @@ See Issue #935 for design context.
 
 from __future__ import annotations
 
+import threading
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+
+def session_id_for_logdir(logdir: Path | str) -> str:
+    """Identity used by skill cost snapshots.
+
+    Absolute ``Path`` values are resolved (CWD-independent). Relative paths
+    and plain strings keep their given form: ``Path.resolve()`` would follow
+    CWD and split the same conversation after ``session_step`` chdirs into
+    the workspace.
+    """
+    if not isinstance(logdir, Path):
+        return str(logdir)
+    if logdir.is_absolute():
+        return str(logdir.resolve())
+    return str(logdir)
 
 
 @dataclass
@@ -82,6 +99,14 @@ class SessionCosts:
     extras: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # A reset/resume of the same log directory is a different accounting window.
     tracking_id: str = field(default_factory=lambda: str(uuid4()), repr=False)
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
+
+    def snapshot_entries(self) -> list[CostEntry]:
+        """Copy entries so a concurrent append cannot split a totals snapshot."""
+        with self._lock:
+            return list(self.entries)
 
     def record_extra(self, key: str, **kwargs: Any) -> None:
         """Store plugin-level annotations alongside cost data.
@@ -153,8 +178,9 @@ class SessionCosts:
 class CostTracker:
     """Track costs across a session with context-safe storage.
 
-    Uses ContextVar for thread-safe, context-local storage suitable
-    for concurrent sessions.
+    ContextVar holds the active window for this task/thread. A process-wide
+    registry lets TUI workers and server request threads re-bind the same
+    conversation window without resetting ``tracking_id``.
 
     Usage:
         # At session start
@@ -171,15 +197,64 @@ class CostTracker:
     _session_costs_var: ContextVar[SessionCosts | None] = ContextVar(
         "session_costs", default=None
     )
+    _sessions: dict[str, SessionCosts] = {}
+    _sessions_lock = threading.Lock()
 
     @classmethod
     def start_session(cls, session_id: str) -> None:
-        """Initialize cost tracking for a session.
+        """Initialize a new accounting window for a session.
+
+        A later ``start_session`` for the same id is a reset: skill cost
+        deltas treat the new ``tracking_id`` as unknown, not a continuation.
 
         Args:
             session_id: Unique identifier for the session (typically logdir path).
         """
-        cls._session_costs_var.set(SessionCosts(session_id=session_id))
+        costs = SessionCosts(session_id=session_id)
+        with cls._sessions_lock:
+            cls._sessions[session_id] = costs
+        cls._session_costs_var.set(costs)
+
+    @classmethod
+    def ensure_session(cls, session_id: str) -> SessionCosts:
+        """Bind this context to the existing window, or create one.
+
+        This is not a reset. Skill usage is the inclusive delta from that
+        invocation's ``cost_baseline``; sharing ``tracking_id`` across TUI
+        and server workers keeps in-flight measurements valid. Use
+        ``start_session`` to open a new accounting window, and
+        ``end_session`` when the conversation is deleted or the last
+        session ends.
+        """
+        with cls._sessions_lock:
+            costs = cls._sessions.get(session_id)
+            if costs is None:
+                costs = SessionCosts(session_id=session_id)
+                cls._sessions[session_id] = costs
+        cls._session_costs_var.set(costs)
+        return costs
+
+    @classmethod
+    def end_session(cls, session_id: str) -> SessionCosts | None:
+        """Drop a conversation window from the process registry.
+
+        Call this when the conversation is deleted or the last session ends
+        so a later recreate does not inherit stale totals or ``tracking_id``.
+        No-op if unknown. Returns the dropped window, if any.
+        """
+        with cls._sessions_lock:
+            costs = cls._sessions.pop(session_id, None)
+        current = cls._session_costs_var.get()
+        if costs is not None and current is costs:
+            cls._session_costs_var.set(None)
+        return costs
+
+    @classmethod
+    def attach(cls, costs: SessionCosts) -> None:
+        """Install an already-owned window in this context and the registry."""
+        with cls._sessions_lock:
+            cls._sessions[costs.session_id] = costs
+        cls._session_costs_var.set(costs)
 
     @classmethod
     def record(cls, entry: CostEntry) -> None:
@@ -191,8 +266,17 @@ class CostTracker:
             entry: The cost entry to record.
         """
         costs = cls._session_costs_var.get()
-        if costs:
-            costs.entries.append(entry)
+        if not costs:
+            return
+        # Liveness and append share _sessions_lock so a concurrent
+        # end_session cannot replace the window between the check and the
+        # write. A dropped entry belongs to a conversation that no longer
+        # has a live window, not to a later recreate.
+        with cls._sessions_lock:
+            if cls._sessions.get(costs.session_id) is not costs:
+                return
+            with costs._lock:
+                costs.entries.append(entry)
 
     @classmethod
     def get_session_costs(cls) -> SessionCosts | None:
@@ -229,4 +313,6 @@ class CostTracker:
     @classmethod
     def reset(cls) -> None:
         """Reset cost tracking (for testing)."""
+        with cls._sessions_lock:
+            cls._sessions.clear()
         cls._session_costs_var.set(None)

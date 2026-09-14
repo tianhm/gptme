@@ -1971,6 +1971,9 @@ def api_conversation_post(conversation_id: str):
     # Append and execute a command under its reservation, not the conversation lock.
     # The reservation is always cleared, including when handle_cmd raises.
     from ..lessons.skill_commands import is_skill_command  # fmt: skip
+    from ..util.cost_tracker import CostTracker, session_id_for_logdir  # fmt: skip
+
+    CostTracker.ensure_session(session_id_for_logdir(log.logdir))
 
     responses: list[Message] = []
     try:
@@ -2501,11 +2504,19 @@ def api_conversation_delete(conversation_id: str):
                 409,
             )
 
+        from ..util.cost_tracker import CostTracker, session_id_for_logdir  # fmt: skip
+
+        cost_session_id = session_id_for_logdir(logdir)
         try:
             shutil.rmtree(logdir)
         except OSError as e:
             logger.error(f"Error deleting conversation {conversation_id}: {e}")
             return flask.jsonify({"error": f"Could not delete conversation: {e}"}), 500
+
+        # Evict before releasing the lock. If this runs after the lock
+        # drops, a recreate of the same id can bind a new window that this
+        # delayed end_session then deletes.
+        CostTracker.end_session(cost_session_id)
 
     SessionManager.remove_all_sessions_for_conversation(conversation_id)
 

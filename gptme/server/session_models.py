@@ -226,6 +226,10 @@ class SessionManager:
         """Release a synchronous command reservation."""
         with cls._lock:
             cls._active_commands.discard(conversation_id)
+        # Evict after releasing _lock: _evict_idle_cost_window takes the
+        # same non-reentrant lock. A live session or a newly started command
+        # makes this a no-op.
+        cls._evict_idle_cost_window(conversation_id, None)
 
     @classmethod
     def create_session(cls, conversation_id: str) -> ConversationSession:
@@ -356,10 +360,12 @@ class SessionManager:
             with session.step_lock:
                 session.finish_skill_turn("abandoned")
             if is_last:
+                logdir: Path | None = None
                 try:
                     from ..logmanager import LogManager
 
                     manager = LogManager.load(conversation_id, lock=True)
+                    logdir = manager.logdir
                     logger.debug(
                         "Last session for conversation %s, triggering SESSION_END hook",
                         conversation_id,
@@ -372,6 +378,7 @@ class SessionManager:
                             manager.append(msg)
                 except Exception as e:
                     logger.warning(f"Failed to trigger SESSION_END hook: {e}")
+                cls._evict_idle_cost_window(conversation_id, logdir)
 
             if acp_rt is not None:
                 from .session_step import close_acp_runtime_bg
@@ -412,10 +419,12 @@ class SessionManager:
         with session.step_lock:
             session.finish_skill_turn("abandoned")
         if is_last_session:
+            logdir: Path | None = None
             try:
                 from ..logmanager import LogManager
 
                 manager = LogManager.load(conversation_id, lock=True)
+                logdir = manager.logdir
 
                 logger.debug(
                     f"Last session for conversation {conversation_id}, triggering SESSION_END hook"
@@ -428,11 +437,35 @@ class SessionManager:
                         manager.append(msg)
             except Exception as e:
                 logger.warning(f"Failed to trigger SESSION_END hook: {e}")
+            cls._evict_idle_cost_window(conversation_id, logdir)
 
         if acp_rt is not None:
             from .session_step import close_acp_runtime_bg
 
             close_acp_runtime_bg(acp_rt)
+
+    @classmethod
+    def _evict_idle_cost_window(cls, conversation_id: str, logdir: Path | None) -> None:
+        """Drop the CostTracker window if no live sessions or commands remain.
+
+        Re-checks under ``_lock`` so a session that connected after last-session
+        teardown started, or a command still running outside the conversation
+        lock, is not evicted.
+        """
+        from ..dirs import get_logs_dir
+        from ..util.cost_tracker import CostTracker, session_id_for_logdir
+
+        # Hold _lock across end_session so create_session cannot insert a
+        # live session into a window we are about to drop. Lock order is
+        # SessionManager._lock then CostTracker._sessions_lock.
+        with cls._lock:
+            if conversation_id in cls._conversation_sessions:
+                return
+            if conversation_id in cls._active_commands:
+                return
+            if logdir is None:
+                logdir = get_logs_dir() / conversation_id
+            CostTracker.end_session(session_id_for_logdir(logdir))
 
     @classmethod
     def remove_all_sessions_for_conversation(cls, conversation_id: str) -> None:

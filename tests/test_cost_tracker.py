@@ -1,8 +1,16 @@
 """Tests for the cost tracking system."""
 
+import threading
+from pathlib import Path
+
 import pytest
 
-from gptme.util.cost_tracker import CostEntry, CostTracker, SessionCosts
+from gptme.util.cost_tracker import (
+    CostEntry,
+    CostTracker,
+    SessionCosts,
+    session_id_for_logdir,
+)
 
 
 class TestCostEntry:
@@ -225,3 +233,199 @@ class TestCostTracker:
         from gptme.util.cost_tracker import CostSummary
 
         assert isinstance(summary, CostSummary)
+
+    def test_ensure_session_rebinds_without_reset(self):
+        CostTracker.start_session("conv-a")
+        first = CostTracker.get_session_costs()
+        assert first is not None
+        CostTracker._session_costs_var.set(None)
+        second = CostTracker.ensure_session("conv-a")
+        assert second is first
+        assert CostTracker.get_session_costs() is first
+
+    def test_ensure_session_isolates_conversations(self):
+        a = CostTracker.ensure_session("conv-a")
+        b = CostTracker.ensure_session("conv-b")
+        assert a is not b
+        CostTracker.record(
+            CostEntry(
+                timestamp=1.0,
+                model="test",
+                input_tokens=1,
+                output_tokens=1,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost=0.1,
+            )
+        )
+        assert b.request_count == 1
+        assert a.request_count == 0
+        CostTracker.ensure_session("conv-a")
+        assert CostTracker.get_session_costs() is a
+        assert a.request_count == 0
+
+    def test_start_session_resets_tracking_id(self):
+        CostTracker.start_session("conv-a")
+        first = CostTracker.get_session_costs()
+        assert first is not None
+        CostTracker.start_session("conv-a")
+        second = CostTracker.get_session_costs()
+        assert second is not None
+        assert second is not first
+        assert second.tracking_id != first.tracking_id
+
+    def test_replacement_worker_rebinds_same_window(self):
+        owner = CostTracker.ensure_session("conv-a")
+        seen: list[str] = []
+
+        def worker() -> None:
+            CostTracker._session_costs_var.set(None)
+            rebound = CostTracker.ensure_session("conv-a")
+            seen.append(rebound.tracking_id)
+            CostTracker.record(
+                CostEntry(
+                    timestamp=1.0,
+                    model="test",
+                    input_tokens=1,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost=0.0,
+                )
+            )
+
+        first = threading.Thread(target=worker)
+        second = threading.Thread(target=worker)
+        first.start()
+        first.join()
+        second.start()
+        second.join()
+        assert seen == [owner.tracking_id, owner.tracking_id]
+        assert owner.request_count == 2
+
+    def test_end_session_drops_registry_so_recreate_is_fresh(self):
+        first = CostTracker.ensure_session("conv-a")
+        CostTracker.record(
+            CostEntry(
+                timestamp=1.0,
+                model="test",
+                input_tokens=4,
+                output_tokens=1,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost=0.25,
+            )
+        )
+        CostTracker.end_session("conv-a")
+        assert CostTracker.get_session_costs() is None
+        second = CostTracker.ensure_session("conv-a")
+        assert second is not first
+        assert second.tracking_id != first.tracking_id
+        assert second.request_count == 0
+
+    def test_end_session_unknown_id_is_noop(self):
+        owner = CostTracker.ensure_session("conv-a")
+        CostTracker.end_session("missing")
+        assert CostTracker.get_session_costs() is owner
+
+    def test_record_ignores_ended_window_left_in_context(self):
+        first = CostTracker.ensure_session("conv-a")
+        CostTracker.record(
+            CostEntry(
+                timestamp=1.0,
+                model="test",
+                input_tokens=1,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost=0.1,
+            )
+        )
+        CostTracker.end_session("conv-a")
+        CostTracker._session_costs_var.set(first)
+        CostTracker.record(
+            CostEntry(
+                timestamp=2.0,
+                model="test",
+                input_tokens=9,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost=0.9,
+            )
+        )
+        assert first.request_count == 1
+        second = CostTracker.ensure_session("conv-a")
+        assert second is not first
+        assert second.request_count == 0
+
+    def test_record_concurrent_with_end_session_does_not_land_on_recreate(self):
+        first = CostTracker.ensure_session("conv-a")
+        barrier = threading.Barrier(2)
+        entry = CostEntry(
+            timestamp=1.0,
+            model="test",
+            input_tokens=3,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            cost=0.3,
+        )
+
+        def worker() -> None:
+            CostTracker.attach(first)
+            barrier.wait()
+            CostTracker.record(entry)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        barrier.wait()
+        CostTracker.end_session("conv-a")
+        thread.join()
+        second = CostTracker.ensure_session("conv-a")
+        assert second is not first
+        assert second.request_count == 0
+        assert first.request_count in (0, 1)
+
+    def test_relative_logdir_identity_is_cwd_independent(self, tmp_path, monkeypatch):
+        other = tmp_path / "workspace"
+        other.mkdir()
+        relative = Path("logs") / "conv-a"
+        monkeypatch.chdir(tmp_path)
+        first = session_id_for_logdir(relative)
+        monkeypatch.chdir(other)
+        second = session_id_for_logdir(relative)
+        assert first == second == str(relative)
+
+    def test_absolute_logdir_identity_canonicalizes(self, tmp_path):
+        logdir = tmp_path / "logs" / "conv-a"
+        logdir.mkdir(parents=True)
+        assert session_id_for_logdir(logdir) == str(logdir.resolve())
+        assert session_id_for_logdir(logdir / ".." / "conv-a") == str(logdir.resolve())
+
+    def test_concurrent_record_keeps_all_entries(self):
+        owner = CostTracker.ensure_session("conv-a")
+        barrier = threading.Barrier(8)
+
+        def worker() -> None:
+            CostTracker.attach(owner)
+            barrier.wait()
+            CostTracker.record(
+                CostEntry(
+                    timestamp=1.0,
+                    model="test",
+                    input_tokens=1,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost=0.0,
+                )
+            )
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert owner.request_count == 8
+        assert len(owner.snapshot_entries()) == 8

@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 from ..hooks import HookType, StopPropagation, register_hook
 from ..message import Message
-from ..util.cost_tracker import CostEntry, CostTracker, SessionCosts
+from ..util.cost_tracker import (
+    CostEntry,
+    CostTracker,
+    SessionCosts,
+    session_id_for_logdir,
+)
 
 if TYPE_CHECKING:
     from ..logmanager import LogManager
@@ -268,9 +273,9 @@ def session_start_cost_tracking(
     Yields:
         Nothing - just initializes tracking
     """
-    session_id = str(logdir)
-    CostTracker.start_session(session_id)
-    logger.debug(f"Cost tracking started for session: {session_id}")
+    session_id = session_id_for_logdir(logdir)
+    costs = CostTracker.ensure_session(session_id)
+    logger.debug(f"Cost tracking started for session: {costs.session_id}")
     yield from ()
 
 
@@ -402,6 +407,11 @@ def session_end_cost_summary(
     manager: "LogManager", **kwargs
 ) -> Generator[Message | StopPropagation, None, None]:
     """Display brief cost summary at session end.
+
+    Eviction of the process-wide cost window is *not* done here. SESSION_END
+    can fire while another session still owns the conversation; the server
+    drops the window from last-session teardown in SessionManager after
+    re-checking that no sessions remain.
 
     Args:
         manager: The LogManager for the session
