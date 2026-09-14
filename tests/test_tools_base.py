@@ -1408,3 +1408,46 @@ class TestBuiltinToolHints:
         result = matching_allowlist_tools("hint:code-exec", tools)
         assert py_tool in result
         assert shell_tool in result
+
+
+class TestInitSingleTool:
+    """Tests for _init_single_tool() — validates plugin init() contract."""
+
+    def test_init_returning_none_raises_valueerror(self):
+        """A plugin init() that forgets to return the spec should raise ValueError naming the tool."""
+        from gptme.tools import _init_single_tool
+
+        broken_tool = ToolSpec(name="broken", desc="test tool", init=lambda: None)  # type: ignore[arg-type,return-value]
+        with pytest.raises(ValueError, match="broken.*returned NoneType"):
+            _init_single_tool(broken_tool)
+
+    def test_init_returning_non_toolspec_raises_valueerror(self):
+        """A plugin init() that returns a non-ToolSpec value should raise ValueError naming the tool and type."""
+        from gptme.tools import _init_single_tool
+
+        broken_tool = ToolSpec(
+            name="broken",
+            desc="test tool",
+            init=lambda: "not a spec",  # type: ignore[arg-type,return-value]
+        )
+        with pytest.raises(ValueError, match="broken.*returned str"):
+            _init_single_tool(broken_tool)
+
+    def test_init_returning_toolspec_succeeds(self):
+        """A well-behaved init() that returns a ToolSpec should not raise."""
+        from gptme.tools import _init_single_tool
+
+        good_tool = ToolSpec(name="good", desc="test tool")
+        good_tool_with_init = ToolSpec(
+            name="good", desc="test tool", init=lambda: good_tool
+        )
+        result = _init_single_tool(good_tool_with_init)
+        assert result is good_tool
+
+    def test_no_init_passthrough(self):
+        """A ToolSpec with no init() should pass through unchanged."""
+        from gptme.tools import _init_single_tool
+
+        tool = ToolSpec(name="plain", desc="no init")
+        result = _init_single_tool(tool)
+        assert result is tool
