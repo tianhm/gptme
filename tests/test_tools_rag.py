@@ -27,14 +27,22 @@ def test_rag_context_hook():
     messages = [
         Message("user", "Tell me about Python"),
         Message("assistant", "Python is a programming language"),
+        Message("user", "Tell me more"),
     ]
 
-    # Call the hook
-    context_msgs = list(_rag_context_hook(messages, workspace=None))
+    # Mock the config to enable RAG
+    mock_config = MagicMock()
+    mock_config.rag = RagConfig(enabled=True)
+    with (
+        patch("gptme.tools.rag.get_project_config", return_value=mock_config),
+        patch("gptme.tools.rag.get_rag_context") as mock_rag_context,
+    ):
+        mock_rag_context.return_value = Message("system", "Here's some RAG context")
+        context_msgs = list(_rag_context_hook(messages, workspace=None))
 
-    # Should yield at least one context message
-    assert len(context_msgs) >= 1
-    assert all(msg.role == "system" for msg in context_msgs)
+        assert len(context_msgs) >= 1
+        assert all(msg.role == "system" for msg in context_msgs)
+        mock_rag_context.assert_called_once_with("Tell me more", mock_config.rag, None)
 
 
 def test_rag_context_hook_no_rag():
