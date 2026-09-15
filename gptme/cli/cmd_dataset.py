@@ -174,6 +174,7 @@ def export_cmd(
     try:
         if destination is not None:
             destination = destination.resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
             temp = tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
@@ -195,10 +196,17 @@ def export_cmd(
             temp_path = None
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    except OSError as e:
+        dest = destination if destination is not None else output_path
+        raise click.ClickException(
+            f"Failed to write dataset export to {dest}: {e}"
+        ) from None
     finally:
-        if destination is not None and not out.closed:
-            out.close()
+        # Key cleanup off temp_path, not destination: mkdir can fail before
+        # the tempfile exists, and `out` is still stdout in that case.
         if temp_path is not None:
+            if not out.closed:
+                out.close()
             temp_path.unlink(missing_ok=True)
 
     click.echo(f"Exported {count} environments.", err=True)
