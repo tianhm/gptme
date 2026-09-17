@@ -1,4 +1,6 @@
 export default {
+  // Cap workers to prevent container thrash on shared hosts
+  maxWorkers: 4,
   testEnvironment: 'jsdom',
   setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
   moduleNameMapper: {
