@@ -1,6 +1,18 @@
 // Client entry. Pages are prerendered to static HTML, so there is no React
-// hydration: this file only loads the styles and adds two small enhancements.
+// hydration: this file only loads the styles and adds small enhancements.
 import "./styles/index.css";
+import { readmeHashRedirect } from "./lib/readme-hash.ts";
+
+const redirectReadmeHash = () => {
+  const readmeTarget = readmeHashRedirect(
+    window.location.pathname,
+    window.location.hash,
+    (id) => document.getElementById(id) !== null,
+  );
+  if (readmeTarget) window.location.replace(readmeTarget);
+};
+redirectReadmeHash();
+window.addEventListener("hashchange", redirectReadmeHash);
 
 // Mobile menu toggle. Without JS the nav links wrap under the brand instead.
 const toggle = document.querySelector<HTMLButtonElement>("[data-nav-toggle]");
