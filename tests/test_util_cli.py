@@ -1255,6 +1255,56 @@ def test_context_search_conversations_top_k(tmp_path):
     mock_search.assert_called_once_with("pytest", return_full=True, top_k=5)
 
 
+def test_context_retrieve_empty_query():
+    """context retrieve rejects an empty query with exit code 1, no traceback."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["context", "retrieve", ""])
+    assert result.exit_code == 1
+    assert "Error: query cannot be empty" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_context_search_conversations_empty_query():
+    """context search-conversations rejects an empty query with exit code 1, no traceback."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["context", "search-conversations", ""])
+    assert result.exit_code == 1
+    assert "Error: query cannot be empty" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("command", ["retrieve", "search-conversations"])
+def test_context_whitespace_only_query(command):
+    """Whitespace-only queries are rejected the same as empty ones."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["context", command, "   "])
+    assert result.exit_code == 1
+    assert "Error: query cannot be empty" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("command", ["retrieve", "search-conversations"])
+def test_context_rag_search_runtime_error(command):
+    """A RuntimeError from rag_search surfaces as a clean error, no traceback."""
+    from unittest.mock import patch
+
+    runner = CliRunner()
+    with (
+        patch("gptme.tools.rag._has_gptme_rag", return_value=True),
+        # retrieve calls init(); patch it so the test is hermetic (no real
+        # project-config/filesystem side effects in CI).
+        patch("gptme.tools.rag.init"),
+        patch(
+            "gptme.tools.rag.rag_search",
+            side_effect=RuntimeError("gptme-rag command timed out after 60s"),
+        ),
+    ):
+        result = runner.invoke(main, ["context", command, "pytest"])
+    assert result.exit_code == 1
+    assert "Error: gptme-rag command timed out after 60s" in result.output
+    assert "Traceback" not in result.output
+
+
 # ---------------------------------------------------------------------------
 # Knowledge sub-commands
 # ---------------------------------------------------------------------------
