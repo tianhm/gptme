@@ -171,38 +171,66 @@ def test_broken_pipe_zero_bytes_retries_command(shell, tmp_path, monkeypatch):
 
 
 def test_broken_pipe_partial_write_is_not_retried(shell, tmp_path, monkeypatch):
-    """EPIPE mid-payload must not re-send: the statement may have run."""
-    # Atomic rename so the marker only exists if the command fully completed:
-    # a killed `>>` open leaves an empty file behind (partial execution).
-    marker = tmp_path / "ran"
-    command = f"printf x > {tmp_path}/m.tmp && mv {tmp_path}/m.tmp {marker}"
+    """EPIPE mid-payload must not re-send: the statement may have run.
+
+    Tests the no-retry invariant directly: after BrokenPipeError fires on the
+    second write (the end-marker part of the shell protocol), the command bytes
+    must never be re-sent to the restarted shell's stdin.
+
+    Whether bash actually executed the delivered command before being restarted
+    is inherently racy (bash scheduling), so the assertion watches stdin writes
+    after the restart rather than depending on a marker file.
+    """
+    command = f"echo x >> {tmp_path}/ran"
+    cmd_bytes = command.encode()
     orig_write = os.write
     stdin_fd = shell.process.stdin.fileno()
-    state = {"partial": False, "raised": False}
+    state: dict = {
+        "partial": False,
+        "raised": False,
+        "retried": False,
+        "post_epipe": bytearray(),
+    }
+
+    def _is_shell_stdin(fd: int) -> bool:
+        # The restarted shell gets a fresh stdin pipe; descriptor-number reuse
+        # is an implementation detail, so compare against the *current* stdin
+        # rather than the fd captured at setup. Otherwise a retry delivered on
+        # a different fd would be missed and this test would pass vacuously.
+        stdin = shell.process.stdin
+        return bool(stdin) and not stdin.closed and fd == stdin.fileno()
 
     def write_fd(fd, data):
-        # First write: deliver everything through the command's own newline so
-        # the statement was genuinely handed to the shell (a tiny short write
-        # landing inside the start-marker echo would make the no-retry
-        # assertion vacuous). Then raise exactly once: the restarted shell
-        # often reuses the same stdin fd number, so a sticky EPIPE loops.
+        # First write: deliver through the command's newline (partial write).
         if fd == stdin_fd and not state["partial"]:
             state["partial"] = True
-            cmd_bytes = command.encode()
             end = data.index(cmd_bytes) + len(cmd_bytes) + 1
             return orig_write(fd, data[:end])
+        # Second write: simulate mid-payload EPIPE.
         if fd == stdin_fd and not state["raised"]:
             state["raised"] = True
             raise BrokenPipeError
+        # After the restart: accumulate all stdin writes into a buffer so that
+        # a retry delivered in chunks (across multiple os.write calls) is still
+        # detected. A per-write substring check would miss such cases.
+        if state["raised"] and _is_shell_stdin(fd):
+            state["post_epipe"] += data
+            if cmd_bytes in state["post_epipe"]:
+                state["retried"] = True
         return orig_write(fd, data)
 
     monkeypatch.setattr(os, "write", write_fd)
     shell.run(command, output=False)
-    # The command was fully delivered, but whether bash scheduled it before
-    # the restart killed it is inherently racy. What is deterministic is the
-    # no-retry invariant: it ran at most once (never "x\nx\n"), and the
-    # restart notice explicitly says the in-flight command was not re-run.
-    assert not marker.exists() or marker.read_text() == "x"
+    assert state["partial"], (
+        "write_fd never delivered the command — test is misconfigured"
+    )
+    assert state["raised"], (
+        "BrokenPipeError was never triggered — test is misconfigured"
+    )
+    # The no-retry invariant: the command must not be re-sent after EPIPE.
+    assert not state["retried"], (
+        "command was re-sent to the restarted shell (retry bug)"
+    )
     notice = shell.consume_restart_notice()
     assert notice and "during this command" in notice
     assert shell.run("echo ok", output=False)[1].strip() == "ok"
@@ -221,15 +249,16 @@ def test_timeout_kills_command_but_keeps_shell(shell, tmp_path):
 
 
 def test_timeout_kills_grandchildren_and_term_ignoring_children(shell, tmp_path):
-    # Anchor the pgrep regex so it can't substring-match an unrelated process
-    # (e.g. a concurrent `sleep 300` in a shared CI/agent container).
+    # Use a unique sleep duration so pgrep doesn't match concurrent parallel test
+    # workers that also use `sleep 30` (pytest-xdist runs up to 16 workers; other
+    # test files start `sleep 30` processes that would cause a false count).
     pid = shell.process.pid
     rc, _, _ = shell.run(
-        "bash -c 'trap \"\" TERM; (sleep 30); sleep 30'", output=False, timeout=1.0
+        "bash -c 'trap \"\" TERM; (sleep 7979); sleep 7979'", output=False, timeout=1.0
     )
     assert rc == -124
     assert shell.process.pid == pid
-    rc, out, _ = shell.run("pgrep -f 'sleep 30$' | wc -l", output=False)
+    rc, out, _ = shell.run("pgrep -f 'sleep 7979$' | wc -l", output=False)
     assert out.strip() == "0"
 
 
