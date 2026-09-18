@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import stat
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from gptme.message import Message
 from gptme.model_attestation import (
     ModelSelectionTrace,
     create_selection_trace,
@@ -146,31 +151,112 @@ class TestLogManagerTracePersistence:
         set_selection_trace(make_trace())
         lm = LogManager(logdir=tmp_path, lock=False)
 
-        with patch.object(os, "fsync") as fsync:
+        synced: set[tuple[int, int]] = set()
+
+        def record(fd: int) -> None:
+            info = os.fstat(fd)
+            synced.add((info.st_dev, info.st_ino))
+
+        with patch.object(os, "fsync", side_effect=record):
             lm.write(sync=True)
 
-        expected_calls = 2 if os.name == "nt" else 3
-        assert fsync.call_count == expected_calls
+        paths = [lm.logfile, tmp_path / "model_selection_trace.json"]
+        if os.name != "nt":
+            paths.append(tmp_path)
+        for path in paths:
+            info = path.stat()
+            assert (info.st_dev, info.st_ino) in synced
 
-    def test_unsupported_directory_fsync_does_not_fail_save(
+    def test_model_trace_syncs_temporary_file_before_replacement(
         self, tmp_path: Path
     ) -> None:
         from gptme.logmanager.manager import LogManager
 
         set_selection_trace(make_trace())
         lm = LogManager(logdir=tmp_path, lock=False)
+        order: list[str] = []
+        real_fsync = os.fsync
+        real_replace = Path.replace
+
+        def record_sync(fd: int) -> None:
+            order.append("sync")
+            real_fsync(fd)
+
+        def record_replace(source: Path, target: Path) -> Path:
+            order.append("replace")
+            return real_replace(source, target)
+
+        with (
+            patch.object(os, "fsync", side_effect=record_sync),
+            patch.object(Path, "replace", autospec=True, side_effect=record_replace),
+        ):
+            lm.write_model_trace()
+
+        assert order == ["sync", "replace"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="No portable directory fsync")
+    def test_directory_io_error_does_not_acknowledge_save(self, tmp_path: Path) -> None:
+        """A real I/O error means the write did not land: fail the barrier."""
+        from gptme.logmanager.manager import LogManager
+
+        set_selection_trace(make_trace())
+        lm = LogManager(
+            [Message("user", "persist me", quiet=True)],
+            logdir=tmp_path,
+            lock=False,
+        )
         real_fsync = os.fsync
 
         def reject_directory(fd: int) -> None:
             if stat.S_ISDIR(os.fstat(fd).st_mode):
-                raise OSError("directory fsync unsupported")
+                raise OSError(errno.EIO, "directory fsync failed")
             real_fsync(fd)
 
-        with patch.object(os, "fsync", side_effect=reject_directory):
+        lm.write()
+        with (
+            patch.object(os, "fsync", side_effect=reject_directory),
+            pytest.raises(OSError, match="directory fsync failed"),
+        ):
             lm.write(sync=True)
 
         assert lm.logfile.exists()
         assert (tmp_path / "model_selection_trace.json").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="No portable directory fsync")
+    def test_unsupported_directory_fsync_does_not_fail_save(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Filesystems without a directory barrier must not kill the turn.
+
+        Some network, overlay and FUSE mounts reject fsync on a directory fd.
+        The transcript is written and synced either way; only the namespace
+        guarantee is weaker, which is worth a warning and nothing more.
+        """
+        from gptme.logmanager.manager import LogManager
+
+        set_selection_trace(make_trace())
+        lm = LogManager(
+            [Message("user", "persist me", quiet=True)],
+            logdir=tmp_path,
+            lock=False,
+        )
+        real_fsync = os.fsync
+
+        def reject_directory(fd: int) -> None:
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "fsync not supported for this file")
+            real_fsync(fd)
+
+        lm.write()
+        with (
+            patch.object(os, "fsync", side_effect=reject_directory),
+            caplog.at_level(logging.WARNING),
+        ):
+            lm.write(sync=True)  # must not raise
+
+        assert lm.logfile.exists()
+        assert (tmp_path / "model_selection_trace.json").exists()
+        assert "No directory barrier available" in caplog.text
 
 
 # ---------------------------------------------------------------------------
