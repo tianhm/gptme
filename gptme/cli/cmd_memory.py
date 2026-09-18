@@ -29,6 +29,20 @@ def _clean(value: str, *, keep_newlines: bool = False) -> str:
     return pattern.sub("", value)
 
 
+def _as_str_list(value: object) -> list[str]:
+    """Normalize a legacy tags/keywords field to a list of strings.
+
+    Hand-edited records may store a scalar string (``"tags": "git"``).
+    Iterating that directly would yield individual characters, silently
+    corrupting the migrated entry's keyword recall, so wrap it instead.
+    """
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [v for v in value if isinstance(v, str)]
+    return []
+
+
 def _store():
     from ..memory import MemoryStore  # fmt: skip
 
@@ -439,6 +453,176 @@ def memory_audit(scope: str | None, quiet: bool):
         raise click.exceptions.Exit(1)
     if not quiet:
         click.echo("Memory audit passed")
+
+
+@memory.command("migrate-knowledge-jsonl")
+@click.argument(
+    "jsonl_path",
+    required=False,
+    type=click.Path(exists=True, dir_okay=False),
+)
+@click.option(
+    "--scope", help="Root to write migrated entries to (default: write root)."
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be migrated without writing anything.",
+)
+@click.option(
+    "--skip-existing/--no-skip-existing",
+    default=True,
+    show_default=True,
+    help="Skip entries whose slugified name already exists in the store.",
+)
+def memory_migrate_knowledge_jsonl(
+    jsonl_path: str | None,
+    scope: str | None,
+    dry_run: bool,
+    skip_existing: bool,
+):
+    """Migrate a knowledge JSONL store to memory markdown entries.
+
+    JSONL_PATH defaults to ``~/.local/share/gptme/knowledge/entries.jsonl``.
+
+    Each knowledge entry becomes a ``general`` memory entry: the name is
+    slugified from the primary text, the body records both fields under
+    type-aware section headings (entry_type is preserved in provenance),
+    and existing tags and keywords are preserved as memory keywords.
+
+    After migration, ``gptme-util knowledge`` commands still work against the
+    original JSONL; retire it once you are satisfied with the migrated entries.
+
+    Example:
+
+    \\b
+        gptme-util memory migrate-knowledge-jsonl --dry-run
+        gptme-util memory migrate-knowledge-jsonl --scope user
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from textwrap import shorten as _shorten
+
+    from ..dirs import get_data_dir  # fmt: skip
+    from ..knowledge import _ENTRY_TYPE_LABELS  # fmt: skip
+    from ..memory.schema import MemoryParseError, slugify  # fmt: skip
+
+    if jsonl_path is None:
+        source = get_data_dir() / "knowledge" / "entries.jsonl"
+    else:
+        source = _Path(jsonl_path)
+
+    if not source.exists():
+        click.echo(f"No knowledge store at {source} — nothing to migrate.", err=True)
+        sys.exit(0)
+
+    raw_lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+    entries = []
+    for line in raw_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("problem"), str):
+            entries.append(obj)
+
+    if not entries:
+        click.echo(f"No valid entries found in {source}.")
+        sys.exit(0)
+
+    store = _store()
+    migrated = skipped = errors = 0
+    _seen_names: set[str] = set()
+
+    for obj in entries:
+        problem: str = obj["problem"]
+        resolution: str = obj.get("resolution", "")
+        raw_type = obj.get("entry_type")
+        # Malformed/hand-edited records may carry a non-string entry_type
+        # (e.g. a list); fall back to the default instead of aborting.
+        entry_type: str = (
+            raw_type if isinstance(raw_type, str) and raw_type else "problem_resolution"
+        )
+        tags = _as_str_list(obj.get("tags"))
+        keywords = _as_str_list(obj.get("keywords"))
+        original_id: str = obj.get("id", "")
+        created_at: str = obj.get("created_at", "")
+
+        # Combine tags and keywords, deduplicate
+        all_keywords = list(dict.fromkeys(tags + keywords))
+
+        # Build a slug from the problem text; append an ID suffix to avoid
+        # collisions when two entries share similar problem text.
+        slug_source = problem[:80]
+        name = slugify(slug_source)
+        if not name:
+            name = f"knowledge-{original_id[:8]}" if original_id else "knowledge-entry"
+        # Detect slug collision: if this name is already claimed by a *different*
+        # in-progress entry (tracked below), append the entry's ID suffix.
+        if name in _seen_names:
+            suffix = (
+                original_id[:8] if original_id else str(migrated + skipped + errors)
+            )
+            name = f"{name}-{suffix}"
+        _seen_names.add(name)
+
+        description = _shorten(problem, width=120, placeholder="…")
+
+        # Type-aware section headings; typed entries keep their original
+        # type in provenance so the semantic type stays recoverable.
+        primary_label, secondary_label = _ENTRY_TYPE_LABELS.get(
+            entry_type, ("Problem", "Resolution")
+        )
+        body = (
+            f"## {primary_label}\n\n{problem}\n\n## {secondary_label}\n\n{resolution}\n"
+        )
+
+        provenance: dict = {"source": "knowledge-jsonl"}
+        if entry_type != "problem_resolution":
+            provenance["original_entry_type"] = entry_type
+        if original_id:
+            provenance["original_id"] = original_id
+        if created_at:
+            provenance["migrated_from_created_at"] = created_at
+
+        if skip_existing and store.get(name) is not None:
+            if dry_run:
+                click.echo(f"  would skip (exists): {name!r}", err=True)
+            else:
+                click.echo(f"  skip (exists): {name!r}", err=True)
+            skipped += 1
+            continue
+
+        if dry_run:
+            click.echo(f"  would migrate: {name!r} ({len(all_keywords)} keyword(s))")
+            migrated += 1
+            continue
+
+        try:
+            store.save(
+                name,
+                description,
+                body,
+                type="general",
+                scope=scope,
+                keywords=all_keywords or None,
+                metadata={"provenance": provenance},
+            )
+            click.echo(f"  migrated: {name!r}")
+            migrated += 1
+        except (KeyError, OSError, ValueError, MemoryParseError) as e:
+            click.echo(f"  error ({name!r}): {e}", err=True)
+            errors += 1
+
+    action = "would migrate" if dry_run else "migrated"
+    click.echo(
+        f"\n{action} {migrated}, skipped {skipped}, errors {errors} (source: {source})"
+    )
+    if errors:
+        sys.exit(1)
 
 
 @memory.command("index")

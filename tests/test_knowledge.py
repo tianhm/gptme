@@ -287,7 +287,7 @@ def test_cli_save_json_output():
         main, ["knowledge", "save", "--json", "json problem", "json resolution"]
     )
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert data["problem"] == "json problem"
     assert data["memory_type"] == "knowledge_entry"
 
@@ -360,7 +360,7 @@ def test_cli_search_json():
     runner.invoke(main, ["knowledge", "save", "search json problem", "resolution"])
     result = runner.invoke(main, ["knowledge", "search", "--json", "search json"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert isinstance(data, list)
     assert data[0]["problem"] == "search json problem"
 
@@ -388,7 +388,7 @@ def test_cli_json_output_escapes_control_characters():
     assert "\x07" not in list_result.output
     assert r"\u001b" in search_result.output
     assert r"\u0007" in search_result.output
-    assert json.loads(search_result.output)[0]["problem"] == "unsafe\x1b[2J problem"
+    assert json.loads(search_result.stdout)[0]["problem"] == "unsafe\x1b[2J problem"
 
 
 def test_cli_human_output_strips_control_characters():
@@ -489,7 +489,7 @@ def test_cli_list_json():
     runner.invoke(main, ["knowledge", "save", "list json problem", "resolution"])
     result = runner.invoke(main, ["knowledge", "list", "--json"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert isinstance(data, list)
     assert data[0]["problem"] == "list json problem"
 
@@ -862,7 +862,7 @@ def test_cli_search_json_includes_entry_type():
     )
     result = runner.invoke(main, ["knowledge", "search", "how deploy", "--json"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert data[0]["entry_type"] == "how_to"
 
 
@@ -987,7 +987,7 @@ def test_cli_search_uses_rag_when_available(monkeypatch):
     runner = CliRunner()
     result = runner.invoke(main, ["knowledge", "search", "--json", "anything"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert len(data) == 2
     # rag ranking preserved: e2 is first
     assert data[0]["id"] == e2["id"]
@@ -1005,7 +1005,7 @@ def test_cli_search_falls_back_to_keyword_when_rag_unavailable(monkeypatch):
     runner = CliRunner()
     result = runner.invoke(main, ["knowledge", "search", "--json", "pytest"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert len(data) == 1
     assert data[0]["problem"] == "pytest discovery problem"
 
@@ -1036,7 +1036,7 @@ def test_cli_search_rag_tag_filter_applied_post_hoc(monkeypatch):
         main, ["knowledge", "search", "--json", "--tag", "pytest", "anything"]
     )
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert len(data) == 1
     assert data[0]["id"] == e1["id"]
 
@@ -1173,7 +1173,7 @@ def test_cli_search_rag_tag_filter_truncates_to_top_k(monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    out = json.loads(result.output)
+    out = json.loads(result.stdout)
     assert len(out) == 2
     assert all("pytest" in e["tags"] for e in out)
 
@@ -1232,5 +1232,5 @@ def test_cli_search_rag_tag_filter_escalates_when_first_page_truncated(monkeypat
         ],
     )
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert [e["id"] for e in data] == [matching["id"]]
