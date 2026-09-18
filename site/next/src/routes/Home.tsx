@@ -36,6 +36,12 @@ const ecosystem = [
     href: links.plugins,
     desc: "Plugins add tools, hooks and commands. Skills and lessons teach it your workflows in plain Markdown. gptme-contrib carries community packages: code graphs, multi-model consensus, LSP, image generation.",
   },
+  {
+    tag: "claude code · codex · gptme",
+    title: "Shared memory across harnesses",
+    href: links.memory,
+    desc: "gptme-util memory is a local Markdown memory store usable from any agent harness. Claude Code reads it via a hook, Codex via AGENTS.md, gptme natively — one recall CLI, zero lock-in.",
+  },
 ];
 
 // What each tool actually does, linked to its reference page. The full set is
@@ -544,7 +550,7 @@ function Ecosystem() {
           Open protocols, no lock-in, <a href={links.github}>MIT</a>
         </p>
       </div>
-      <ul className="m-0 grid list-none grid-cols-3 gap-4 p-0 max-md:grid-cols-1 max-sm:gap-[10px]">
+      <ul className="m-0 grid list-none grid-cols-2 gap-4 p-0 max-md:grid-cols-1 max-sm:gap-[10px]">
         {ecosystem.map((e) => (
           <li key={e.title}>
             <a
