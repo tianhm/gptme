@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>v0.21.0 &#8212; gptme</title>
+    <title>Transcript Persistence &#8212; gptme</title>
   
   
   
@@ -43,13 +43,13 @@
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/asciinema-player_3.12.1.js"></script>
     <script src="../_static/scripts/sphinx-book-theme.js?v=887ef09a"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'releases/v0.21.0';</script>
-    <link rel="canonical" href="https://gptme.org/docs/releases/v0.21.0.html" />
+    <script>DOCUMENTATION_OPTIONS.pagename = 'design/transcript-persistence';</script>
+    <link rel="canonical" href="https://gptme.org/docs/design/transcript-persistence.html" />
     <link rel="icon" href="../_static/logo.png"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="v0.20.0" href="v0.20.0.html" />
-    <link rel="prev" title="v0.22.0" href="v0.22.0.html" />
+    <link rel="next" title="Alternatives" href="../alternatives.html" />
+    <link rel="prev" title="Design: Programmatic Tool Calling (PTC) Interface" href="ptc-tool-interface.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   </head>
@@ -283,7 +283,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../mcp.html">MCP</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Guide</span></p>
-<ul class="nav bd-sidenav">
+<ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../contributing.html">Contributing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../pr-lifecycle.html">PR Lifecycle</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../building.html">Building Executables</a></li>
@@ -304,78 +304,78 @@
 <li class="toctree-l1"><a class="reference internal" href="../evals.html">Evals</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../finetuning.html">Finetuning</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../glossary.html">Glossary</a></li>
-<li class="toctree-l1 has-children"><a class="reference internal" href="../design/index.html">Design Documents</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="../design/hook-based-confirmations.html">Hook-Based Tool Confirmations</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../design/elicitation.html">Generalized Elicitation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../design/ptc-tool-interface.html">Programmatic Tool Calling (PTC)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../design/transcript-persistence.html">Transcript Persistence</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Design Documents</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="hook-based-confirmations.html">Hook-Based Tool Confirmations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="elicitation.html">Generalized Elicitation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ptc-tool-interface.html">Programmatic Tool Calling (PTC)</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">Transcript Persistence</a></li>
 </ul>
 </details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
-<ul class="current nav bd-sidenav">
+<ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../alternatives.html">Alternatives</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../projects.html">Projects</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../arewetiny.html">Are we tiny?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../misc/acronyms.html">What does “gptme” stand for?</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../timeline.html">Timeline</a></li>
-<li class="toctree-l1 current active has-children"><a class="reference internal" href="../changelog.html">Changelog</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="v0.34.0.html">v0.34.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.33.0.html">v0.33.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.32.1.html">v0.32.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.32.0.html">v0.32.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.31.0.html">v0.31.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.30.0.html">v0.30.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.29.0.html">v0.29.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.28.3.html">v0.28.3</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.28.2.html">v0.28.2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.28.1.html">v0.28.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.28.0.html">v0.28.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.27.0.html">v0.27.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.26.0.html">v0.26.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.25.0.html">v0.25.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.24.1.html">v0.24.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.24.0.html">v0.24.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.23.0.html">v0.23.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.22.0.html">v0.22.0</a></li>
-<li class="toctree-l2 current active"><a class="current reference internal" href="#">v0.21.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.20.0.html">v0.20.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.19.0.html">v0.19.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.18.0.html">v0.18.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.17.0.html">v0.17.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.16.0.html">v0.16.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.15.0.html">v0.15.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.14.0.html">v0.14.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.13.0.html">v0.13.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.12.0.html">v0.12.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.11.0.html">v0.11.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.10.5.html">v0.10.5</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.10.4.html">v0.10.4</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.10.3.html">v0.10.3</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.10.2.html">v0.10.2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.10.1.html">v0.10.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.10.0.html">v0.10.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.9.4.html">v0.9.4</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.9.3.html">v0.9.3</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.9.2.html">v0.9.2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.9.1.html">v0.9.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.9.0.html">v0.9.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.8.1.html">v0.8.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.8.0.html">v0.8.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.7.0.html">v0.7.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.6.1.html">v0.6.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.6.0.html">v0.6.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.5.0.html">v0.5.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.4.2.html">v0.4.2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.4.1.html">v0.4.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.4.0.html">v0.4.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.3.3.html">v0.3.3</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.3.2.html">v0.3.2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.3.1.html">v0.3.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.3.0.html">v0.3.0</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.2.2.html">v0.2.2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.2.1.html">v0.2.1</a></li>
-<li class="toctree-l2"><a class="reference internal" href="v0.1.1.html">v0.1.1</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../changelog.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.34.0.html">v0.34.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.33.0.html">v0.33.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.32.1.html">v0.32.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.32.0.html">v0.32.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.31.0.html">v0.31.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.30.0.html">v0.30.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.29.0.html">v0.29.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.28.3.html">v0.28.3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.28.2.html">v0.28.2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.28.1.html">v0.28.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.28.0.html">v0.28.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.27.0.html">v0.27.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.26.0.html">v0.26.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.25.0.html">v0.25.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.24.1.html">v0.24.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.24.0.html">v0.24.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.23.0.html">v0.23.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.22.0.html">v0.22.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.21.0.html">v0.21.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.20.0.html">v0.20.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.19.0.html">v0.19.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.18.0.html">v0.18.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.17.0.html">v0.17.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.16.0.html">v0.16.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.15.0.html">v0.15.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.14.0.html">v0.14.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.13.0.html">v0.13.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.12.0.html">v0.12.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.11.0.html">v0.11.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.10.5.html">v0.10.5</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.10.4.html">v0.10.4</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.10.3.html">v0.10.3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.10.2.html">v0.10.2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.10.1.html">v0.10.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.10.0.html">v0.10.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.9.4.html">v0.9.4</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.9.3.html">v0.9.3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.9.2.html">v0.9.2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.9.1.html">v0.9.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.9.0.html">v0.9.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.8.1.html">v0.8.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.8.0.html">v0.8.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.7.0.html">v0.7.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.6.1.html">v0.6.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.6.0.html">v0.6.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.5.0.html">v0.5.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.4.2.html">v0.4.2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.4.1.html">v0.4.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.4.0.html">v0.4.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.3.3.html">v0.3.3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.3.2.html">v0.3.2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.3.1.html">v0.3.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.3.0.html">v0.3.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.2.2.html">v0.2.2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.2.1.html">v0.2.1</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../releases/v0.1.1.html">v0.1.1</a></li>
 </ul>
 </details></li>
 </ul>
@@ -455,7 +455,7 @@
       
       
       
-      <li><a href="https://github.com/gptme/gptme/edit/main/docs/releases/v0.21.0.md" target="_blank"
+      <li><a href="https://github.com/gptme/gptme/edit/main/docs/design/transcript-persistence.md" target="_blank"
    class="btn btn-sm btn-source-edit-button dropdown-item"
    title="Suggest edit"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -485,7 +485,7 @@
       
       
       
-      <li><a href="../_sources/releases/v0.21.0.md" target="_blank"
+      <li><a href="../_sources/design/transcript-persistence.md" target="_blank"
    class="btn btn-sm btn-download-source-button dropdown-item"
    title="Download source file"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -569,7 +569,7 @@ document.write(`
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>v0.21.0</h1>
+    <h1>Transcript Persistence</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -579,14 +579,10 @@ document.write(`
             </div>
             <nav aria-label="Page">
                 <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contributors">Contributors</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changelog">Changelog</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme">📦 gptme</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#features-4">✨ Features (4)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fixes-19">🐛 Fixes (19)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#misc-14">🔨 Misc (14)</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-problem">The problem</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-barrier">The barrier</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-completion-waits">Why completion waits</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-does-not-cover">What this does not cover</a></li>
 </ul>
             </nav>
         </div>
@@ -598,82 +594,83 @@ document.write(`
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="v0-21-0">
-<h1>v0.21.0<a class="headerlink" href="#v0-21-0" title="Link to this heading">#</a></h1>
-<p>These are the release notes for gptme version v0.21.0.</p>
-<section id="contributors">
-<h2>Contributors<a class="headerlink" href="#contributors" title="Link to this heading">#</a></h2>
-<p>Thanks to everyone who contributed to this release:</p>
-<p>&#64;0xbrayo, &#64;erikbjare</p>
-</section>
-<section id="changelog">
-<h2>Changelog<a class="headerlink" href="#changelog" title="Link to this heading">#</a></h2>
-<p>Changes since v0.20.0:</p>
-</section>
-<section id="gptme">
-<h2>📦 gptme<a class="headerlink" href="#gptme" title="Link to this heading">#</a></h2>
-<section id="features-4">
-<h3>✨ Features (4)<a class="headerlink" href="#features-4" title="Link to this heading">#</a></h3>
+  <section id="transcript-persistence">
+<h1>Transcript Persistence<a class="headerlink" href="#transcript-persistence" title="Link to this heading">#</a></h1>
+<p><strong>Status:</strong> implemented.</p>
+<p>What gptme promises about a conversation transcript surviving a crash, and what
+it deliberately does not promise.</p>
+<section id="the-problem">
+<h2>The problem<a class="headerlink" href="#the-problem" title="Link to this heading">#</a></h2>
+<p>Every <code class="docutils literal notranslate"><span class="pre">LogManager.append()</span></code> writes the transcript, but a write only reaches the
+operating system’s page cache. Data in the page cache survives a process crash;
+it does not survive a kernel panic or power loss until writeback happens, which
+can be seconds later. Both entry points used to report success before that:
+the CLI returned from a turn, and the server emitted <code class="docutils literal notranslate"><span class="pre">generation_complete</span></code>,
+while the turn was still only provisionally on disk.</p>
+<p>Two related defects made that worse than a timing window:</p>
 <ul class="simple">
-<li><p>feat: added support for groq provider (<a class="reference external" href="https://github.com/gptme/gptme/commit/4299cd02"><code class="docutils literal notranslate"><span class="pre">4299cd02</span></code></a>)</p></li>
-<li><p>feat:whitelist some commands (<a class="reference external" href="https://github.com/gptme/gptme/commit/7f1ba2be"><code class="docutils literal notranslate"><span class="pre">7f1ba2be</span></code></a>)</p></li>
-<li><p>feat: added support for xAI/grok (<a class="reference external" href="https://github.com/gptme/gptme/commit/d7cebbae"><code class="docutils literal notranslate"><span class="pre">d7cebbae</span></code></a>)</p></li>
-<li><p>feat: started working on ncurses ui (<a class="reference external" href="https://github.com/gptme/gptme/commit/d3413eab"><code class="docutils literal notranslate"><span class="pre">d3413eab</span></code></a>)</p></li>
+<li><p>Transcript rewrites (fork, undo, edit) truncated the file in place. A crash
+mid-rewrite left a partially written conversation with no recoverable copy.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">LogManager.logfile</span></code> resolved the main transcript through
+<code class="docutils literal notranslate"><span class="pre">get_logs_dir()</span> <span class="pre">/</span> <span class="pre">chat_id</span></code> instead of the manager’s own <code class="docutils literal notranslate"><span class="pre">logdir</span></code>, so a session
+with a custom log directory wrote its main transcript somewhere else.</p></li>
 </ul>
 </section>
-<section id="fixes-19">
-<h3>🐛 Fixes (19)<a class="headerlink" href="#fixes-19" title="Link to this heading">#</a></h3>
-<details><summary>Click to expand</summary>
-<p>
+<section id="the-barrier">
+<h2>The barrier<a class="headerlink" href="#the-barrier" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">LogManager.write(sync=True)</span></code> syncs the written main, branch and view
+transcripts, the model-selection trace, and existing recovery event logs. On
+POSIX it then syncs their directories, including newly created ancestors up to
+the parent that already existed when the manager was created; that parent is
+assumed to have an established durable namespace.</p>
+<p>Callers:</p>
 <ul class="simple">
-<li><p>fix: added ‘head’ to allowlisted commands in shell tool (<a class="reference external" href="https://github.com/gptme/gptme/commit/7cc752f6"><code class="docutils literal notranslate"><span class="pre">7cc752f6</span></code></a>)</p></li>
-<li><p>fix: compile cmd_regex (<a class="reference external" href="https://github.com/gptme/gptme/issues/222">#222</a>) (<a class="reference external" href="https://github.com/gptme/gptme/commit/623a52d1"><code class="docutils literal notranslate"><span class="pre">623a52d1</span></code></a>)</p></li>
-<li><p>fix: print used model on startup (<a class="reference external" href="https://github.com/gptme/gptme/commit/6cf4001d"><code class="docutils literal notranslate"><span class="pre">6cf4001d</span></code></a>)</p></li>
-<li><p>fix: better error if attempting to run on Windows, refactor readline stuff (<a class="reference external" href="https://github.com/gptme/gptme/issues/221">#221</a>) (<a class="reference external" href="https://github.com/gptme/gptme/commit/bd8b746b"><code class="docutils literal notranslate"><span class="pre">bd8b746b</span></code></a>)</p></li>
-<li><p>fix: update to use latest Sonnet model by default, improve typing (<a class="reference external" href="https://github.com/gptme/gptme/commit/6e701686"><code class="docutils literal notranslate"><span class="pre">6e701686</span></code></a>)</p></li>
-<li><p>fix: dont catch interrupts until conversation has begun (<a class="reference external" href="https://github.com/gptme/gptme/commit/2be45a88"><code class="docutils literal notranslate"><span class="pre">2be45a88</span></code></a>)</p></li>
-<li><p>fix: added ncgptme and gptme-nc script entrypoints for ncurses tui (<a class="reference external" href="https://github.com/gptme/gptme/commit/7b19b760"><code class="docutils literal notranslate"><span class="pre">7b19b760</span></code></a>)</p></li>
-<li><p>fix: fixed typing in ncurses.py (<a class="reference external" href="https://github.com/gptme/gptme/commit/f018c6c1"><code class="docutils literal notranslate"><span class="pre">f018c6c1</span></code></a>)</p></li>
-<li><p>fix: improved shell tool preview format (<a class="reference external" href="https://github.com/gptme/gptme/commit/756e4207"><code class="docutils literal notranslate"><span class="pre">756e4207</span></code></a>)</p></li>
-<li><p>fix: change OPENAI_API_BASE to OPENAI_BASE_URL (<a class="reference external" href="https://github.com/gptme/gptme/commit/30e3f01e"><code class="docutils literal notranslate"><span class="pre">30e3f01e</span></code></a>)</p></li>
-<li><p>fix: ensure subagent logdir unique (<a class="reference external" href="https://github.com/gptme/gptme/commit/f735111e"><code class="docutils literal notranslate"><span class="pre">f735111e</span></code></a>)</p></li>
-<li><p>fix: changed subagent tool param order and example (<a class="reference external" href="https://github.com/gptme/gptme/commit/2bdb48fa"><code class="docutils literal notranslate"><span class="pre">2bdb48fa</span></code></a>)</p></li>
-<li><p>fix: fixed display bug in confirm prompt (<a class="reference external" href="https://github.com/gptme/gptme/commit/b9f8cd89"><code class="docutils literal notranslate"><span class="pre">b9f8cd89</span></code></a>)</p></li>
-<li><p>fix: fixed bug where user prompt not included in request (<a class="reference external" href="https://github.com/gptme/gptme/commit/53d160eb"><code class="docutils literal notranslate"><span class="pre">53d160eb</span></code></a>)</p></li>
-<li><p>fix: fixed prompt_user returning empty string when interrupted (<a class="reference external" href="https://github.com/gptme/gptme/commit/440aedb0"><code class="docutils literal notranslate"><span class="pre">440aedb0</span></code></a>)</p></li>
-<li><p>fix: fixed leftover call to ask_execute instead of confirm func (<a class="reference external" href="https://github.com/gptme/gptme/commit/b7d2a3fe"><code class="docutils literal notranslate"><span class="pre">b7d2a3fe</span></code></a>)</p></li>
-<li><p>fix: fixed incorrectly asking for confirmation when impersonating (<a class="reference external" href="https://github.com/gptme/gptme/commit/94983436"><code class="docutils literal notranslate"><span class="pre">94983436</span></code></a>)</p></li>
-<li><p>fix: more fixes/improvements to treeofthoughts.py (<a class="reference external" href="https://github.com/gptme/gptme/commit/d54df51d"><code class="docutils literal notranslate"><span class="pre">d54df51d</span></code></a>)</p></li>
-<li><p>fix: re-raise tool use errors in tests (<a class="reference external" href="https://github.com/gptme/gptme/commit/0ada191e"><code class="docutils literal notranslate"><span class="pre">0ada191e</span></code></a>)</p></li>
+<li><p><strong>CLI</strong> — before returning from a turn and before a successful session exit,
+in both cases after end-of-turn and session-end hooks have contributed their
+messages. Restart uses the same barrier.</p></li>
+<li><p><strong>Server</strong> — after the turn hooks and before <code class="docutils literal notranslate"><span class="pre">generation_complete</span></code>, so the
+completion event is never emitted for a turn that failed to persist.</p></li>
+<li><p><strong>Rewrites</strong> — transcript rewrites and event-log checkpoint compaction sync a
+temporary file, replace atomically, then sync the containing directory. A
+symlinked transcript is replaced through the link, not in place of it.</p></li>
 </ul>
-</p>
-</details>
+<p>Ordinary appends stay buffered by the operating system until a barrier. No
+maximum loss interval is promised for an unfinished turn.</p>
 </section>
-<section id="misc-14">
-<h3>🔨 Misc (14)<a class="headerlink" href="#misc-14" title="Link to this heading">#</a></h3>
-<details><summary>Click to expand</summary>
-<p>
+<section id="why-completion-waits">
+<h2>Why completion waits<a class="headerlink" href="#why-completion-waits" title="Link to this heading">#</a></h2>
+<p>Emitting <code class="docutils literal notranslate"><span class="pre">generation_complete</span></code> before the barrier and adding a second
+acknowledgement event afterwards was tried and reverted. It costs more than it
+saves, because <code class="docutils literal notranslate"><span class="pre">generation_complete</span></code> is not what gates the client anyway.</p>
+<p>What gates the client is <code class="docutils literal notranslate"><span class="pre">session.generating</span></code>, released in <code class="docutils literal notranslate"><span class="pre">step()</span></code>’s finalizer,
+and no event announces that release. The WebUI infers it from
+<code class="docutils literal notranslate"><span class="pre">generation_complete</span></code> and flushes a queued user message on the inferred idle,
+dequeueing whether or not the send was accepted; a send that arrives before the
+finalizer is rejected with 409 and the message is lost. Emitting completion
+early therefore does not buy interactivity, only an earlier chime, and it widens
+that window. A barrier failure instead produces an <code class="docutils literal notranslate"><span class="pre">error</span></code> event and a visible
+system message in the transcript, and no completion event at all.</p>
+<p>The window is not fully closed by this ordering — auto-naming still runs inside
+it — and closing it needs an explicit release signal rather than a client-side
+inference. Tracked separately.</p>
+</section>
+<section id="what-this-does-not-cover">
+<h2>What this does not cover<a class="headerlink" href="#what-this-does-not-cover" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>chore: bump version to 0.21.0 (<a class="reference external" href="https://github.com/gptme/gptme/commit/852e6f40"><code class="docutils literal notranslate"><span class="pre">852e6f40</span></code></a>)</p></li>
-<li><p>docs: added more WIP features to README (<a class="reference external" href="https://github.com/gptme/gptme/commit/2d8b6020"><code class="docutils literal notranslate"><span class="pre">2d8b6020</span></code></a>)</p></li>
-<li><p>docs: added note about Windows support (<a class="reference external" href="https://github.com/gptme/gptme/commit/b8ce0406"><code class="docutils literal notranslate"><span class="pre">b8ce0406</span></code></a>)</p></li>
-<li><p>docs: added docstring to ncurses.py (<a class="reference external" href="https://github.com/gptme/gptme/commit/5bb00249"><code class="docutils literal notranslate"><span class="pre">5bb00249</span></code></a>)</p></li>
-<li><p>docs: add note about limitations of small local models, convert page to rst (<a class="reference external" href="https://github.com/gptme/gptme/commit/f521c71b"><code class="docutils literal notranslate"><span class="pre">f521c71b</span></code></a>)</p></li>
-<li><p>format: fixed lints (<a class="reference external" href="https://github.com/gptme/gptme/commit/ff2277ca"><code class="docutils literal notranslate"><span class="pre">ff2277ca</span></code></a>)</p></li>
-<li><p>refactor: refactor ncurses.py and add –no-color cli argument (<a class="reference external" href="https://github.com/gptme/gptme/commit/942996c9"><code class="docutils literal notranslate"><span class="pre">942996c9</span></code></a>)</p></li>
-<li><p>docs: added basic docs for configuration files (fixes <a class="reference external" href="https://github.com/gptme/gptme/issues/173">#173</a>) (<a class="reference external" href="https://github.com/gptme/gptme/commit/acd0ceee"><code class="docutils literal notranslate"><span class="pre">acd0ceee</span></code></a>)</p></li>
-<li><p>docs(README): removed old ToC link (<a class="reference external" href="https://github.com/gptme/gptme/commit/5801bbff"><code class="docutils literal notranslate"><span class="pre">5801bbff</span></code></a>)</p></li>
-<li><p>docs: fixed docs building after refactor (<a class="reference external" href="https://github.com/gptme/gptme/commit/52eaed9f"><code class="docutils literal notranslate"><span class="pre">52eaed9f</span></code></a>)</p></li>
-<li><p>refactor: refactor how confirmation works, enabling LLM-guided confirmation and simplifying confirmation support in server (<a class="reference external" href="https://github.com/gptme/gptme/commit/b843e889"><code class="docutils literal notranslate"><span class="pre">b843e889</span></code></a>)</p></li>
-<li><p>refactor: work on programmatic interface, refactored LogManager into mutable manager and immutable Log dataclass, added wip treeofthought script (<a class="reference external" href="https://github.com/gptme/gptme/commit/d421cc8c"><code class="docutils literal notranslate"><span class="pre">d421cc8c</span></code></a>)</p></li>
-<li><p>format: fixed formatting after pre-commit setup (<a class="reference external" href="https://github.com/gptme/gptme/commit/4ee9761a"><code class="docutils literal notranslate"><span class="pre">4ee9761a</span></code></a>)</p></li>
-<li><p>docs: fixed incorrect OPENAI_API_BASE url (<a class="reference external" href="https://github.com/gptme/gptme/commit/732c5b85"><code class="docutils literal notranslate"><span class="pre">732c5b85</span></code></a>)</p></li>
+<li><p><strong>Power loss.</strong> Tests exercise syscall ordering, I/O failures and isolated
+process termination. They do not certify physical power-loss behavior, which
+depends on the filesystem and the drive honoring the barrier.</p></li>
+<li><p><strong>Filesystems without a directory barrier.</strong> Some network, overlay and FUSE
+mounts reject <code class="docutils literal notranslate"><span class="pre">fsync</span></code> on a directory. gptme warns once per directory and
+continues: a weaker namespace guarantee is not a reason to fail a turn whose
+contents were written and synced. Genuine I/O errors still propagate.</p></li>
+<li><p><strong>Windows.</strong> Python exposes no portable directory barrier. File <code class="docutils literal notranslate"><span class="pre">fsync</span></code> still
+applies; namespace durability does not.</p></li>
+<li><p><strong>Atomicity across files.</strong> Each file is replaced atomically. A barrier is not
+a transaction spanning all of a session’s artifacts.</p></li>
+<li><p><strong>Other artifacts.</strong> Attachment snapshots, external ACP runtime databases, and
+auxiliary session/skill ledgers have their own persistence contracts.</p></li>
 </ul>
-</p>
-</details>
-<p><em>(excluded 4 less relevant <a class="reference external" href="https://github.com/gptme/gptme/compare/v0.20.0...v0.21.0">commits</a>)</em></p>
-<p><strong>Full Changelog</strong>: https://github.com/gptme/gptme/compare/v0.20.0…v0.21.0</p>
-</section>
 </section>
 </section>
 
@@ -689,20 +686,20 @@ document.write(`
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="v0.22.0.html"
+       href="ptc-tool-interface.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">v0.22.0</p>
+        <p class="prev-next-title">Design: Programmatic Tool Calling (PTC) Interface</p>
       </div>
     </a>
     <a class="right-next"
-       href="v0.20.0.html"
+       href="../alternatives.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">v0.20.0</p>
+        <p class="prev-next-title">Alternatives</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -722,14 +719,10 @@ document.write(`
   </div>
   <nav class="bd-toc-nav page-toc">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contributors">Contributors</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changelog">Changelog</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#gptme">📦 gptme</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#features-4">✨ Features (4)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fixes-19">🐛 Fixes (19)</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#misc-14">🔨 Misc (14)</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-problem">The problem</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-barrier">The barrier</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-completion-waits">Why completion waits</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-does-not-cover">What this does not cover</a></li>
 </ul>
   </nav></div>
 
