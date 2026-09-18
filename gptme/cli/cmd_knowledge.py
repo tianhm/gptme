@@ -12,7 +12,8 @@ Supported entry types:
   note                            Title / Content
 
 When ``gptme-rag`` is available the knowledge directory is also re-indexed
-after each ``save`` so semantic search stays current.
+after each ``save`` so semantic search stays current.  Search prefers
+gptme-rag's semantic ranking when available and falls back to keyword scoring.
 """
 
 from __future__ import annotations
@@ -22,12 +23,13 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from ..knowledge import KnowledgeEntry
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -195,6 +197,66 @@ def _export_for_rag(kb_dir: Path) -> None:
             fpath.write_text(content, encoding="utf-8")
 
 
+def _rag_search(
+    query: str,
+    top_k: int,
+    rag_dir: Path,
+) -> list[str] | None:
+    """Search via gptme-rag and return ordered entry IDs, or None on unavailability/failure.
+
+    Returns None (not an empty list) when gptme-rag is absent, rag_dir has no
+    indexed files, or the subprocess fails.  An empty list means gptme-rag ran
+    successfully but found no matches.
+    """
+    if not shutil.which("gptme-rag"):
+        return None
+    if not rag_dir.is_dir() or not any(rag_dir.glob("*.md")):
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "gptme-rag",
+                "search",
+                # Options must precede the ``--`` terminator; anything after it
+                # is treated as a positional argument (query/paths), so a
+                # trailing --json would be silently ignored.
+                "--json",
+                "--n-results",
+                str(top_k),
+                "--",
+                query,
+                str(rag_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+        results = data.get("results", [])
+        if not isinstance(results, list):
+            return None
+        ids: list[str] = []
+        for r in results:
+            if not isinstance(r, dict):
+                return None
+            source = r.get("source", "")
+            if not isinstance(source, str) or not source:
+                continue
+            stem = Path(source).stem
+            if stem:
+                ids.append(stem)
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        # Malformed/aliens-shaped output falls back to keyword search.
+        return None
+    return ids
+
+
 @knowledge.command("search")
 @click.argument("query")
 @click.option(
@@ -209,17 +271,70 @@ def _export_for_rag(kb_dir: Path) -> None:
 def knowledge_search_cmd(query: str, top_k: int, tags: tuple[str, ...], as_json: bool):
     """Search the knowledge base for QUERY.
 
+    Uses gptme-rag semantic search when available; falls back to keyword search.
+
     Example:
 
     \b
         gptme-util knowledge search "pytest test discovery"
     """
-    from ..knowledge import knowledge_search  # fmt: skip
+    from ..knowledge import (  # fmt: skip
+        _knowledge_dir,
+        knowledge_list,
+        knowledge_search,
+    )
 
     try:
-        results = knowledge_search(
-            query, top_k=top_k, tags=list(tags) if tags else None
-        )
+        kb_dir = _knowledge_dir()
+        rag_dir = kb_dir / "rag"
+        # Over-fetch when tag filtering is applied post-hoc, so filtered-out
+        # entries can be backfilled from deeper in the rag ranking.
+        rag_fetch_k = top_k * 5 if tags else top_k
+        rag_ids = _rag_search(query, rag_fetch_k, rag_dir)
+
+        if rag_ids is not None:
+            # Build an ID-indexed map from the FULL JSONL store: RAG may rank
+            # any entry, not just the newest `knowledge_list()` default page.
+            all_entries = knowledge_list(limit=sys.maxsize)
+            entry_map = {e["id"]: e for e in all_entries}
+            # Preserve rag ranking order; apply tag filter post-hoc, then
+            # truncate to top_k. The rag CLI has no metadata filter, so the
+            # tag filter can only run on the entries rag returned.
+            tag_set = {t.strip().lower() for t in tags if t.strip()} if tags else set()
+
+            def _filter(ids: list[str]) -> list[KnowledgeEntry]:
+                out = []
+                for eid in ids:
+                    entry = entry_map.get(eid)
+                    if entry is None:
+                        continue
+                    if tag_set and not tag_set.issubset(
+                        {t.lower() for t in entry.get("tags", [])}
+                    ):
+                        continue
+                    out.append(entry)
+                    if len(out) >= top_k:
+                        break
+                return out
+
+            results = _filter(rag_ids)
+
+            # Fixed over-fetch cannot *guarantee* top_k: eligible tagged
+            # entries ranked below the page are never seen. When the first
+            # page was truncated (rag filled the request) and the filter still
+            # cannot fill top_k, re-query the whole index, whose size bounds
+            # how many entries exist to rank. If rag returns fewer than asked,
+            # the index is exhausted and a wider query cannot help.
+            if tag_set and len(results) < top_k and len(rag_ids) >= rag_fetch_k:
+                total_indexed = sum(1 for _ in rag_dir.glob("*.md"))
+                if total_indexed > rag_fetch_k:
+                    wider = _rag_search(query, total_indexed, rag_dir)
+                    if wider is not None:
+                        results = _filter(wider)
+        else:
+            results = knowledge_search(
+                query, top_k=top_k, tags=list(tags) if tags else None
+            )
     except (ValueError, OSError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
