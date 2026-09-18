@@ -13,14 +13,18 @@ import {
   getEmbeddedParentOrigin,
   isEmbeddedContextEventAllowed,
   parseEmbeddedContextMessage,
+  parseSeedPromptMessage,
   type EmbeddedMenuItem,
 } from '@/lib/embeddedContext';
+import { isEmbeddedMode } from '@/utils/viteEnv';
 
 interface EmbeddedContextValue {
   isEmbedded: boolean;
   menuItems: EmbeddedMenuItem[];
   parentOrigin: string | null;
   sendAction: (action: string, itemId?: string) => void;
+  /** Returns the pending seed prompt and clears it (one-shot). */
+  consumeSeedPrompt: () => string | null;
 }
 
 const EmbeddedContext = createContext<EmbeddedContextValue>({
@@ -28,14 +32,17 @@ const EmbeddedContext = createContext<EmbeddedContextValue>({
   menuItems: [],
   parentOrigin: null,
   sendAction: () => {},
+  consumeSeedPrompt: () => null,
 });
 
 export const EmbeddedContextProvider: FC<PropsWithChildren> = ({ children }) => {
-  const isEmbedded = import.meta.env.VITE_EMBEDDED_MODE === 'true';
+  const isEmbedded = isEmbeddedMode;
   const [menuItems, setMenuItems] = useState<EmbeddedMenuItem[]>([]);
   const [parentOrigin, setParentOrigin] = useState<string | null>(null);
   // Ref so the message handler closure always reads the latest confirmed origin
   const parentOriginRef = useRef<string | null>(null);
+  // State so consumers re-render when the seed arrives (ref alone would miss late arrivals)
+  const [seedPrompt, setSeedPrompt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isEmbedded || typeof window === 'undefined') {
@@ -53,8 +60,26 @@ export const EmbeddedContextProvider: FC<PropsWithChildren> = ({ children }) => 
         return;
       }
 
-      const parsedItems = parseEmbeddedContextMessage(event.data);
-      if (!parsedItems) {
+      const seed = parseSeedPromptMessage(event.data);
+      if (seed !== null) {
+        // Seed prompts are injected directly into the chat input, so require a
+        // confirmed same-origin or confirmed parent origin — never fall back to
+        // allowing an unknown parent origin (that would let any page that can
+        // reach this window inject an arbitrary prompt before the real host does).
+        if (
+          !isEmbeddedContextEventAllowed(
+            event.origin,
+            parentOriginRef.current,
+            window.location.origin
+          )
+        ) {
+          return;
+        }
+        if (!parentOriginRef.current) {
+          parentOriginRef.current = event.origin;
+          setParentOrigin(event.origin);
+        }
+        setSeedPrompt(seed);
         return;
       }
 
@@ -74,6 +99,11 @@ export const EmbeddedContextProvider: FC<PropsWithChildren> = ({ children }) => 
         setParentOrigin(event.origin);
       }
 
+      const parsedItems = parseEmbeddedContextMessage(event.data);
+      if (!parsedItems) {
+        return;
+      }
+
       setMenuItems(parsedItems);
     };
 
@@ -90,6 +120,12 @@ export const EmbeddedContextProvider: FC<PropsWithChildren> = ({ children }) => 
       window.removeEventListener('message', handleMessage);
     };
   }, [isEmbedded]);
+
+  const consumeSeedPrompt = useCallback((): string | null => {
+    const prompt = seedPrompt;
+    setSeedPrompt(null);
+    return prompt;
+  }, [seedPrompt]);
 
   const sendAction = useCallback(
     (action: string, itemId?: string) => {
@@ -123,8 +159,9 @@ export const EmbeddedContextProvider: FC<PropsWithChildren> = ({ children }) => 
       menuItems,
       parentOrigin,
       sendAction,
+      consumeSeedPrompt,
     }),
-    [isEmbedded, menuItems, parentOrigin, sendAction]
+    [isEmbedded, menuItems, parentOrigin, sendAction, consumeSeedPrompt]
   );
 
   return <EmbeddedContext.Provider value={value}>{children}</EmbeddedContext.Provider>;
