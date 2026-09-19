@@ -20,27 +20,22 @@ from .patch import DIVIDER, ORIGINAL, UPDATED, Patch, apply
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, Sequence
 
+# Keep this under 1024 chars: it is the OpenAI tool description
+# (tests/test_tools.py::test_tool_descriptions_within_openai_limit).
 instructions = """
 Apply patches to multiple files atomically.
 Patches are validated in-memory: if ANY fails, NO files are written.
 
-Two formats:
-
-**Simple** (one hunk per file) — paths in the fence header:
-  ```patch_many path1.py path2.py
+Simple (one hunk per file), paths in the fence header:
+  ```patch_many path1.py
   <<<<<<< ORIGINAL
-  old content for path1
+  old content
   =======
-  new content for path1
-  >>>>>>> UPDATED
-  <<<<<<< ORIGINAL
-  old content for path2
-  =======
-  new content for path2
+  new content
   >>>>>>> UPDATED
   ```
 
-**Multi-hunk** (any number of hunks per file) — paths embedded with === PATH: ... === headers:
+Multi-hunk (any number of hunks per file), using `=== PATH: ... ===` headers:
   ```patch_many
   === PATH: path1.py ===
   <<<<<<< ORIGINAL
@@ -53,16 +48,15 @@ Two formats:
   =======
   second hunk updated
   >>>>>>> UPDATED
-  === PATH: path2.py ===
-  <<<<<<< ORIGINAL
-  path2 original
-  =======
-  path2 updated
-  >>>>>>> UPDATED
   ```
 
-Tool-call: pass `patches` as a JSON array of {"path": "...", "patch": "..."} entries.
-Each "patch" string may contain multiple ORIGINAL/UPDATED blocks for that file.
+Tool-call: `patches` is a JSON array of {"path": "...", "patch": "..."} entries.
+Each patch string may hold multiple ORIGINAL/UPDATED blocks, so one entry lands
+several hunks.
+
+Repeated paths apply in order, each hunk seeing the previous result. Prefer one
+entry per path with multiple blocks; repeat a path only when a later hunk depends
+on an earlier one landing.
 """.strip()
 
 
@@ -203,31 +197,46 @@ def execute_patch_many_impl(
         yield Message("system", "Atomic patch aborted: no patches were provided.")
         return
 
-    resolved: list[tuple[Path, str]] = []
+    # Repeated paths accumulate: each entry patches the working content built by
+    # earlier entries for that path, not the pristine on-disk text. Without this,
+    # a second entry for one path would be applied to the original text and its
+    # write would clobber the first (silent partial application).
+    current: dict[Path, str] = {}
     originals: dict[Path, str] = {}
+    order: list[Path] = []
+    hunks = 0
 
     for path, patch_src in patches:
-        if not path.exists():
-            yield Message(
-                "system",
-                f"Atomic patch aborted: file not found `{path}`. No files were written.",
-            )
-            return
+        if path not in current:
+            if not path.exists():
+                yield Message(
+                    "system",
+                    f"Atomic patch aborted: file not found `{path}`. No files were written.",
+                )
+                return
+
+            try:
+                original = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, PermissionError, OSError) as e:
+                yield Message(
+                    "system",
+                    f"Atomic patch aborted: could not read `{path}`: {e}. No files were written.",
+                )
+                return
+
+            originals[path] = original
+            current[path] = original
+            order.append(path)
 
         try:
-            original = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, PermissionError, OSError) as e:
-            yield Message(
-                "system",
-                f"Atomic patch aborted: could not read `{path}`: {e}. No files were written.",
-            )
-            return
-
-        try:
+            # Count hunks: a Patch is one hunk; a codeblock string may hold
+            # multiple ORIGINAL/UPDATED blocks, each applying as its own hunk.
             if isinstance(patch_src, Patch):
-                new_content = patch_src.apply(original)
+                hunks += 1
+                new_content = patch_src.apply(current[path])
             else:
-                new_content = apply(patch_src, original)
+                hunks += patch_src.count(ORIGINAL)
+                new_content = apply(patch_src, current[path])
         except ValueError as e:
             yield Message(
                 "system",
@@ -236,13 +245,12 @@ def execute_patch_many_impl(
             )
             return
 
-        resolved.append((path, new_content))
-        originals[path] = original
+        current[path] = new_content
 
     written: list[Path] = []
-    for path, new_content in resolved:
+    for path in order:
         try:
-            path.write_text(new_content, encoding="utf-8")
+            path.write_text(current[path], encoding="utf-8")
         except OSError as e:
             # Roll back any already-written files to preserve atomicity
             for rolled_back in written:
@@ -260,7 +268,7 @@ def execute_patch_many_impl(
 
     yield Message(
         "system",
-        f"Applied {len(written)} patch(es) atomically to:\n"
+        f"Applied {hunks} hunk(s) atomically to {len(written)} file(s):\n"
         + "\n".join(f"  - {p}" for p in written),
     )
 
