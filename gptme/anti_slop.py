@@ -154,6 +154,11 @@ DEFAULT_MODE = "balanced"
 # Scores are unreliable below this threshold; evaluate_gate() returns "skip".
 MIN_WORDS_FOR_GATE = 20
 
+# Categories that detect_smells() reports but that are NOT curated slop tells
+# from the pattern registry: they are cadence/punctuation artifacts. They are
+# excluded from the short-text evidence gate below.
+_ARTIFACT_CATEGORIES = frozenset({"em_dash", "staccato"})
+
 
 def _count_staccato_runs(text: str) -> int:
     sentences = _SENT_END.split(text)
@@ -281,21 +286,51 @@ def evaluate_gate(
     smell_report = detect_smells(text, em_dash_tolerance=_em_tol)
     thresholds = {"warn": _warn, "fail": _fail, "em_dash_tolerance": _em_tol}
 
-    if smell_report["word_count"] < MIN_WORDS_FOR_GATE:
-        return {
-            "status": "skip",
-            "reason": (
-                f"text too short to score reliably "
-                f"({smell_report['word_count']} words < {MIN_WORDS_FOR_GATE} minimum)"
-            ),
-            "mode": _mode,
-            "thresholds": thresholds,
-            "smell_report": smell_report,
-        }
-
     score = float(smell_report["weighted_score"])
 
-    if score >= _fail:
+    # The per-1k-word score extrapolation is unreliable on short samples:
+    # a single soft (weight-1) tell like "robust" in a 10-word text scores
+    # ~100 and would fail ordinary prose. Below the word-count minimum we
+    # therefore only fail when the additive evidence strength (sum of tell
+    # weights) is at least 3 AND the score already exceeds the fail
+    # threshold. Deliberate policy: the gate is weight-agnostic about how
+    # the evidence sums — one weight-3 tell, weight-2 + weight-1, or three
+    # distinct weight-1 tells all qualify. Short text dense enough to hit
+    # three curated slop tells is dense slop by this detector's definition;
+    # three distinct weight-1 hits corroborate the extrapolated score the
+    # same way a weight-2 + weight-1 pair does. The word-count minimum
+    # otherwise guards the pass/warn direction (don't claim "pass" on
+    # too-short text).
+    # `hits` is per-label (occurrences aggregated into h["count"]), so each
+    # label contributes once: evidence_weight is the sum over DISTINCT
+    # tells — repeating one soft tell ("robust robust robust") adds weight
+    # 1, not 3.
+    # Only curated pattern-registry tells count as corroborating evidence,
+    # so the cadence/punctuation artifacts are filtered out. Below
+    # MIN_WORDS_FOR_GATE the em-dash tolerance rounds to zero, so a lone
+    # em-dash in ordinary short prose would otherwise contribute weight 1
+    # and manufacture "evidence" the stated policy does not recognize.
+    evidence_weight = sum(
+        h["weight"]
+        for h in smell_report["hits"]
+        if h["category"] not in _ARTIFACT_CATEGORIES
+    )
+    if smell_report["word_count"] < MIN_WORDS_FOR_GATE:
+        if score >= _fail and evidence_weight >= 3:
+            status = "fail"
+            reason = f"weighted_score {score:g} >= fail_threshold {_fail:g}"
+        else:
+            return {
+                "status": "skip",
+                "reason": (
+                    f"text too short to score reliably "
+                    f"({smell_report['word_count']} words < {MIN_WORDS_FOR_GATE} minimum)"
+                ),
+                "mode": _mode,
+                "thresholds": thresholds,
+                "smell_report": smell_report,
+            }
+    elif score >= _fail:
         status = "fail"
         reason = f"weighted_score {score:g} >= fail_threshold {_fail:g}"
     elif score >= _warn:
