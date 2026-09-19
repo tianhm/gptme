@@ -439,17 +439,18 @@ def _run_task_blocking(task_id: str, session: ConversationSession) -> None:
             event_index += len(events)
             for event in events:
                 event_type = event.get("type") if isinstance(event, dict) else None
-                if event_type == "generation_complete":
-                    # generation_complete fires BEFORE session.generating = False
-                    # (the finally block runs after the event). Wait briefly for
-                    # generating to settle so _task_from_conversation sees the
-                    # correct state instead of TASK_STATE_WORKING.
-                    for _ in range(10):  # ~1s max
-                        if not session.generating:
-                            break
-                        session.event_flag.clear()
-                        session.event_flag.wait(timeout=0.1)
+                if event_type == "step_complete":
+                    # step_complete fires AFTER session.generating = False, so
+                    # _task_from_conversation sees the correct TASK_STATE_COMPLETED.
                     return
+                if event_type == "generation_complete":
+                    # Legacy signal: fires BEFORE session.generating = False, so
+                    # finalizer work (TURN_POST hooks, auto-naming) may still be
+                    # running. Don't return here — keep scanning this batch (and
+                    # polling below) for the authoritative step_complete, or for
+                    # session.generating to clear directly on servers that don't
+                    # emit step_complete at all.
+                    continue
                 if event_type == "error":
                     raise A2AError(
                         JSONRPC_INTERNAL_ERROR,

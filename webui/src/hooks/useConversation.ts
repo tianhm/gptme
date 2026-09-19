@@ -41,6 +41,10 @@ import { toastStepStartError } from '@/utils/stepErrorHandling';
 
 const MAX_CONNECTED_CONVERSATIONS = 3;
 
+// Delays between step() retries when the server still holds the generating
+// reservation (409) after the message is persisted.
+const STEP_409_BACKOFF_MS = [250, 500, 1000, 2000];
+
 export function useConversation(conversationId: string, serverId?: string) {
   const { getClient, isConnected$ } = useApi();
   // Use the client for the specific server, or primary if no serverId
@@ -53,11 +57,17 @@ export function useConversation(conversationId: string, serverId?: string) {
   const topP = use$(() => conversation$?.topP.get());
 
   const messageJustCompleted = useRef(false);
+  // Timer ID for the generation_complete 100ms fallback; cleared by step_complete
+  const generationCompleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last completed message content; used by onStepComplete for chime/TTS/notification
+  const lastCompletedMessageRef = useRef<Message | null>(null);
   // Stop during the new-chat handshake: onConnected / onMessageStart must not
   // restart generation after the user already cancelled the pending initial step.
   const stopRequestedRef = useRef(false);
   const generationEpochRef = useRef(0);
   const generationChainRef = useRef<Promise<void> | null>(null);
+  // Deferred step: set when post-persistence 409 retries exhaust; fired by onStepComplete.
+  const pendingStepRef = useRef<(() => Promise<void>) | null>(null);
   const loadingOlderMessagesRef = useRef(false);
   const isLoadingOlderMessages$ = useObservable(false);
   const isLoadingOlderMessages = use$(isLoadingOlderMessages$);
@@ -267,6 +277,7 @@ export function useConversation(conversationId: string, serverId?: string) {
             },
             onMessageComplete: (message) => {
               messageJustCompleted.current = true;
+              lastCompletedMessageRef.current = message;
 
               // Update the last message with final content and metadata
               const messages$ = conversation$?.data.log;
@@ -284,10 +295,17 @@ export function useConversation(conversationId: string, serverId?: string) {
                 }
               }
 
-              // Use setTimeout with 100ms delay to allow potential onToolPending to fire first
-              // Increased from 0ms to give API events more breathing room
-              setTimeout(() => {
+              // Fallback: clear generating state after 100ms to allow onToolPending to
+              // fire first. On updated servers this timer is cancelled and superseded by
+              // onStepComplete (which fires after generating=False on the server), closing
+              // the race window between generation_complete and generating=False entirely.
+              if (generationCompleteTimerRef.current !== null) {
+                clearTimeout(generationCompleteTimerRef.current);
+              }
+              generationCompleteTimerRef.current = setTimeout(() => {
+                generationCompleteTimerRef.current = null;
                 if (messageJustCompleted.current) {
+                  messageJustCompleted.current = false;
                   setGenerating(conversationId, false);
                   playChime().catch((error) => {
                     console.warn('Failed to play completion chime:', error);
@@ -298,6 +316,60 @@ export function useConversation(conversationId: string, serverId?: string) {
                   });
                 }
               }, 100);
+            },
+            onStepComplete: () => {
+              // step_complete fires after session.generating=False on the server,
+              // so it's safe to clear generating immediately — no need to guess.
+              // Cancel the 100ms fallback timer from onMessageComplete if still pending;
+              // we take over its responsibilities here (chime, TTS, notification).
+              if (generationCompleteTimerRef.current !== null) {
+                clearTimeout(generationCompleteTimerRef.current);
+                generationCompleteTimerRef.current = null;
+              }
+              if (messageJustCompleted.current) {
+                // No tool continuation — finalize the turn with chime/TTS/notification
+                messageJustCompleted.current = false;
+                const completedMessage = lastCompletedMessageRef.current;
+                lastCompletedMessageRef.current = null;
+                setGenerating(conversationId, false);
+                playChime().catch((error) => {
+                  console.warn('Failed to play completion chime:', error);
+                });
+                if (completedMessage) {
+                  speakText(completedMessage.content);
+                }
+                notifyGenerationComplete(conversation$?.data.name.get()).catch((error) => {
+                  console.warn('Failed to show completion notification:', error);
+                });
+              } else {
+                // step_complete without a preceding generation_complete, OR after
+                // onToolPending cleared messageJustCompleted (tool continuation that
+                // ends without another LLM round).  In all cases the server has
+                // already set generating=False before emitting step_complete, so
+                // clearing it here is safe.  For non-auto-confirm tools,
+                // onToolPending already cleared generating, making this a no-op.
+                setGenerating(conversationId, false);
+              }
+              // Fire any step that was deferred because the retry window exhausted
+              // while the server was still busy.  step_complete is the authoritative
+              // idle signal, so the deferred call is safe to make now.
+              const pendingStep = pendingStepRef.current;
+              if (pendingStep) {
+                pendingStepRef.current = null;
+                pendingStep().catch((error) => {
+                  if (ApiClientError.isApiError(error) && error.status === 409) {
+                    // Server still busy; re-park and wait for the next step_complete.
+                    pendingStepRef.current = pendingStep;
+                  } else {
+                    console.error('Deferred step failed:', error);
+                    const { title, description } = getApiErrorPresentation(error, {
+                      fallbackTitle: 'Step failed',
+                      fallbackDescription: 'Failed to resume generation after retry',
+                    });
+                    toast({ variant: 'destructive', title, description });
+                  }
+                });
+              }
             },
             onMessageAdded: (message) => {
               // Check if this message already exists (ignoring timestamp)
@@ -627,29 +699,71 @@ export function useConversation(conversationId: string, serverId?: string) {
       // Add message to conversation (optimistic)
       addMessage(conversationId, userMessage);
 
+      let messageSent = false;
       try {
         // Send the message
         await api.sendMessage(conversationId, userMessage);
+        messageSent = true;
         setMessageStatus(conversationId, userMessage.timestamp!, 'sent');
 
         if (generationIsStale(epoch)) return;
 
-        // Start generation
-        await api.step(
-          conversationId,
-          options?.model,
-          options?.stream,
-          'main',
-          options?.maxTokens,
-          options?.temperature,
-          options?.topP
-        );
+        // Start generation. The message is already persisted, so a 409 here
+        // (server still finalizing a previous step) must retry step() only —
+        // re-sending the message would duplicate it in the log.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await api.step(
+              conversationId,
+              options?.model,
+              options?.stream,
+              'main',
+              options?.maxTokens,
+              options?.temperature,
+              options?.topP
+            );
+            break;
+          } catch (stepError) {
+            const busy = ApiClientError.isApiError(stepError) && stepError.status === 409;
+            if (!busy) throw stepError;
+            if (attempt >= STEP_409_BACKOFF_MS.length) {
+              // Retry window exhausted; message is already persisted, so re-sending
+              // would duplicate it.  Instead, park the step call and fire it from
+              // onStepComplete — the authoritative server-idle signal — so the
+              // message is not falsely marked failed.
+              const capturedEpoch = epoch;
+              pendingStepRef.current = () => {
+                if (generationIsStale(capturedEpoch)) return Promise.resolve();
+                return api.step(
+                  conversationId,
+                  options?.model,
+                  options?.stream,
+                  'main',
+                  options?.maxTokens,
+                  options?.temperature,
+                  options?.topP
+                );
+              };
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, STEP_409_BACKOFF_MS[attempt]));
+            if (generationIsStale(epoch)) return;
+          }
+        }
         // Store generation params in conversation state so regenerate/rerun paths can use them
         setMaxTokens(conversationId, options?.maxTokens);
         setTemperature(conversationId, options?.temperature);
         setTopP(conversationId, options?.topP);
       } catch (error) {
         console.error('Error sending message:', error);
+        // 409 before the message was persisted: remove the optimistic copy and
+        // re-throw so the caller (e.g. ChatInput queue flush) can requeue it.
+        // Once persisted, a 409 falls through to the failed-status path below —
+        // a requeue would re-send and duplicate the message.
+        if (!messageSent && ApiClientError.isApiError(error) && error.status === 409) {
+          removeMessage(conversationId, userMessage.timestamp!);
+          throw error;
+        }
         const { title, description } = getApiErrorPresentation(error, {
           fallbackTitle: 'Failed to send',
           fallbackDescription: 'Failed to send message',

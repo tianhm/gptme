@@ -85,7 +85,7 @@ export interface ChatOptions {
 
 interface Props {
   conversationId?: string;
-  onSend?: (message: string, options?: ChatOptions) => void;
+  onSend?: (message: string, options?: ChatOptions) => void | Promise<void>;
   onInterrupt?: () => Promise<void>;
   isReadOnly?: boolean;
   defaultModel?: string;
@@ -910,6 +910,16 @@ export const ChatInput: FC<Props> = ({
   // tool execution/confirmation) completes.
   const wasBusy = useRef(false);
 
+  // After a 409 requeue the busy→idle transition may already have happened (the
+  // 100ms fallback timer can beat the server's release), so a transition-driven
+  // retry would never fire. Re-arm the flush effect on a timer instead.
+  const scheduleQueueRetry = () => {
+    setTimeout(() => {
+      wasBusy.current = true;
+      setMessageQueue((prev) => [...prev]);
+    }, 1000);
+  };
+
   // Send next queued message once the step is fully done (not just paused for a
   // tool confirmation, which would flush mid-step).
   useEffect(() => {
@@ -919,10 +929,26 @@ export const ChatInput: FC<Props> = ({
       console.log('[ChatInput] Step completed, sending queued message', {
         remaining: messageQueue.length - 1,
       });
-      // Use options captured at queue time, not current options
-      onSend(nextMessage.text, nextMessage.options);
-      // Remove the sent message from queue
+      // Remove the message from queue first, then send. On a 409 (server still
+      // generating), put it back at the front of the queue — the message is not
+      // lost and will be retried when isBusy next transitions to false.
       setMessageQueue((prev) => prev.slice(1));
+      const result = onSend(nextMessage.text, nextMessage.options);
+      if (result instanceof Promise) {
+        result.catch((error: unknown) => {
+          const status =
+            error && typeof error === 'object' && 'status' in error
+              ? (error as { status: number }).status
+              : undefined;
+          if (status === 409) {
+            console.warn('[ChatInput] Queued message got 409, requeuing', nextMessage.text);
+            setMessageQueue((prev) => [nextMessage, ...prev]);
+            scheduleQueueRetry();
+          } else {
+            console.error('[ChatInput] Failed to send queued message:', error);
+          }
+        });
+      }
     }
     wasBusy.current = isBusy;
   }, [isBusy, messageQueue, onSend]);
@@ -1029,7 +1055,8 @@ export const ChatInput: FC<Props> = ({
         }
       }
     } else if (message.trim() || attachedFiles.length > 0) {
-      onSend(message, {
+      const sentMessage = message;
+      const sentOptions = {
         model: hasExplicitModelSelection ? effectiveModel : undefined,
         stream: streamingEnabled,
         workspace: selectedWorkspace || undefined,
@@ -1038,7 +1065,26 @@ export const ChatInput: FC<Props> = ({
         maxTokens,
         temperature,
         topP,
-      });
+      };
+      const result = onSend(sentMessage, sentOptions);
+      if (result instanceof Promise) {
+        result.catch((error: unknown) => {
+          const status =
+            error && typeof error === 'object' && 'status' in error
+              ? (error as { status: number }).status
+              : undefined;
+          if (status === 409) {
+            // Server was still generating (concurrent client). The optimistic
+            // message was already removed by sendMessage; requeue it so it's
+            // retried on the next isBusy -> false transition instead of lost.
+            console.warn('[ChatInput] Direct send got 409, requeuing', sentMessage);
+            setMessageQueue((prev) => [{ text: sentMessage, options: sentOptions }, ...prev]);
+            scheduleQueueRetry();
+          } else {
+            console.error('[ChatInput] Failed to send message:', error);
+          }
+        });
+      }
       setMessage('');
       cleanupAndClearFiles();
       // Reset textarea height to default by removing inline style
