@@ -384,6 +384,14 @@ class LessonIndex:
                 logger.debug(f"Skipping lesson in excluded directory: {lesson_file}")
                 continue
 
+            # Skip files in hidden subdirectories below the scan root.
+            # E.g. ~/.claude/skills/.trash/<snap>/<skill>/SKILL.md should not win
+            # over the live copy. The scan root itself may be hidden (e.g.
+            # ~/.claude/skills) — only sub-components are checked.
+            if self._is_in_hidden_subdir(directory, lesson_file):
+                logger.debug(f"Skipping lesson in hidden subdirectory: {lesson_file}")
+                continue
+
             if not self._claim_lesson_slot(
                 lesson_file, directory, seen_paths, seen_rel_paths
             ):
@@ -470,6 +478,15 @@ class LessonIndex:
 
             skill_file = self._skill_path_from_manifest_entry(directory, entry_path)
 
+            # Apply the same hidden-subdirectory exclusion as the recursive
+            # scan: a manifest entry pointing into e.g. .trash/<snap>/<skill>
+            # must not stay discoverable while the live copy is filtered out.
+            if self._is_in_hidden_subdir(directory, skill_file):
+                logger.debug(
+                    f"Skipping manifest skill in hidden subdirectory: {skill_file}"
+                )
+                continue
+
             if not skill_file.is_file():
                 logger.warning(
                     f"Skill manifest {manifest_path} references missing file: {skill_file}"
@@ -519,6 +536,19 @@ class LessonIndex:
             )
 
         return stubs, manifest_paths
+
+    @staticmethod
+    def _is_in_hidden_subdir(directory: Path, path: Path) -> bool:
+        """True if ``path`` sits under a hidden subdirectory of ``directory``.
+
+        The scan root itself may be hidden (e.g. ~/.claude/skills) — only
+        sub-components below the root are checked.
+        """
+        try:
+            rel_parts = path.relative_to(directory).parts
+        except ValueError:
+            return False
+        return any(part.startswith(".") for part in rel_parts[:-1])
 
     @staticmethod
     def _manifest_metadata(
