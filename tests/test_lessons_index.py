@@ -180,6 +180,216 @@ Content about deployments.
         assert lesson.metadata.description == "live"
 
 
+class TestSkillDeduplication:
+    """Skills are identified by name, not by file path.
+
+    Every skill file is named ``SKILL.md`` and lives in a directory named after
+    the skill, so path-based dedup can never collapse two copies of the same
+    skill (e.g. a ``.trash/`` backup dir, a synced snapshot, or a versioned
+    skill pack). Without name-based identity the same skill is listed twice.
+    """
+
+    @staticmethod
+    def _write_skill(root: Path, subdir: str, name: str, marker: str) -> Path:
+        skill_dir = root / subdir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"""---
+name: {name}
+description: Automates {name} workflows {marker}
+keywords:
+  - {name} trigger
+---
+
+# {name} {marker}
+
+Content for {marker}.
+"""
+        )
+        return skill_dir
+
+    def test_same_skill_name_in_different_dirs_deduplicated(self, tmp_path: Path):
+        """Same skill name in two configured dirs: first dir wins."""
+        clear_cache()
+        dir1 = tmp_path / "one" / "skills"
+        dir2 = tmp_path / "two" / "skills"
+        self._write_skill(dir1, "snapshot-a", "deploy-helper", "first")
+        self._write_skill(dir2, "snapshot-b", "deploy-helper", "second")
+
+        index = LessonIndex([dir1, dir2])
+
+        assert len(index.lessons) == 1
+        assert index.lessons[0].metadata.name == "deploy-helper"
+        # First configured directory wins.
+        assert "snapshot-a" in index.lessons[0].path.as_posix()
+        assert "Content for first." in index.lessons[0].body
+
+    def test_same_skill_name_in_same_dir_deduplicated(self, tmp_path: Path):
+        """Two snapshots of one skill under the same root are deduplicated."""
+        clear_cache()
+        skills_dir = tmp_path / "skills"
+        self._write_skill(skills_dir, "snapshot-a", "deploy-helper", "first")
+        self._write_skill(skills_dir, "snapshot-b", "deploy-helper", "second")
+
+        index = LessonIndex([skills_dir])
+
+        assert len(index.lessons) == 1
+        assert index.lessons[0].metadata.name == "deploy-helper"
+
+    def test_distinct_skill_names_not_deduplicated(self, tmp_path: Path):
+        """Different skill names under the same root stay distinct."""
+        clear_cache()
+        skills_dir = tmp_path / "skills"
+        self._write_skill(skills_dir, "snapshot-a", "deploy-helper", "first")
+        self._write_skill(skills_dir, "snapshot-a", "release-helper", "second")
+
+        index = LessonIndex([skills_dir])
+
+        assert len(index.lessons) == 2
+        assert {lesson.metadata.name for lesson in index.lessons} == {
+            "deploy-helper",
+            "release-helper",
+        }
+
+    def test_lesson_files_with_same_stem_not_affected(self, tmp_path: Path):
+        """A non-skill lesson sharing a stem with a skill is still indexed."""
+        clear_cache()
+        skills_dir = tmp_path / "skills"
+        self._write_skill(skills_dir, "snapshot-a", "deploy-helper", "first")
+        snap_b = skills_dir / "snapshot-b" / "deploy-helper"
+        snap_b.mkdir(parents=True)
+        (snap_b / "notes.md").write_text(
+            """---
+match:
+  keywords: ["deployment notes"]
+status: active
+---
+
+# Deployment Notes
+
+Lesson, not a skill.
+"""
+        )
+
+        index = LessonIndex([skills_dir])
+
+        # The duplicate skill collapses, but the unrelated lesson survives.
+        assert len(index.lessons) == 2
+
+    def test_dedup_uses_declared_name_not_directory(self, tmp_path: Path):
+        """Declared metadata.name is the identity, not the parent directory.
+
+        Two skills with different declared names under same-named directories
+        (e.g. two ``shared/`` dirs) must both survive; two copies with the
+        same declared name under differently named dirs must collapse.
+        """
+        clear_cache()
+        skills_dir = tmp_path / "skills"
+        self._write_skill(skills_dir, "shared", "alpha", "first")
+        self._write_skill(skills_dir, "snapshot-x", "beta", "second")
+
+        index = LessonIndex([skills_dir])
+
+        assert len(index.lessons) == 2
+        assert {lesson.metadata.name for lesson in index.lessons} == {
+            "alpha",
+            "beta",
+        }
+
+        # Same declared name under different directory names collapses.
+        clear_cache()
+        skills_dir2 = tmp_path / "skills2"
+        self._write_skill(skills_dir2, "pack-one", "deploy-helper", "first")
+        self._write_skill(skills_dir2, "other-name", "deploy-helper", "second")
+
+        index2 = LessonIndex([skills_dir2])
+
+        assert len(index2.lessons) == 1
+        assert index2.lessons[0].metadata.name == "deploy-helper"
+
+    def test_malformed_skill_does_not_block_valid_copy(self, tmp_path: Path):
+        """A parse failure must not reserve the skill name.
+
+        If an earlier directory contains a malformed copy, the later valid
+        copy must still be indexed instead of being rejected as a duplicate.
+        """
+        clear_cache()
+        bad_dir = tmp_path / "bad" / "skills"
+        bad_skill = bad_dir / "deploy-helper"
+        bad_skill.mkdir(parents=True)
+        (bad_skill / "SKILL.md").write_text("---\nname: [unclosed\n")
+
+        good_dir = tmp_path / "good" / "skills"
+        self._write_skill(good_dir, "snapshot-a", "deploy-helper", "valid")
+
+        index = LessonIndex([bad_dir, good_dir])
+
+        assert len(index.lessons) == 1
+        assert index.lessons[0].metadata.name == "deploy-helper"
+        assert "good" in index.lessons[0].path.as_posix()
+        assert "Content for valid." in index.lessons[0].body
+
+    def test_unreadable_skill_file_does_not_abort_index(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A file that disappears between parse and the frontmatter re-read
+        must be skipped, not abort the whole index build."""
+        clear_cache()
+        skills_dir = tmp_path / "skills"
+        self._write_skill(skills_dir, "pack-a", "deploy-helper", "content")
+
+        real_read_text = Path.read_text
+
+        def exploding_read_text(self: Path, *args, **kwargs):
+            if self.name.upper() == "SKILL.MD":
+                raise OSError("file vanished")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", exploding_read_text)
+
+        index = LessonIndex([skills_dir])
+
+        assert len(index.lessons) == 0  # skipped, not crashed
+
+    def test_undecodable_skill_file_does_not_abort_index(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A nameless SKILL.md that becomes non-UTF-8 between parse and the
+        frontmatter re-read raises UnicodeDecodeError (not OSError) — it must
+        also be skipped instead of aborting the index build.
+
+        The first read (the parse) must succeed with a nameless skill so the
+        guarded re-read is actually reached; only the subsequent read raises.
+        """
+        clear_cache()
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "pack-a" / "deploy-helper"
+        skill_dir.mkdir(parents=True)
+        # No frontmatter: the parse yields a nameless lesson, so the guarded
+        # frontmatter re-read in _claim... actually runs.
+        (skill_dir / "SKILL.md").write_text("Just body content, no frontmatter.\n")
+
+        real_read_text = Path.read_text
+        reads = {"n": 0}
+
+        def exploding_read_text(self: Path, *args, **kwargs):
+            if self.name.upper() == "SKILL.MD":
+                reads["n"] += 1
+                if reads["n"] > 1:
+                    raise UnicodeDecodeError(
+                        "utf-8", b"\xff", 0, 1, "invalid start byte"
+                    )
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", exploding_read_text)
+
+        index = LessonIndex([skills_dir])
+
+        # The parse read succeeded; the guarded re-read raised and was caught.
+        assert reads["n"] >= 2
+        assert len(index.lessons) == 0  # skipped, not crashed
+
+
 class TestLessonDeduplication:
     """Tests for lesson deduplication feature.
 
