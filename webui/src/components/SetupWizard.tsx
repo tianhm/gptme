@@ -113,7 +113,11 @@ export function SetupWizard() {
   const [cloudLoginStarted, setCloudLoginStarted] = useState(false);
   const lastAutoAdvanceBaseUrlRef = useRef<string | null>(null);
   const isTauri = isTauriEnvironment();
-  const { isLoading: isLoadingTauriStatus, managesLocalServer } = useTauriServerStatus();
+  const {
+    isLoading: isLoadingTauriStatus,
+    managesLocalServer,
+    serverStatus,
+  } = useTauriServerStatus();
   const externalOpen = use$(setupWizard$.open);
   const externalStep = use$(setupWizard$.step);
   const isRemoteOnlyTauri = isTauri && managesLocalServer === false;
@@ -307,7 +311,7 @@ export function SetupWizard() {
       lastAutoAdvanceBaseUrlRef.current = null;
       return;
     }
-    if (!isOpen || step === 'complete' || step === 'provider') return;
+    if (!isOpen || step === 'welcome' || step === 'complete' || step === 'provider') return;
 
     if (lastAutoAdvanceBaseUrlRef.current === connectionConfig.baseUrl) return;
     lastAutoAdvanceBaseUrlRef.current = connectionConfig.baseUrl;
@@ -415,11 +419,21 @@ export function SetupWizard() {
     setIsConnecting(true);
     setConnectError(null);
     try {
+      const managedServerConfig =
+        managesLocalServer && serverStatus
+          ? {
+              baseUrl: `http://127.0.0.1:${serverStatus.port}`,
+              authToken: serverStatus.auth_token,
+              useAuthToken: Boolean(serverStatus.auth_token),
+            }
+          : null;
       const trimmedAuthToken = remoteAuthToken.trim();
-      await connect({
-        authToken: trimmedAuthToken || null,
-        useAuthToken: Boolean(trimmedAuthToken),
-      });
+      await connect(
+        managedServerConfig ?? {
+          authToken: trimmedAuthToken || null,
+          useAuthToken: Boolean(trimmedAuthToken),
+        }
+      );
       // The isConnected useEffect will fire and call checkProviderAndAdvance.
     } catch (err) {
       setConnectError(
@@ -594,7 +608,11 @@ export function SetupWizard() {
               <Button variant="ghost" onClick={closeWizard}>
                 Skip for now
               </Button>
-              <Button onClick={() => setStep('mode')} className="gap-2">
+              <Button
+                onClick={() => setStep('mode')}
+                className="gap-2"
+                data-testid="setup-wizard-get-started"
+              >
                 Get started
                 <ArrowRight className="h-4 w-4" />
               </Button>
@@ -613,6 +631,7 @@ export function SetupWizard() {
                 onClick={() => setStep('local')}
                 disabled={isDeterminingTauriMode}
                 className="flex items-start gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
+                data-testid="setup-wizard-local"
               >
                 <Monitor className="mt-0.5 h-6 w-6 shrink-0" />
                 <div>
@@ -865,7 +884,7 @@ export function SetupWizard() {
 
         {step === 'provider' && (
           <>
-            <DialogHeader>
+            <DialogHeader data-testid="setup-wizard-provider">
               <DialogTitle>Configure a provider</DialogTitle>
               <DialogDescription>
                 The server is running, but it does not have an LLM provider yet.

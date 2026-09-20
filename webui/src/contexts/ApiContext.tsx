@@ -11,14 +11,26 @@ import {
   setActiveServer,
   connectServer,
 } from '@/stores/servers';
-import { getClientForServer, getPrimaryClient } from '@/stores/serverClients';
+import {
+  getClientForServer,
+  getClientForServerConfig,
+  getPrimaryClient,
+} from '@/stores/serverClients';
 import type { ServerConfig } from '@/types/servers';
 import { useTauriServerStatus } from '@/hooks/useTauriServerStatus';
 import { isTauriEnvironment } from '@/utils/tauri';
 import { type Observable, observable } from '@legendapp/state';
 import { use$ } from '@legendapp/state/react';
 import type { QueryClient } from '@tanstack/react-query';
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { toast } from 'sonner';
 
 interface ApiContextType {
@@ -32,7 +44,7 @@ interface ApiContextType {
   isExchangingAuthCode: boolean;
   connectionConfig: ConnectionConfig;
   updateConfig: (config: Partial<ConnectionConfig>) => void;
-  connect: (config?: Partial<ConnectionConfig>) => Promise<void>;
+  connect: (config?: Partial<ConnectionConfig>, serverId?: string) => Promise<void>;
   switchServer: (serverId: string) => Promise<void>;
   stopAutoConnect: () => void;
 }
@@ -116,6 +128,7 @@ export function ApiProvider({
   queryClient: QueryClient;
 }) {
   const [isExchangingAuthCode, setIsExchangingAuthCode] = useState(needsAuthCodeExchange);
+  const activeServerRef = useRef<ServerConfig | undefined>(getActiveServer());
   const isTauri = isTauriEnvironment();
   const {
     isLoading: isLoadingTauriStatus,
@@ -134,23 +147,58 @@ export function ApiProvider({
 
   // Connect to API — tests connectivity of the active server
   const connect = useCallback(
-    async (config?: Partial<ConnectionConfig>) => {
+    async (config?: Partial<ConnectionConfig>, serverId?: string) => {
       stopAutoConnect();
 
-      if (config) {
-        // Update the active server in the registry (pool will pick up changes)
-        const activeServer = getActiveServer();
-        if (activeServer) {
-          updateServer(activeServer.id, {
-            ...(config.baseUrl !== undefined && { baseUrl: config.baseUrl }),
-            ...(config.authToken !== undefined && { authToken: config.authToken }),
-            ...(config.useAuthToken !== undefined && { useAuthToken: config.useAuthToken }),
-          });
-        }
-      }
+      // Use the render snapshot that backs this provider by default. Callers that
+      // mutate the active server and connect in the same tick pass its ID so we do
+      // not target the previous render's server.
+      const activeServer = serverId
+        ? serverRegistry$.get().servers.find((server) => server.id === serverId)
+        : activeServerRef.current;
+      let client: IApiClient;
+      if (activeServer) {
+        const updates: Partial<ServerConfig> = {
+          ...(config?.baseUrl !== undefined && { baseUrl: config.baseUrl }),
+          ...(config?.authToken !== undefined && { authToken: config.authToken }),
+          ...(config?.useAuthToken !== undefined && { useAuthToken: config.useAuthToken }),
+        };
 
-      // Get a fresh client from the pool (picks up any config changes)
-      const client = getPrimaryClient();
+        // A manual click can race the effect that copies the Tauri-managed
+        // sidecar's dynamic URL and token into the registry. Fold those values
+        // into this atomic update so the fresh client below never probes the
+        // sidecar unauthenticated or on the default port.
+        if (
+          managesLocalServer &&
+          tauriServerStatus &&
+          isDefaultLoopbackTarget(activeServer.baseUrl)
+        ) {
+          if (config?.baseUrl === undefined) {
+            updates.baseUrl = `http://127.0.0.1:${tauriServerStatus.port}`;
+          }
+          if (config?.authToken === undefined && tauriServerStatus.auth_token) {
+            updates.authToken = tauriServerStatus.auth_token;
+            updates.useAuthToken = true;
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updateServer(activeServer.id, updates);
+        }
+
+        // Legend State propagates the registry update to React asynchronously.
+        // Build/cache the client from the same effective config now, rather than
+        // re-reading a potentially stale registry snapshot and dropping the
+        // managed sidecar token on this first request.
+        client = getClientForServerConfig(activeServer.id, {
+          baseUrl: updates.baseUrl !== undefined ? updates.baseUrl : activeServer.baseUrl,
+          authToken: updates.authToken !== undefined ? updates.authToken : activeServer.authToken,
+          useAuthToken:
+            updates.useAuthToken !== undefined ? updates.useAuthToken : activeServer.useAuthToken,
+        });
+      } else {
+        client = getPrimaryClient();
+      }
 
       if (client.isConnected$.get()) {
         console.log('[ApiContext] Already connected, skipping connection');
@@ -222,7 +270,7 @@ export function ApiProvider({
         isConnecting$.set(false);
       }
     },
-    [queryClient]
+    [managesLocalServer, queryClient, tauriServerStatus]
   );
 
   // Atomic server switch: changes the primary server with rollback on failure
@@ -245,11 +293,14 @@ export function ApiProvider({
 
       try {
         // Connect tests the new primary (pool creates/returns client for this server)
-        await connect({
-          baseUrl: server.baseUrl,
-          authToken: server.authToken,
-          useAuthToken: server.useAuthToken,
-        });
+        await connect(
+          {
+            baseUrl: server.baseUrl,
+            authToken: server.authToken,
+            useAuthToken: server.useAuthToken,
+          },
+          serverId
+        );
       } catch (error) {
         // Rollback: restore previous active server
         setActiveServer(previousActiveId);
@@ -389,6 +440,7 @@ export function ApiProvider({
   // Derive connectionConfig from the active server (single source of truth)
   const registry = use$(serverRegistry$);
   const activeServer = registry.servers.find((s) => s.id === registry.activeServerId);
+  activeServerRef.current = activeServer;
   const connectionConfig: ConnectionConfig = activeServer
     ? {
         baseUrl: activeServer.baseUrl,

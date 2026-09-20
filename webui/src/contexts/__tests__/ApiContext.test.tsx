@@ -10,6 +10,7 @@ const mockSetConnected = jest.fn();
 const mockGetConnectionConfigFromSources = jest.fn();
 const mockProcessConnectionFromHash = jest.fn();
 const mockGetClientForServer = jest.fn();
+const mockGetClientForServerConfig = jest.fn();
 const mockGetPrimaryClient = jest.fn();
 const mockGetActiveServer = jest.fn();
 const mockUpdateServer = jest.fn();
@@ -60,6 +61,7 @@ jest.mock('@/stores/servers', () => ({
 
 jest.mock('@/stores/serverClients', () => ({
   getClientForServer: (...args: unknown[]) => mockGetClientForServer(...args),
+  getClientForServerConfig: (...args: unknown[]) => mockGetClientForServerConfig(...args),
   getPrimaryClient: () => mockGetPrimaryClient(),
 }));
 
@@ -104,6 +106,24 @@ function setActiveServerBaseUrl(baseUrl: string) {
   });
 }
 
+function applyMockServerUpdate(id: string, updates: Record<string, unknown>) {
+  const { serverRegistry$ } = jest.requireMock('@/stores/servers') as {
+    serverRegistry$: {
+      get: () => {
+        servers: Array<Record<string, unknown>>;
+      };
+      set: (value: unknown) => void;
+    };
+  };
+  const registry = serverRegistry$.get();
+  serverRegistry$.set({
+    ...registry,
+    servers: registry.servers.map((server) =>
+      server.id === id ? { ...server, ...updates } : server
+    ),
+  });
+}
+
 function getActiveServerBaseUrl() {
   const { serverRegistry$ } = jest.requireMock('@/stores/servers') as {
     serverRegistry$: { get: () => { servers: Array<{ baseUrl: string }> } };
@@ -135,6 +155,8 @@ describe('ApiProvider mobile auto-connect', () => {
     mockCheckConnection.mockResolvedValue(true);
     mockGetPrimaryClient.mockReturnValue(mockClient);
     mockGetClientForServer.mockReturnValue(mockClient);
+    mockGetClientForServerConfig.mockReturnValue(mockClient);
+    mockUpdateServer.mockImplementation(applyMockServerUpdate);
     mockGetActiveServer.mockImplementation(() => {
       const { serverRegistry$ } = jest.requireMock('@/stores/servers') as {
         serverRegistry$: { get: () => { servers: unknown[] } };
@@ -216,6 +238,183 @@ describe('ApiProvider mobile auto-connect', () => {
     // After the sync completes (registry updates), the next render should proceed
     // with auto-connect. This is tested in integration/e2e scenarios where the
     // full reactive chain (update → registry change → component re-render) works.
+  });
+
+  it('connects with the Tauri-managed URL and token even before the sync effect settles', async () => {
+    mockUseTauriServerStatus.mockReturnValue({
+      isLoading: true,
+      managesLocalServer: true,
+      serverStatus: {
+        running: true,
+        port: 5712,
+        port_available: false,
+        manages_local_server: true,
+        existing_server_detected: false,
+        auth_token: 'sidecar-token',
+      },
+    });
+
+    let connectFromProbe!: () => Promise<void>;
+    function ConnectProbe() {
+      connectFromProbe = useApi().connect;
+      return null;
+    }
+    const queryClient = new QueryClient();
+    render(
+      <ApiProvider queryClient={queryClient}>
+        <ConnectProbe />
+      </ApiProvider>
+    );
+
+    await connectFromProbe();
+
+    expect(mockUpdateServer).toHaveBeenCalledWith('server-1', {
+      baseUrl: 'http://127.0.0.1:5712',
+      authToken: 'sidecar-token',
+      useAuthToken: true,
+    });
+    expect(mockGetClientForServerConfig).toHaveBeenCalledWith('server-1', {
+      baseUrl: 'http://127.0.0.1:5712',
+      authToken: 'sidecar-token',
+      useAuthToken: true,
+    });
+    expect(mockCheckConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the latest rendered server snapshot when an imperative store read lags', async () => {
+    setActiveServerBaseUrl('http://127.0.0.1:5712');
+    mockGetActiveServer.mockReturnValue({
+      id: 'server-1',
+      name: 'Local',
+      baseUrl: 'http://127.0.0.1:5700',
+      authToken: null,
+      useAuthToken: false,
+      createdAt: 0,
+      lastUsedAt: 0,
+    });
+    mockUseTauriServerStatus.mockReturnValue({
+      isLoading: false,
+      managesLocalServer: true,
+      serverStatus: {
+        running: true,
+        port: 5712,
+        port_available: false,
+        manages_local_server: true,
+        existing_server_detected: false,
+        auth_token: 'sidecar-token',
+      },
+    });
+
+    let connectFromProbe!: (config: {
+      baseUrl: string;
+      authToken: string;
+      useAuthToken: true;
+    }) => Promise<void>;
+    function ConnectProbe() {
+      connectFromProbe = useApi().connect;
+      return null;
+    }
+    const queryClient = new QueryClient();
+    render(
+      <ApiProvider queryClient={queryClient}>
+        <ConnectProbe />
+      </ApiProvider>
+    );
+
+    await connectFromProbe({
+      baseUrl: 'http://127.0.0.1:5712',
+      authToken: 'sidecar-token',
+      useAuthToken: true,
+    });
+
+    expect(mockGetClientForServerConfig).toHaveBeenCalledWith('server-1', {
+      baseUrl: 'http://127.0.0.1:5712',
+      authToken: 'sidecar-token',
+      useAuthToken: true,
+    });
+  });
+
+  it('preserves an explicit request to clear authentication', async () => {
+    setActiveServerBaseUrl('https://bob.example.com');
+
+    let connectFromProbe!: (config: { authToken: null; useAuthToken: false }) => Promise<void>;
+    function ConnectProbe() {
+      connectFromProbe = useApi().connect;
+      return null;
+    }
+    const queryClient = new QueryClient();
+    render(
+      <ApiProvider queryClient={queryClient}>
+        <ConnectProbe />
+      </ApiProvider>
+    );
+
+    await connectFromProbe({ authToken: null, useAuthToken: false });
+
+    expect(mockGetClientForServerConfig).toHaveBeenCalledWith('server-1', {
+      baseUrl: 'https://bob.example.com',
+      authToken: null,
+      useAuthToken: false,
+    });
+  });
+
+  it('connects a newly selected server instead of the previous render snapshot', async () => {
+    const selectedServer = {
+      id: 'server-2',
+      name: 'Remote',
+      baseUrl: 'https://remote.example.com',
+      authToken: 'remote-token',
+      useAuthToken: true,
+      createdAt: 1,
+      lastUsedAt: 1,
+    };
+    const { serverRegistry$ } = jest.requireMock('@/stores/servers') as {
+      serverRegistry$: {
+        get: () => {
+          activeServerId: string;
+          connectedServerIds: string[];
+          servers: Array<Record<string, unknown>>;
+        };
+        set: (value: unknown) => void;
+      };
+    };
+    const registry = serverRegistry$.get();
+    serverRegistry$.set({
+      ...registry,
+      servers: [...registry.servers, selectedServer],
+    });
+    mockSetActiveServer.mockImplementation((serverId: string) => {
+      serverRegistry$.set({ ...serverRegistry$.get(), activeServerId: serverId });
+    });
+
+    let switchServerFromProbe!: (serverId: string) => Promise<void>;
+    function SwitchServerProbe() {
+      switchServerFromProbe = useApi().switchServer;
+      return null;
+    }
+    const queryClient = new QueryClient();
+    render(
+      <ApiProvider queryClient={queryClient}>
+        <SwitchServerProbe />
+      </ApiProvider>
+    );
+
+    await switchServerFromProbe(selectedServer.id);
+
+    expect(mockUpdateServer).toHaveBeenCalledWith(selectedServer.id, {
+      baseUrl: selectedServer.baseUrl,
+      authToken: selectedServer.authToken,
+      useAuthToken: selectedServer.useAuthToken,
+    });
+    expect(mockGetClientForServerConfig).toHaveBeenCalledWith(selectedServer.id, {
+      baseUrl: selectedServer.baseUrl,
+      authToken: selectedServer.authToken,
+      useAuthToken: selectedServer.useAuthToken,
+    });
+    expect(mockUpdateServer).not.toHaveBeenCalledWith(
+      'server-1',
+      expect.objectContaining({ baseUrl: selectedServer.baseUrl })
+    );
   });
 
   it('stops retrying after a 401 (token required, not transient)', async () => {
