@@ -32,7 +32,7 @@ from gptme.cli.doctor import (
     print_results,
     run_diagnostics,
 )
-from gptme.config import MCPConfig, MCPServerConfig
+from gptme.config import Config, MCPConfig, MCPServerConfig, ModelsConfig, UserConfig
 
 
 class TestCheckStatus:
@@ -61,6 +61,7 @@ class TestCheckResult:
         assert result.message == "All good"
         assert result.details is None
         assert result.fix_hint is None
+        assert result.provider is None
 
     def test_result_with_all_fields(self):
         """Test creating a check result with all fields."""
@@ -1185,6 +1186,24 @@ class TestCheckApiKeys:
 class TestCheckDefaultModel:
     """Test default-model/provider consistency checks."""
 
+    def test_uses_current_working_directory_project_config(self, tmp_path, monkeypatch):
+        (tmp_path / "gptme.toml").write_text(
+            '[env]\nMODEL = "anthropic/claude-sonnet-4-6"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        with patch("gptme.cli.doctor.list_available_providers", return_value=[]):
+            result = _check_default_model(verbose=True)[0]
+
+        assert result.status == CheckStatus.ERROR
+        assert "anthropic" in result.message
+        assert (
+            result.details
+            == "Configured via project gptme.toml: anthropic/claude-sonnet-4-6"
+        )
+
     @patch("gptme.cli.doctor.resolve_model_source", return_value=None)
     @patch("gptme.cli.doctor.list_available_providers", return_value=[])
     @patch("gptme.cli.doctor.get_config")
@@ -1227,6 +1246,71 @@ class TestCheckDefaultModel:
 
         assert result.status == CheckStatus.ERROR
         assert "anthropic" in result.message
+
+    @patch("gptme.cli.doctor.list_available_providers", return_value=[])
+    @patch("gptme.cli.doctor.get_config")
+    def test_unqualified_model_uses_runtime_provider_resolution(
+        self, mock_config, mock_providers, monkeypatch
+    ):
+        mock_config.return_value = Config(
+            user=UserConfig(models=ModelsConfig(default="gpt-4o"))
+        )
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        result = _check_default_model()[0]
+
+        assert result.status == CheckStatus.ERROR
+        assert "Provider 'openai' is not configured" in result.message
+
+    @patch("gptme.cli.doctor.list_available_providers", return_value=[])
+    @patch("gptme.cli.doctor.get_config")
+    def test_provider_alias_uses_runtime_provider_resolution(
+        self, mock_config, mock_providers, monkeypatch
+    ):
+        mock_config.return_value = Config(
+            user=UserConfig(models=ModelsConfig(default="gptme.ai/claude-sonnet-4-6"))
+        )
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        result = _check_default_model()[0]
+
+        assert result.status == CheckStatus.WARNING
+        assert "Could not verify provider authentication" in result.message
+        assert "Unknown provider" not in result.message
+
+    def test_project_provider_key_uses_effective_doctor_config(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "gptme.toml").write_text(
+            '[env]\nMODEL = "anthropic/claude-sonnet-4-6"\n'
+            'ANTHROPIC_API_KEY = "project-key"\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        result = _check_default_model()[0]
+
+        assert result.status == CheckStatus.OK
+        assert result.provider == "anthropic"
+
+    @patch(
+        "gptme.cli.doctor.resolve_model_source",
+        return_value=("local", "models.default"),
+    )
+    @patch("gptme.cli.doctor.list_available_providers", return_value=[])
+    @patch("gptme.cli.doctor.get_config")
+    def test_bare_provider_without_default_is_diagnostic_error(
+        self, mock_config, mock_providers, mock_resolve
+    ):
+        result = _check_default_model(verbose=True)[0]
+
+        assert result.status == CheckStatus.ERROR
+        assert "Invalid configured model 'local'" in result.message
+        assert result.fix_hint == "Run: gptme-doctor --fix"
 
     @patch(
         "gptme.cli.doctor.resolve_model_source",
@@ -1309,15 +1393,69 @@ class TestOAuthRepairValidation:
 class TestModelOverrideRepair:
     """Test higher-precedence model override detection."""
 
-    @patch(
-        "gptme.cli.doctor.resolve_model_source",
-        return_value=("openaix/model", "MODEL"),
-    )
-    @patch("gptme.cli.doctor.get_config")
-    def test_environment_model_override_blocks_user_default_write(
-        self, mock_config, mock_resolve
+    def test_user_env_model_can_be_replaced_by_main_default(
+        self, tmp_path, monkeypatch
     ):
-        assert _model_override_blocking_repair() == "MODEL"
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[env]\nMODEL = "openaix/model"\n')
+        monkeypatch.setattr("gptme.config.user.config_path", str(config_path))
+        monkeypatch.setattr("gptme.cli.doctor.config_path", str(config_path))
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        with patch(
+            "gptme.cli.doctor.get_config",
+            return_value=Config(
+                user=UserConfig(
+                    env={"MODEL": "openaix/model"},
+                )
+            ),
+        ):
+            assert _model_override_blocking_repair() is None
+
+    def test_local_default_blocks_main_config_repair(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "openai/gpt-4o"\n')
+        (tmp_path / "config.local.toml").write_text(
+            '[models]\ndefault = "anthropic/claude-sonnet-4-6"\n'
+        )
+        monkeypatch.setattr("gptme.config.user.config_path", str(config_path))
+        monkeypatch.setattr("gptme.cli.doctor.config_path", str(config_path))
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        with patch(
+            "gptme.cli.doctor.get_config",
+            return_value=Config(
+                user=UserConfig(
+                    models=ModelsConfig(default="anthropic/claude-sonnet-4-6")
+                )
+            ),
+        ):
+            assert _model_override_blocking_repair() == "config.local.toml"
+
+    def test_runtime_default_does_not_block_main_config_repair(
+        self, tmp_path, monkeypatch
+    ):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        (tmp_path / "config.runtime.toml").write_text(
+            '[models]\ndefault = "anthropic/claude-sonnet-4-6"\n'
+        )
+        monkeypatch.setattr("gptme.config.user.config_path", str(config_path))
+        monkeypatch.setattr("gptme.cli.doctor.config_path", str(config_path))
+        monkeypatch.delenv("GPTME_MODEL", raising=False)
+        monkeypatch.delenv("MODEL", raising=False)
+
+        with patch(
+            "gptme.cli.doctor.get_config",
+            return_value=Config(
+                user=UserConfig(
+                    models=ModelsConfig(default="anthropic/claude-sonnet-4-6")
+                )
+            ),
+        ):
+            assert _model_override_blocking_repair() is None
 
 
 class TestProviderRepairNeeded:
@@ -1345,6 +1483,18 @@ class TestProviderRepairNeeded:
             CheckResult("API Key: openai", CheckStatus.ERROR, "Invalid key"),
             CheckResult(
                 "Model: Default", CheckStatus.OK, "Auto-detected provider: openai"
+            ),
+        ]
+        assert _provider_repair_needed(results)
+
+    def test_rejected_unqualified_model_provider_needs_repair(self):
+        results = [
+            CheckResult("API Key: openai", CheckStatus.ERROR, "Invalid key"),
+            CheckResult(
+                "Model: Default",
+                CheckStatus.OK,
+                "gpt-4o (config.toml)",
+                provider="openai",
             ),
         ]
         assert _provider_repair_needed(results)

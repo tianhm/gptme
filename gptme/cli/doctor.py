@@ -25,11 +25,18 @@ from rich.table import Table
 from rich.text import Text
 
 from ..__version__ import __version__
-from ..config import MCPServerConfig, config_path, get_config, resolve_model_source
+from ..config import (
+    Config,
+    MCPServerConfig,
+    config_path,
+    get_config,
+    get_model_source_origin,
+    resolve_model_source,
+)
 from ..credentials import STORED_CREDENTIALS_SOURCE, get_stored_api_key
 from ..info import get_config_info, get_installed_extras
 from ..llm import PROVIDER_API_KEYS, is_plugin_provider, list_available_providers
-from ..llm.models import PROVIDERS, is_custom_provider
+from ..llm.models import PROVIDERS, get_model, is_custom_provider
 from ..llm.validate import OAUTH_PROVIDERS, PROVIDER_DOCS, validate_api_key
 
 logger = logging.getLogger(__name__)
@@ -54,6 +61,7 @@ class CheckResult:
     message: str
     details: str | None = None
     fix_hint: str | None = None
+    provider: str | None = None
 
 
 def _status_emoji(status: CheckStatus) -> str:
@@ -173,10 +181,31 @@ def _check_api_keys(verbose: bool = False) -> list[CheckResult]:
     return results
 
 
+def _doctor_config() -> Config:
+    """Load current-project config without discarding the active user config."""
+    config = get_config()
+    if config.project is None:
+        return Config(
+            user=config.user, project=Config.from_workspace(Path.cwd()).project
+        )
+    return config
+
+
+def _model_source_label(source: str) -> str:
+    """Render structural model provenance for diagnostics and repair errors."""
+    return {
+        "environment": "environment",
+        "project": "project gptme.toml",
+        "chat_config": "conversation config",
+        "models.default": get_model_source_origin(source) or "models.default",
+        "MODEL": get_model_source_origin(source) or "user config MODEL",
+    }.get(source, source)
+
+
 def _check_default_model(verbose: bool = False) -> list[CheckResult]:
     """Check that the selected model routes through an available provider."""
-    config = get_config()
-    available = [str(provider) for provider, _ in list_available_providers()]
+    config = _doctor_config()
+    available = [str(provider) for provider, _ in list_available_providers(config)]
     resolution = resolve_model_source(config)
 
     if resolution is None:
@@ -187,6 +216,7 @@ def _check_default_model(verbose: bool = False) -> list[CheckResult]:
                     status=CheckStatus.OK,
                     message=f"Auto-detected provider: {available[0]}",
                     details="No explicit default model configured" if verbose else None,
+                    provider=available[0],
                 )
             ]
         return [
@@ -199,23 +229,29 @@ def _check_default_model(verbose: bool = False) -> list[CheckResult]:
         ]
 
     model, source = resolution
-    provider = model.split("/", 1)[0] if "/" in model else model
+    source_label = _model_source_label(source)
+    try:
+        resolved_model = get_model(model)
+    except ValueError as exc:
+        return [
+            CheckResult(
+                name="Model: Default",
+                status=CheckStatus.ERROR,
+                message=f"Invalid configured model '{model}'",
+                details=f"Configured via {source_label}: {exc}" if verbose else None,
+                fix_hint="Run: gptme-doctor --fix",
+            )
+        ]
+    provider = str(resolved_model.provider)
+    if provider == "unknown" and "/" in resolved_model.model:
+        provider = resolved_model.model.split("/", 1)[0]
     if provider in available:
         return [
             CheckResult(
                 name="Model: Default",
                 status=CheckStatus.OK,
-                message=f"{model} ({source})",
-            )
-        ]
-
-    if "/" not in model:
-        return [
-            CheckResult(
-                name="Model: Default",
-                status=CheckStatus.WARNING,
-                message=f"Could not verify provider for unqualified model: {model}",
-                details=f"Configured via {source}" if verbose else None,
+                message=f"{model} ({source_label})",
+                provider=provider,
             )
         ]
 
@@ -226,8 +262,9 @@ def _check_default_model(verbose: bool = False) -> list[CheckResult]:
                 name="Model: Default",
                 status=CheckStatus.ERROR,
                 message=f"Provider '{provider}' is not configured",
-                details=f"Configured via {source}: {model}" if verbose else None,
+                details=f"Configured via {source_label}: {model}" if verbose else None,
                 fix_hint="Run: gptme-doctor --fix",
+                provider=provider,
             )
         ]
 
@@ -241,7 +278,8 @@ def _check_default_model(verbose: bool = False) -> list[CheckResult]:
                 name="Model: Default",
                 status=CheckStatus.WARNING,
                 message=f"Could not verify provider authentication for: {model}",
-                details=f"Configured via {source}" if verbose else None,
+                details=f"Configured via {source_label}" if verbose else None,
+                provider=provider,
             )
         ]
 
@@ -250,8 +288,9 @@ def _check_default_model(verbose: bool = False) -> list[CheckResult]:
             name="Model: Default",
             status=CheckStatus.ERROR,
             message=f"Unknown provider '{provider}' in configured model",
-            details=f"Configured via {source}: {model}" if verbose else None,
+            details=f"Configured via {source_label}: {model}" if verbose else None,
             fix_hint="Run: gptme-doctor --fix",
+            provider=provider,
         )
     ]
 
@@ -282,11 +321,14 @@ def _provider_repair_needed(results: list[CheckResult]) -> bool:
     )
     selected_provider = None
     if model_result and model_result.status == CheckStatus.OK:
-        if model_result.message.startswith("Auto-detected provider: "):
+        selected_provider = model_result.provider
+        if selected_provider is None and model_result.message.startswith(
+            "Auto-detected provider: "
+        ):
             selected_provider = model_result.message.removeprefix(
                 "Auto-detected provider: "
             )
-        elif "/" in model_result.message:
+        elif selected_provider is None and "/" in model_result.message:
             selected_provider = model_result.message.split("/", 1)[0]
     has_rejected_default = selected_provider in rejected_providers
     has_configured_model = any(
@@ -351,11 +393,22 @@ def _validate_oauth_for_repair(results: list[CheckResult]) -> None:
 
 
 def _model_override_blocking_repair() -> str | None:
-    """Return a higher-precedence model source that user config cannot replace."""
-    resolution = resolve_model_source(get_config())
-    if resolution is not None and resolution[1] != "models.default":
-        return resolution[1]
-    return None
+    """Return a model source that writing main user config cannot replace."""
+    resolution = resolve_model_source(_doctor_config())
+    if resolution is None:
+        return None
+    _model, source = resolution
+    if source == "models.default":
+        origin = get_model_source_origin(source)
+        return (
+            origin
+            if origin not in (None, "config.toml", "config.runtime.toml")
+            else None
+        )
+    if source == "MODEL":
+        # User [env].MODEL is below a newly written [models].default.
+        return None
+    return _model_source_label(source)
 
 
 def _check_tools(verbose: bool = False) -> list[CheckResult]:
