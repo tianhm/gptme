@@ -118,14 +118,14 @@ _subagents_lock = threading.Lock()
 _subagent_results: dict[str, "ReturnType"] = {}
 _subagent_results_lock = threading.Lock()
 
-# Thread-safe queue for completed subagent notifications
-# Each entry is (agent_id, status, summary)
-_completion_queue: queue.Queue[tuple[str, Status, str]] = queue.Queue()
-
-# Thread-safe queue for intermediate progress notifications from subagents
-# Each entry is (agent_id, message) — delivered as ⏳ system messages via LOOP_CONTINUE
-# Only populated in thread-mode subagents (subprocess mode cannot share in-process queues)
-_progress_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+# Thread-safe queues for notifications. Entries carry their owning parent logdir
+# and the originating run's captured parent branch so one conversation cannot
+# consume another conversation's events, and a reused agent_id cannot recover
+# a later run's branch. ``None`` preserves direct-library calls with no parent.
+_completion_queue: queue.Queue[tuple[Path | None, str, Status, str, str | None]] = (
+    queue.Queue()
+)
+_progress_queue: queue.Queue[tuple[Path | None, str, str]] = queue.Queue()
 
 # Guard for one-shot registry rehydration on first access after process restart
 _registry_rehydrated = False
@@ -326,6 +326,9 @@ class Subagent:
     # Used by SESSION_END cleanup to scope cancellation to the correct session and
     # prevent cross-conversation interference in multi-session server deployments.
     parent_logdir: Path | None = field(default=None)
+    # Conversation branch the parent was on at spawn. Watch-wake must append to
+    # this branch instead of always writing to main.
+    parent_branch: str | None = field(default=None)
     # In-memory fallback cancellation signal for thread mode.
     # Set by subagent_cancel() when the control-file write fails (OSError), so the
     # STEP_PRE checkpoint hook can still stop the thread without the file.

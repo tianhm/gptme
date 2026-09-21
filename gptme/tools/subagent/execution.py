@@ -790,10 +790,13 @@ def _poll_subprocess_progress(
     file_pos = 0
     POLL_INTERVAL = 0.5
 
+    def _notify(agent_id: str, message: str) -> None:
+        notify_progress(agent_id, message, parent_logdir=subagent.parent_logdir)
+
     def _drain() -> None:
         nonlocal file_pos
         file_pos = _drain_progress_file(
-            progress_file, file_pos, subagent.agent_id, notify_progress
+            progress_file, file_pos, subagent.agent_id, _notify
         )
 
     while not stop_event.is_set():
@@ -925,8 +928,14 @@ def _monitor_subprocess(
 
     # Notify via hook system (fire-and-forget-then-get-alerted pattern)
     try:
-        summary = _summarize_result(final_result, max_chars=200)
-        notify_completion(subagent.agent_id, status, summary)
+        summary = _summarize_result(final_result, max_chars=2000)
+        notify_completion(
+            subagent.agent_id,
+            status,
+            summary,
+            parent_logdir=subagent.parent_logdir,
+            parent_branch=subagent.parent_branch,
+        )
     except Exception as e:
         logger.warning(f"Failed to notify subagent completion: {e}")
 
@@ -944,6 +953,7 @@ def _run_planner(
     context_window: int | None = None,
     workdir: Path | None = None,
     parent_logdir: Path | None = None,
+    parent_branch: str | None = None,
 ) -> None:
     """Run a planner that delegates work to multiple executor subagents.
 
@@ -1086,6 +1096,7 @@ def _run_planner(
                 repo_path=repo_path,
                 role=subtask_role,
                 parent_logdir=parent_logdir,
+                parent_branch=parent_branch,
             )
 
             # Subprocess mode: a combined thread acquires the concurrency slot before
@@ -1135,6 +1146,8 @@ def _run_planner(
                                 _sa.agent_id,
                                 "failure",
                                 f"Executor subprocess failed: {e}",
+                                parent_logdir=_sa.parent_logdir,
+                                parent_branch=_sa.parent_branch,
                             )
                         _cleanup_isolation(_sa)
                         return
@@ -1173,6 +1186,7 @@ def _run_planner(
                 repo_path=repo_path,
                 role=subtask_role,
                 parent_logdir=parent_logdir,
+                parent_branch=parent_branch,
             )
 
             def run_executor(
@@ -1238,6 +1252,7 @@ def _run_planner(
                 repo_path=repo_path,
                 role=subtask_role,
                 parent_logdir=parent_logdir,
+                parent_branch=parent_branch,
             )
             # Register subagent BEFORE starting thread to avoid race condition
             # (matches pattern in api.py — thread closure may look up _subagents)

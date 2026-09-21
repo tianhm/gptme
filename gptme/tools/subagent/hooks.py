@@ -10,8 +10,9 @@ children and zombie threads with dangling concurrency slots.
 """
 
 import logging
-import queue
+import threading
 from collections.abc import Generator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...hooks.types import StopPropagation
@@ -224,20 +225,107 @@ def _get_complete_instruction(
     return instruction
 
 
-def notify_completion(agent_id: str, status: Status, summary: str) -> None:
-    """Add a subagent completion to the notification queue.
+def _notification_parent(
+    agent_id: str,
+    *,
+    parent_logdir: Path | None = None,
+) -> Path | None:
+    """Return the owning parent logdir for this originating run.
 
-    Called by the monitor thread when a subagent finishes. The queued
-    notification will be delivered via the subagent_completion hook
-    during the next LOOP_CONTINUE cycle.
-
-    Args:
-        agent_id: The subagent's identifier
-        status: "success" or "failure"
-        summary: Brief summary of the result
+    Agent IDs are not globally unique and completed entries stay in
+    ``_subagents``. Never resolve ownership from the newest matching ID —
+    that cross-routes an older run onto a later conversation that reused
+    the same ID. Prefer the originating run's stored ``parent_logdir``.
     """
-    _completion_queue.put((agent_id, status, summary))
-    logger.debug(f"Queued completion notification for subagent '{agent_id}': {status}")
+    if parent_logdir is not None:
+        return Path(parent_logdir).resolve()
+
+    current = threading.current_thread()
+    with _subagents_lock:
+        matches = [item for item in _subagents if item.agent_id == agent_id]
+    if not matches:
+        return None
+    for item in reversed(matches):
+        if item.thread is current:
+            return item.parent_logdir
+    if len(matches) == 1:
+        return matches[0].parent_logdir
+    logger.warning(
+        "Reused agent_id '%s' has %d registry entries; "
+        "pass parent_logdir from the originating run",
+        agent_id,
+        len(matches),
+    )
+    return None
+
+
+def notify_completion(
+    agent_id: str,
+    status: Status,
+    summary: str,
+    *,
+    parent_logdir: Path | None = None,
+    parent_branch: str | None = None,
+) -> None:
+    """Queue a completion for delivery to its owning parent conversation."""
+    parent_logdir = _notification_parent(agent_id, parent_logdir=parent_logdir)
+    parent_branch = _notification_branch(agent_id, parent_logdir, parent_branch)
+    if not _notify_server(
+        parent_logdir,
+        agent_id,
+        status,
+        summary,
+        branch=parent_branch,
+    ):
+        _completion_queue.put((parent_logdir, agent_id, status, summary, parent_branch))
+        logger.debug(
+            "Queued completion notification for subagent '%s': %s",
+            agent_id,
+            status,
+        )
+
+
+def _notify_server(
+    parent_logdir: Path | None,
+    agent_id: str,
+    status: Status,
+    summary: str,
+    *,
+    wake: bool = True,
+    branch: str = "main",
+) -> bool:
+    """Expose a notification over SSE and optionally wake its server session."""
+    if parent_logdir is None:
+        return False
+    try:
+        from ...server.session_models import SessionManager
+
+        conversation_id = parent_logdir.name
+        sessions = SessionManager.get_sessions_for_conversation(conversation_id)
+        if not sessions:
+            return False
+        SessionManager.add_event(
+            conversation_id,
+            {
+                "type": "watch_event",
+                "kind": "subagent",
+                "status": status,
+                "ref": agent_id,
+                "message": summary,
+            },
+        )
+        if not wake:
+            return True
+        return SessionManager.request_watch_wake(
+            conversation_id,
+            _completion_message(agent_id, status, summary),
+            branch=branch,
+        )
+    except Exception:
+        # CLI-only deployments need no server package or session state. Delivery
+        # remains queued for STEP_PRE/LOOP_CONTINUE even when server wake fails.
+        logger.debug("Could not wake server for subagent %s", agent_id, exc_info=True)
+        return False
 
 
 def _session_end_subagent_cleanup(
@@ -299,29 +387,23 @@ def _session_end_subagent_cleanup(
     yield from ()
 
 
-def notify_progress(agent_id: str, message: str) -> None:
-    """Add a subagent progress update to the notification queue.
-
-    Called by the progress tool when a subagent sends an intermediate update.
-    The parent's LOOP_CONTINUE hook delivers it as a system message so the
-    orchestrator can react without blocking on subagent_wait().
-
-    Note: For thread-mode subagents the progress tool calls this directly (same
-    process). For subprocess-mode subagents, ``_poll_subprocess_progress`` reads
-    from the file channel and calls this function on behalf of the child process.
-
-    Args:
-        agent_id: The subagent's identifier
-        message: Progress update message
-    """
-    _progress_queue.put((agent_id, message))
+def notify_progress(
+    agent_id: str,
+    message: str,
+    *,
+    parent_logdir: Path | None = None,
+) -> None:
+    """Queue progress for delivery to its owning parent conversation."""
+    parent_logdir = _notification_parent(agent_id, parent_logdir=parent_logdir)
+    _progress_queue.put((parent_logdir, agent_id, message))
     logger.debug(f"Queued progress notification for subagent '{agent_id}'")
+    _notify_server(parent_logdir, agent_id, "running", message, wake=False)
 
 
 def _subagent_completion_hook(
     manager: "LogManager",
-    interactive: bool,
-    prompt_queue: object,
+    interactive: bool = False,
+    prompt_queue: object | None = None,
     no_confirm: bool = False,
 ) -> Generator[Message, None, None]:
     """Check for completed subagents and yield notification messages.
@@ -334,45 +416,154 @@ def _subagent_completion_hook(
     ⏳ system messages.
     """
 
-    # Drain progress notifications first (in-flight updates before completions)
+    manager_logdir = getattr(manager, "logdir", None)
+
+    # Drain only this parent's records and leave foreign records queued.
     progress_updates: list[tuple[str, str]] = []
-    while True:
-        try:
-            agent_id, message = _progress_queue.get_nowait()
-            progress_updates.append((agent_id, message))
-        except queue.Empty:
-            break
+    with _progress_queue.mutex:
+        retained_progress = type(_progress_queue.queue)()
+        for parent_logdir, agent_id, message in _progress_queue.queue:
+            if parent_logdir is None or parent_logdir == manager_logdir:
+                progress_updates.append((agent_id, message))
+            else:
+                retained_progress.append((parent_logdir, agent_id, message))
+        _progress_queue.queue = retained_progress
 
     for agent_id, message in progress_updates:
-        msg = f"⏳ Subagent '{agent_id}' progress: {message}"
-        logger.debug(f"Delivering subagent progress notification: {msg}")
-        yield Message("system", msg)
+        msg = progress_message(agent_id, message)
+        logger.debug("Delivering subagent progress notification: %s", msg.content)
+        yield msg
 
-    # Drain completion notifications
     notifications: list[tuple[str, Status, str]] = []
-    while True:
-        try:
-            agent_id, status, summary = _completion_queue.get_nowait()
-            notifications.append((agent_id, status, summary))
-        except queue.Empty:
-            break
-
-    # Yield messages for each completion
-    for agent_id, status, summary in notifications:
-        if status == "success":
-            msg = f"✅ Subagent '{agent_id}' completed: {summary}"
-        elif status == "clarification_needed":
-            msg = (
-                f"❓ Subagent '{agent_id}' needs clarification: {summary}\n"
-                f"Call subagent_reply('{agent_id}', '<your answer>') to continue."
+    with _completion_queue.mutex:
+        retained_completions = type(_completion_queue.queue)()
+        for item in _completion_queue.queue:
+            parent_logdir, agent_id, status, summary, _parent_branch = (
+                _unpack_completion(item)
             )
-        elif status == "timeout":
-            msg = f"⏱️ Subagent '{agent_id}' timed out: {summary}"
-        else:
-            msg = f"❌ Subagent '{agent_id}' failed: {summary}"
+            if parent_logdir is None or parent_logdir == manager_logdir:
+                notifications.append((agent_id, status, summary))
+            else:
+                retained_completions.append(item)
+        _completion_queue.queue = retained_completions
 
-        logger.debug(f"Delivering subagent notification: {msg}")
-        yield Message("system", msg)
+    for agent_id, status, summary in notifications:
+        message = _completion_message(agent_id, status, summary)
+        logger.debug("Delivering subagent notification: %s", message.content)
+        yield message
+
+
+def progress_message(agent_id: str, message: str) -> Message:
+    """Format a progress update identically for CLI hooks and server wakeups."""
+    return Message("system", f"⏳ Subagent '{agent_id}' progress: {message}")
+
+
+def _same_parent(left: Path | None, right: Path) -> bool:
+    if left is None:
+        return False
+    return Path(left).resolve() == Path(right).resolve()
+
+
+def take_queued_progress(parent_logdir: Path) -> list[tuple[str, str]]:
+    """Remove queued progress belonging to one parent conversation."""
+    parent = Path(parent_logdir).resolve()
+    taken: list[tuple[str, str]] = []
+    with _progress_queue.mutex:
+        retained = type(_progress_queue.queue)()
+        for item_parent, agent_id, message in _progress_queue.queue:
+            if _same_parent(item_parent, parent):
+                taken.append((agent_id, message))
+            else:
+                retained.append((item_parent, agent_id, message))
+        _progress_queue.queue = retained
+    return taken
+
+
+def _unpack_completion(
+    item: tuple,
+) -> tuple[Path | None, str, Status, str, str | None]:
+    """Normalize a queued completion, including legacy 4-tuples without a branch."""
+    parent_logdir, agent_id, status, summary, *rest = item
+    parent_branch = rest[0] if rest else None
+    return parent_logdir, agent_id, status, summary, parent_branch
+
+
+def take_queued_completions(
+    parent_logdir: Path,
+) -> list[tuple[str, Status, str, str]]:
+    """Remove queued completions belonging to one parent conversation."""
+    parent = Path(parent_logdir).resolve()
+    taken: list[tuple[str, Status, str, str]] = []
+    with _completion_queue.mutex:
+        retained = type(_completion_queue.queue)()
+        for item in _completion_queue.queue:
+            item_parent, agent_id, status, summary, parent_branch = _unpack_completion(
+                item
+            )
+            if _same_parent(item_parent, parent):
+                taken.append((agent_id, status, summary, parent_branch or "main"))
+            else:
+                retained.append(item)
+        _completion_queue.queue = retained
+    return taken
+
+
+def _notification_branch(
+    agent_id: str,
+    parent_logdir: Path | None,
+    parent_branch: str | None = None,
+) -> str:
+    """Return the originating run's captured branch, never a later reused ID."""
+    if parent_branch:
+        return parent_branch
+
+    current = threading.current_thread()
+    with _subagents_lock:
+        matches = [item for item in _subagents if item.agent_id == agent_id]
+
+    for item in matches:
+        if item.thread is current and item.parent_branch:
+            return item.parent_branch
+
+    if parent_logdir is not None:
+        resolved = Path(parent_logdir).resolve()
+        parent_matches = [
+            item
+            for item in matches
+            if item.parent_logdir is not None
+            and Path(item.parent_logdir).resolve() == resolved
+            and item.parent_branch
+        ]
+        if len(parent_matches) == 1:
+            return parent_matches[0].parent_branch or "main"
+        if len(parent_matches) > 1:
+            logger.warning(
+                "Reused agent_id '%s' has %d parent-branch candidates; "
+                "pass parent_branch from the originating run",
+                agent_id,
+                len(parent_matches),
+            )
+            return "main"
+
+    if len(matches) == 1 and matches[0].parent_branch:
+        return matches[0].parent_branch
+    return "main"
+
+
+def _completion_message(agent_id: str, status: Status, summary: str) -> Message:
+    """Format a completion identically for CLI hooks and server wakeups."""
+    if status == "success":
+        content = f"✅ Subagent '{agent_id}' completed: {summary}"
+    elif status == "clarification_needed":
+        content = (
+            f"❓ Subagent '{agent_id}' needs clarification: {summary}\n"
+            f"Call subagent_reply('{agent_id}', '<your answer>') to continue."
+        )
+    elif status == "timeout":
+        content = f"⏱️ Subagent '{agent_id}' timed out: {summary}"
+    else:
+        content = f"❌ Subagent '{agent_id}' failed: {summary}"
+    return Message("system", content)
 
 
 def _subagent_cancel_checkpoint(

@@ -122,6 +122,9 @@ class ChatConfig:
     stream: bool = True
     interactive: bool = True
     no_confirm: bool | None = None
+    # Whether model-armed asynchronous work may wake an idle server conversation.
+    # None means omitted/default-on so PATCH can re-enable a stored false.
+    watch_autowake: bool | None = None
     # Max tokens for the model's response. None = provider/model default.
     max_tokens: int | None = None
     # Sampling temperature override. None = use TEMPERATURE constant (env default 0).
@@ -217,6 +220,13 @@ class ChatConfig:
                 raise ValueError(
                     f"chat.{field_name} must be a number, got {type(val).__name__}"
                 )
+        watch_autowake_val = chat_data.get("watch_autowake")
+        if watch_autowake_val is not None and not isinstance(watch_autowake_val, bool):
+            raise ValueError(
+                "chat.watch_autowake must be a boolean, "
+                f"got {type(watch_autowake_val).__name__}"
+            )
+
         max_tokens_val = chat_data.get("max_tokens")
         if max_tokens_val is not None and (
             not isinstance(max_tokens_val, int) or isinstance(max_tokens_val, bool)
@@ -474,14 +484,30 @@ class ChatConfig:
                 config = replace(config, workspace=cli_value)
             # For optional fields that default to None, check if explicitly provided
             elif (
-                field_name in ["model", "tool_format", "gear", "tools", "agent"]
+                field_name
+                in [
+                    "model",
+                    "tool_format",
+                    "gear",
+                    "tools",
+                    "agent",
+                    "watch_autowake",
+                ]
                 and cli_value is not None
             ):
                 logger.debug(f"Overriding {field_name} with CLI value: {cli_value}")
                 config = replace(config, **{field_name: cli_value})
             # For other fields, use the original logic (differs from defaults)
             elif (
-                field_name not in ["model", "tool_format", "gear", "tools", "agent"]
+                field_name
+                not in [
+                    "model",
+                    "tool_format",
+                    "gear",
+                    "tools",
+                    "agent",
+                    "watch_autowake",
+                ]
                 and cli_value != default_value
             ):
                 logger.debug(f"Overriding {field_name} with CLI value: {cli_value}")

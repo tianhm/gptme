@@ -7,6 +7,7 @@ requiring API keys or running actual LLM calls.
 import importlib
 import json
 import queue
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -275,10 +276,257 @@ class TestCompletionNotifications:
     def test_notify_adds_to_queue(self):
         notify_completion("agent-1", "success", "done")
         assert not _completion_queue.empty()
-        agent_id, status, summary = _completion_queue.get_nowait()
+        parent_logdir, agent_id, status, summary, *rest = _completion_queue.get_nowait()
+        assert parent_logdir is None
         assert agent_id == "agent-1"
         assert status == "success"
         assert summary == "done"
+        assert rest in ([], [None], ["main"])
+
+    def test_hook_scopes_notifications_to_parent_conversation(self, tmp_path):
+        parent_a = tmp_path / "parent-a"
+        parent_b = tmp_path / "parent-b"
+        agents = [
+            Subagent(
+                "a", "test", None, tmp_path / "child-a", None, parent_logdir=parent_a
+            ),
+            Subagent(
+                "b", "test", None, tmp_path / "child-b", None, parent_logdir=parent_b
+            ),
+        ]
+        with _subagents_lock:
+            _subagents.extend(agents)
+        try:
+            notify_completion("a", "success", "result-a")
+            notify_completion("b", "success", "result-b")
+
+            messages_a = list(
+                _subagent_completion_hook(
+                    MagicMock(logdir=parent_a), interactive=False, prompt_queue=[]
+                )
+            )
+            messages_b = list(
+                _subagent_completion_hook(
+                    MagicMock(logdir=parent_b), interactive=False, prompt_queue=[]
+                )
+            )
+
+            assert any("result-a" in message.content for message in messages_a)
+            assert not any("result-b" in message.content for message in messages_a)
+            assert any("result-b" in message.content for message in messages_b)
+        finally:
+            with _subagents_lock:
+                for agent in agents:
+                    _subagents.remove(agent)
+
+    def test_reused_agent_id_routes_to_originating_parent(self, tmp_path):
+        """Older runs must not inherit a later spawn's parent via newest-ID lookup."""
+        parent_a = tmp_path / "parent-a"
+        parent_b = tmp_path / "parent-b"
+        agents = [
+            Subagent(
+                "worker",
+                "test",
+                None,
+                tmp_path / "child-old",
+                None,
+                parent_logdir=parent_a,
+            ),
+            Subagent(
+                "worker",
+                "test",
+                None,
+                tmp_path / "child-new",
+                None,
+                parent_logdir=parent_b,
+            ),
+        ]
+        with _subagents_lock:
+            _subagents.extend(agents)
+        try:
+            notify_completion("worker", "success", "old-done", parent_logdir=parent_a)
+            notify_completion("worker", "success", "new-done", parent_logdir=parent_b)
+
+            messages_a = list(
+                _subagent_completion_hook(
+                    MagicMock(logdir=parent_a.resolve()),
+                    interactive=False,
+                    prompt_queue=[],
+                )
+            )
+            messages_b = list(
+                _subagent_completion_hook(
+                    MagicMock(logdir=parent_b.resolve()),
+                    interactive=False,
+                    prompt_queue=[],
+                )
+            )
+
+            assert any("old-done" in message.content for message in messages_a)
+            assert not any("new-done" in message.content for message in messages_a)
+            assert any("new-done" in message.content for message in messages_b)
+            assert not any("old-done" in message.content for message in messages_b)
+        finally:
+            with _subagents_lock:
+                for agent in agents:
+                    _subagents.remove(agent)
+
+    def test_reused_agent_id_carries_originating_branch(self, tmp_path):
+        """Same parent + reused ID must not recover a later run's branch."""
+        parent = tmp_path / "same-parent"
+        agents = [
+            Subagent(
+                "worker",
+                "test",
+                None,
+                tmp_path / "child-old",
+                None,
+                parent_logdir=parent,
+                parent_branch="old-branch",
+            ),
+            Subagent(
+                "worker",
+                "test",
+                None,
+                tmp_path / "child-new",
+                None,
+                parent_logdir=parent,
+                parent_branch="new-branch",
+            ),
+        ]
+        with _subagents_lock:
+            _subagents.extend(agents)
+        try:
+            notify_completion(
+                "worker",
+                "success",
+                "old-done",
+                parent_logdir=parent,
+                parent_branch="old-branch",
+            )
+            queued = _completion_queue.get_nowait()
+            assert queued[1] == "worker"
+            assert queued[3] == "old-done"
+            assert queued[4] == "old-branch"
+
+            notify_completion(
+                "worker",
+                "success",
+                "ambiguous",
+                parent_logdir=parent,
+            )
+            fallback = _completion_queue.get_nowait()
+            assert fallback[3] == "ambiguous"
+            assert fallback[4] == "main"
+        finally:
+            with _subagents_lock:
+                for agent in agents:
+                    _subagents.remove(agent)
+
+    def test_notify_emits_server_watch_event_and_requests_wake(
+        self, tmp_path, monkeypatch
+    ):
+        pytest.importorskip(
+            "flask", reason="flask not installed, install server extras (-E server)"
+        )
+        from gptme.server.session_models import SessionManager
+
+        parent = tmp_path / "server-parent"
+        agent = Subagent(
+            "server-child",
+            "test",
+            None,
+            tmp_path / "child",
+            None,
+            parent_logdir=parent,
+        )
+        with _subagents_lock:
+            _subagents.append(agent)
+        add_event = MagicMock()
+        request_wake = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            SessionManager,
+            "get_sessions_for_conversation",
+            MagicMock(return_value=[object()]),
+        )
+        monkeypatch.setattr(SessionManager, "add_event", add_event)
+        monkeypatch.setattr(SessionManager, "request_watch_wake", request_wake)
+        try:
+            notify_completion("server-child", "success", "finished")
+        finally:
+            with _subagents_lock:
+                _subagents.remove(agent)
+
+        add_event.assert_called_once_with(
+            "server-parent",
+            {
+                "type": "watch_event",
+                "kind": "subagent",
+                "status": "success",
+                "ref": "server-child",
+                "message": "finished",
+            },
+        )
+        request_wake.assert_called_once()
+        assert request_wake.call_args.args[0] == "server-parent"
+        assert "server-child" in request_wake.call_args.args[1].content
+        assert request_wake.call_args.kwargs["branch"] == "main"
+        assert not _completion_queue.empty()
+
+    def test_notify_passes_originating_branch_not_newest_id(
+        self, tmp_path, monkeypatch
+    ):
+        pytest.importorskip(
+            "flask", reason="flask not installed, install server extras (-E server)"
+        )
+        from gptme.server.session_models import SessionManager
+
+        parent = tmp_path / "same-parent"
+        agents = [
+            Subagent(
+                "worker",
+                "test",
+                None,
+                tmp_path / "child-old",
+                None,
+                parent_logdir=parent,
+                parent_branch="old-branch",
+            ),
+            Subagent(
+                "worker",
+                "test",
+                None,
+                tmp_path / "child-new",
+                None,
+                parent_logdir=parent,
+                parent_branch="new-branch",
+            ),
+        ]
+        with _subagents_lock:
+            _subagents.extend(agents)
+        request_wake = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            SessionManager,
+            "get_sessions_for_conversation",
+            MagicMock(return_value=[object()]),
+        )
+        monkeypatch.setattr(SessionManager, "add_event", MagicMock())
+        monkeypatch.setattr(SessionManager, "request_watch_wake", request_wake)
+        try:
+            notify_completion(
+                "worker",
+                "success",
+                "old-done",
+                parent_logdir=parent,
+                parent_branch="old-branch",
+            )
+        finally:
+            with _subagents_lock:
+                for agent in agents:
+                    _subagents.remove(agent)
+
+        request_wake.assert_called_once()
+        assert request_wake.call_args.kwargs["branch"] == "old-branch"
 
     def test_hook_yields_success_message(self):
         notify_completion("agent-2", "success", "all good")
@@ -336,7 +584,8 @@ class TestProgressNotifications:
     def test_notify_progress_adds_to_queue(self):
         notify_progress("worker-1", "Halfway done")
         assert not _progress_queue.empty()
-        agent_id, message = _progress_queue.get_nowait()
+        parent_logdir, agent_id, message = _progress_queue.get_nowait()
+        assert parent_logdir is None
         assert agent_id == "worker-1"
         assert message == "Halfway done"
 
@@ -418,7 +667,8 @@ class TestProgressTool:
             del exec_mod._thread_local.agent_id
 
         assert not _progress_queue.empty()
-        agent_id, message = _progress_queue.get_nowait()
+        parent_logdir, agent_id, message = _progress_queue.get_nowait()
+        assert parent_logdir is None
         assert agent_id == "thread-agent"
         assert message == "Phase 1 complete."
         assert any("sent" in m.content for m in messages)
@@ -902,7 +1152,7 @@ class TestSubagentCancel:
             result = _subagent_results["proc-clarify"]
         assert result.status == "clarification_needed"
         assert result.result == "Which format should I use?"
-        agent_id, status, summary = _completion_queue.get_nowait()
+        _parent_logdir, agent_id, status, summary, *_ = _completion_queue.get_nowait()
         assert agent_id == "proc-clarify"
         assert status == "clarification_needed"
         assert "Which format" in summary
@@ -1078,7 +1328,9 @@ class TestSubagentCancel:
 
         notify_calls: list[tuple[str, str, str]] = []
 
-        def fake_notify_completion(agent_id: str, status: str, summary: str) -> None:
+        def fake_notify_completion(
+            agent_id: str, status: str, summary: str, **_kwargs
+        ) -> None:
             notify_calls.append((agent_id, status, summary))
 
         def fake_set_subagent_result_if_absent(
@@ -1182,7 +1434,9 @@ class TestSubagentCancel:
         def fake_cleanup(sa: Subagent) -> None:
             cleanup_calls.append(sa.agent_id)
 
-        def fake_notify_completion(agent_id: str, status: str, summary: str) -> None:
+        def fake_notify_completion(
+            agent_id: str, status: str, summary: str, **_kwargs
+        ) -> None:
             notify_calls.append((agent_id, status, summary))
 
         def fake_set_subagent_result_if_absent(
@@ -3518,7 +3772,7 @@ class TestMaxTimeWatchdog:
                 except queue.Empty:
                     break
             assert any(
-                n[0] == "running-thread" and n[1] == "timeout" for n in notifications
+                n[1] == "running-thread" and n[2] == "timeout" for n in notifications
             )
         finally:
             stop.set()
@@ -3570,6 +3824,33 @@ class TestMaxTimeWatchdog:
         finally:
             stop.set()
             t.join(timeout=1)
+
+    def test_subagent_wait_timeout_does_not_kill_subprocess(self, tmp_path):
+        """Waiting is observation-only: a short wait must leave the child alive."""
+        from gptme.tools.subagent.api import subagent_wait
+
+        process = MagicMock()
+        process.wait.side_effect = subprocess.TimeoutExpired("gptme", 0)
+        process.poll.return_value = None
+        sa = Subagent(
+            agent_id="pure-wait-subprocess",
+            prompt="test",
+            thread=None,
+            logdir=tmp_path,
+            model=None,
+            process=process,
+            execution_mode="subprocess",
+        )
+        with _subagents_lock:
+            _subagents.append(sa)
+        try:
+            result = subagent_wait("pure-wait-subprocess", timeout=0)
+        finally:
+            with _subagents_lock:
+                _subagents.remove(sa)
+
+        assert result["status"] == "running"
+        process.kill.assert_not_called()
 
     def test_subagent_wait_polls_cache_after_join_timeout(self, tmp_path, monkeypatch):
         """subagent_wait() handles join returning just before watchdog writes."""

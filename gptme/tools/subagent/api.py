@@ -377,6 +377,9 @@ def subagent(
     parent_logdir = (
         getattr(parent_log, "logdir", None) if parent_log is not None else None
     )
+    parent_branch = (
+        getattr(parent_log, "current_branch", None) if parent_log is not None else None
+    )
 
     parent_messages = None
     if context_turns is not None:
@@ -513,6 +516,7 @@ def subagent(
             context_window=context_window,
             max_time=max_time,
             parent_logdir=parent_logdir,
+            parent_branch=parent_branch,
         )
         with _subagents_lock:
             _subagents.append(sa)
@@ -540,6 +544,7 @@ def subagent(
                 context_window=context_window,
                 workdir=workdir_path,
                 parent_logdir=parent_logdir,
+                parent_branch=parent_branch,
             )
         finally:
             if _timer is not None:
@@ -757,7 +762,9 @@ def subagent(
                     notify_completion(
                         agent_id,
                         status,
-                        _exec._summarize_result(result, max_chars=200),
+                        _exec._summarize_result(result, max_chars=2000),
+                        parent_logdir=parent_logdir,
+                        parent_branch=parent_branch,
                     )
                 except Exception as e:
                     logger.error(f"ACP subagent {agent_id} failed: {e}", exc_info=True)
@@ -765,7 +772,13 @@ def subagent(
                         agent_id, ReturnType("failure", str(e))
                     ):
                         return
-                    notify_completion(agent_id, "failure", f"ACP error: {e}")
+                    notify_completion(
+                        agent_id,
+                        "failure",
+                        f"ACP error: {e}",
+                        parent_logdir=parent_logdir,
+                        parent_branch=parent_branch,
+                    )
                 finally:
                     with _subagents_lock:
                         sa_ref = next(
@@ -804,7 +817,7 @@ def subagent(
             acp_command=acp_command,
             workdir=workspace,
             base_workdir=base_workdir,
-            isolated=isolated,
+            isolated=bool(isolated),
             isolation_mode=isolation,
             worktree_path=worktree_path,
             repo_path=repo_path,
@@ -812,6 +825,7 @@ def subagent(
             max_time=max_time,
             context_turns=context_turns,
             parent_logdir=parent_logdir,
+            parent_branch=parent_branch,
         )
         # Append sa before starting the thread so the finally block can find it
         # (avoids race condition where fast completion can't locate sa in _subagents)
@@ -886,7 +900,13 @@ def subagent(
                 if set_subagent_result_if_absent(
                     agent_id, ReturnType("failure", str(e))
                 ):
-                    notify_completion(agent_id, "failure", f"Subprocess failed: {e}")
+                    notify_completion(
+                        agent_id,
+                        "failure",
+                        f"Subprocess failed: {e}",
+                        parent_logdir=sa.parent_logdir,
+                        parent_branch=sa.parent_branch,
+                    )
                 _exec._cleanup_isolation(sa)
             finally:
                 # Mark the prompt queue as closed: the subprocess has exited (or
@@ -933,7 +953,7 @@ def subagent(
             execution_mode="subprocess",
             workdir=workspace,
             base_workdir=base_workdir,
-            isolated=isolated,
+            isolated=bool(isolated),
             isolation_mode=isolation,
             worktree_path=worktree_path,
             repo_path=repo_path,
@@ -942,6 +962,7 @@ def subagent(
             max_time=max_time,
             context_turns=context_turns,
             parent_logdir=parent_logdir,
+            parent_branch=parent_branch,
         )
         with _subagents_lock:
             _subagents.append(sa)
@@ -1006,7 +1027,13 @@ def subagent(
                             _exec._cleanup_isolation(sa)
                         return
                     try:
-                        notify_completion(agent_id, "failure", f"Execution failed: {e}")
+                        notify_completion(
+                            agent_id,
+                            "failure",
+                            f"Execution failed: {e}",
+                            parent_logdir=parent_logdir,
+                            parent_branch=parent_branch,
+                        )
                     except Exception as notify_err:
                         logger.warning(f"Failed to notify subagent error: {notify_err}")
                     # Clean up worktree isolation even on failure
@@ -1059,8 +1086,14 @@ def subagent(
                             )
                         return
                     try:
-                        summary = _exec._summarize_result(result, max_chars=200)
-                        notify_completion(agent_id, result.status, summary)
+                        summary = _exec._summarize_result(result, max_chars=2000)
+                        notify_completion(
+                            agent_id,
+                            result.status,
+                            summary,
+                            parent_logdir=sa.parent_logdir,
+                            parent_branch=sa.parent_branch,
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to notify subagent completion: {e}")
             finally:
@@ -1092,7 +1125,7 @@ def subagent(
             execution_mode="thread",
             workdir=workspace,
             base_workdir=base_workdir,
-            isolated=isolated,
+            isolated=bool(isolated),
             isolation_mode=isolation,
             worktree_path=worktree_path,
             repo_path=repo_path,
@@ -1102,6 +1135,7 @@ def subagent(
             max_time=max_time,
             context_turns=context_turns,
             parent_logdir=parent_logdir,
+            parent_branch=parent_branch,
             prompt_queue_closed=_pqc,
         )
         with _subagents_lock:
@@ -1160,7 +1194,13 @@ def _timeout_subagent(
             "(thread will stop at its next checkpoint)."
         )
 
-    notify_completion(agent_id, "timeout", f"Timed out after {max_time}s")
+    notify_completion(
+        agent_id,
+        "timeout",
+        f"Timed out after {max_time}s",
+        parent_logdir=sa.parent_logdir,
+        parent_branch=sa.parent_branch,
+    )
 
 
 def subagent_cancel(agent_id: str) -> str:
@@ -1555,7 +1595,9 @@ def subagent_continue(agent_id: str, message: str) -> None:
                 notify_completion(
                     agent_id,
                     result.status,
-                    _exec._summarize_result(result, max_chars=200),
+                    _exec._summarize_result(result, max_chars=2000),
+                    parent_logdir=sa.parent_logdir,
+                    parent_branch=sa.parent_branch,
                 )
         finally:
             prompt_queue_closed.set()
@@ -1590,6 +1632,7 @@ def subagent_continue(agent_id: str, message: str) -> None:
         max_time=sa.max_time,
         context_turns=sa.context_turns,
         parent_logdir=sa.parent_logdir,
+        parent_branch=sa.parent_branch,
         prompt_queue_closed=prompt_queue_closed,
     )
     # Re-check while replacing the registry entry: two callers can otherwise
@@ -1799,9 +1842,11 @@ def subagent_wait(
         try:
             sa.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            logger.warning(f"Subagent {agent_id} timed out after {timeout}s")
-            sa.process.kill()
-            sa.process.wait()  # reap the killed process
+            logger.info(
+                "Subagent %s is still running after %ss wait; leaving it running",
+                agent_id,
+                timeout,
+            )
     elif sa.execution_mode == "acp" and sa.thread:
         # ACP mode: wait for the wrapper thread
         sa.thread.join(timeout=timeout)

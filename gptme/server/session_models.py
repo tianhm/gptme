@@ -27,6 +27,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_watch_wake_model(config_model: str | None) -> str | None:
+    """Resolve a wake model independently of the notifying thread's context.
+
+    Idle conversations often persist ``config.model is None`` and use the
+    server default. ``get_default_model()`` is a ContextVar that is only
+    propagated into Flask request threads, so completion monitors can see
+    ``None`` even when the server has a usable default.
+    """
+    if config_model:
+        return config_model
+    try:
+        from flask import current_app, has_app_context
+
+        if has_app_context():
+            stored = current_app.config.get("SERVER_DEFAULT_MODEL")
+            if stored is not None:
+                return stored.full if hasattr(stored, "full") else str(stored)
+    except ImportError:
+        pass
+    if SessionManager._server_default_model_full:
+        return SessionManager._server_default_model_full
+    from ..llm.models import get_default_model
+
+    default_model = get_default_model()
+    if default_model is not None:
+        return default_model.full
+    return None
+
+
 class ToolStatus(Enum):
     """Status of a tool execution."""
 
@@ -198,6 +227,15 @@ class SessionManager:
     # This reservation keeps generation and mutations from racing that work.
     _active_commands: set[str] = set()
     _lock = threading.Lock()
+    # Captured at server startup / default-model persist so background
+    # watch-wake threads can resolve a model without Flask request context
+    # or the notifying thread's ContextVar.
+    _server_default_model_full: str | None = None
+
+    @classmethod
+    def set_server_default_model(cls, model: str | None) -> None:
+        """Record the process-wide server default model for watch-wake."""
+        cls._server_default_model_full = model
 
     @classmethod
     def conversation_lock(cls, conversation_id: str) -> threading.RLock:
@@ -230,6 +268,18 @@ class SessionManager:
         # same non-reentrant lock. A live session or a newly started command
         # makes this a no-op.
         cls._evict_idle_cost_window(conversation_id, None)
+        # Completions queued while the command owned the conversation are
+        # retried only on reservation release. Without this, an idle chat
+        # stays asleep until the next manual step. Never let a retry failure
+        # surface through the command finally-block.
+        try:
+            cls.retry_deferred_watch_wakes(conversation_id)
+        except Exception:
+            logger.warning(
+                "Could not retry deferred watch wakes after command release for %s",
+                conversation_id,
+                exc_info=True,
+            )
 
     @classmethod
     def create_session(cls, conversation_id: str) -> ConversationSession:
@@ -287,6 +337,137 @@ class SessionManager:
             session.trim_events()
             session.touch()
             session.event_flag.set()
+
+    @classmethod
+    def request_watch_wake(
+        cls,
+        conversation_id: str,
+        message: Message,
+        *,
+        branch: str = "main",
+    ) -> bool:
+        """Persist a watch message and reserve one idle server step."""
+        from ..config import ChatConfig
+        from ..dirs import get_logs_dir
+        from .session_step import _start_step_thread
+
+        with cls.conversation_lock(conversation_id):
+            sessions = cls.get_sessions_for_conversation(conversation_id)
+            if not sessions:
+                return False
+            session = max(sessions, key=lambda item: item.last_activity)
+            with session.step_lock:
+                if (
+                    cls.conversation_generating(conversation_id)
+                    or cls.command_is_active(conversation_id)
+                    or any(
+                        item.pending_tools or item._executing_tools for item in sessions
+                    )
+                ):
+                    return False
+                config = ChatConfig.load_or_create(
+                    get_logs_dir() / conversation_id, ChatConfig()
+                )
+                if config.watch_autowake is False:
+                    return False
+                model = _resolve_watch_wake_model(config.model)
+                if model is None:
+                    return False
+                progress_items: list[tuple[str, str]] = []
+                logdir = (get_logs_dir() / conversation_id).resolve()
+                try:
+                    from ..logmanager import LogManager
+                    from ..tools.subagent.hooks import (
+                        progress_message,
+                        take_queued_progress,
+                    )
+                    from ..tools.subagent.types import _progress_queue
+
+                    manager = LogManager.load(
+                        conversation_id, branch=branch, lock=False
+                    )
+                    progress_items = take_queued_progress(logdir)
+                    for agent_id, progress in progress_items:
+                        manager.append(progress_message(agent_id, progress))
+                    manager.append(message)
+                    manager.write(sync=True)
+                except (OSError, ValueError):
+                    from ..tools.subagent.types import _progress_queue
+
+                    for agent_id, progress in progress_items:
+                        _progress_queue.put((logdir, agent_id, progress))
+                    logger.warning(
+                        "Could not persist watch event for conversation %s",
+                        conversation_id,
+                        exc_info=True,
+                    )
+                    return False
+                session.step_seq += 1
+                step_seq = session.step_seq
+                session.generating = True
+                session.generating_since = datetime.now(tz=timezone.utc)
+                session.interrupted = False
+        try:
+            started = _start_step_thread(
+                conversation_id,
+                session,
+                model,
+                config.workspace,
+                branch=branch,
+                stream=config.stream,
+                reserved=True,
+                step_seq=step_seq,
+                inherit_context=False,
+            )
+            if not started:
+                logger.warning(
+                    "Watch wake persisted for %s but dispatch did not start",
+                    conversation_id,
+                )
+                with session.step_lock:
+                    if session.step_seq == step_seq:
+                        session.generating = False
+                        session.generating_since = None
+            # Persist succeeded. Returning False would queue the same
+            # completion for STEP_PRE and duplicate it in the log.
+            return True
+        except Exception:
+            logger.warning(
+                "Watch wake persisted for %s but dispatch failed",
+                conversation_id,
+                exc_info=True,
+            )
+            with session.step_lock:
+                if session.step_seq == step_seq:
+                    session.generating = False
+                    session.generating_since = None
+            return True
+
+    @classmethod
+    def retry_deferred_watch_wakes(cls, conversation_id: str) -> None:
+        """Wake once if a completion arrived while this conversation was busy."""
+        from ..dirs import get_logs_dir
+        from ..tools.subagent.hooks import (
+            _completion_message,
+            take_queued_completions,
+        )
+        from ..tools.subagent.types import _completion_queue
+
+        logdir = (get_logs_dir() / conversation_id).resolve()
+        queued = take_queued_completions(logdir)
+        if not queued:
+            return
+        first, *rest = queued
+        for agent_id, status, summary, parent_branch in rest:
+            _completion_queue.put((logdir, agent_id, status, summary, parent_branch))
+        agent_id, status, summary, parent_branch = first
+        delivered = cls.request_watch_wake(
+            conversation_id,
+            _completion_message(agent_id, status, summary),
+            branch=parent_branch,
+        )
+        if not delivered:
+            _completion_queue.put((logdir, agent_id, status, summary, parent_branch))
 
     _STUCK_GENERATING_TIMEOUT_MINUTES = 10
 
