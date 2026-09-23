@@ -1,10 +1,11 @@
 const net = require("net");
 const { spawn } = require("child_process");
 const { resolve, join } = require("path");
-const { homedir } = require("os");
-const { rmSync, existsSync } = require("fs");
+const { mkdtempSync, rmSync } = require("fs");
+const { tmpdir } = require("os");
 
 let tauriDriver;
+let e2eHomeDir;
 const DRIVER_EXIT_TIMEOUT_MS = 5000;
 
 async function reserveSidecarPort() {
@@ -79,6 +80,11 @@ async function stopDriver(driverProcess, timeoutMs = DRIVER_EXIT_TIMEOUT_MS) {
 
   await new Promise((resolveExit, rejectExit) => {
     const timeout = setTimeout(() => {
+      try {
+        driverProcess.kill("SIGKILL");
+      } catch (_error) {
+        // Process may already be gone.
+      }
       rejectExit(new Error(`tauri-driver did not exit within ${timeoutMs}ms`));
     }, timeoutMs);
     driverProcess.once("exit", () => {
@@ -87,6 +93,16 @@ async function stopDriver(driverProcess, timeoutMs = DRIVER_EXIT_TIMEOUT_MS) {
     });
     driverProcess.kill();
   });
+}
+
+function removeE2eHome() {
+  if (!e2eHomeDir) {
+    return;
+  }
+  const home = e2eHomeDir;
+  e2eHomeDir = undefined;
+  rmSync(home, { recursive: true, force: true });
+  console.log(`[wdio] Removed isolated HOME: ${home}`);
 }
 
 exports.config = {
@@ -114,20 +130,8 @@ exports.config = {
   path: "/",
 
   beforeSession: async () => {
-    // Clear the Tauri WebKit user-data directory so each test starts with a
-    // clean localStorage / hasCompletedSetup=false.
-    const candidates = [
-      join(homedir(), ".local", "share", "org.gptme.tauri"),
-      join(homedir(), ".local", "share", "gptme-tauri"),
-      join(homedir(), ".config", "org.gptme.tauri"),
-      join(homedir(), ".config", "gptme-tauri"),
-    ];
-    for (const dir of candidates) {
-      if (existsSync(dir)) {
-        console.log(`[wdio] Clearing Tauri profile: ${dir}`);
-        rmSync(dir, { recursive: true, force: true });
-      }
-    }
+    // No-op: the Tauri app runs with an isolated HOME (e2eHomeDir) so it
+    // cannot read or write the developer's real profile directories.
   },
 
   onPrepare: async () => {
@@ -138,21 +142,36 @@ exports.config = {
     process.env.GPTME_SERVER_PORT = String(sidecarPort);
     console.log(`[wdio] Reserved sidecar port ${sidecarPort}`);
 
-    // Launch tauri-driver alongside tests and wait for it to accept sessions.
-    tauriDriver = spawn("tauri-driver", [], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-    tauriDriver.stdout.pipe(process.stdout);
-    tauriDriver.stderr.pipe(process.stderr);
+    // Create an isolated HOME so the Tauri app cannot read or write the
+    // developer's real profile data (gptme, org.gptme.tauri, etc.).
+    e2eHomeDir = mkdtempSync(join(tmpdir(), "wdio-gptme-"));
+    console.log(`[wdio] Isolated HOME: ${e2eHomeDir}`);
 
-    await waitForDriverReady(tauriDriver, 4444);
+    try {
+      // Launch tauri-driver alongside tests and wait for it to accept sessions.
+      tauriDriver = spawn("tauri-driver", [], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, HOME: e2eHomeDir, XDG_DATA_HOME: join(e2eHomeDir, ".local", "share"), XDG_CONFIG_HOME: join(e2eHomeDir, ".config") },
+      });
+      tauriDriver.stdout.pipe(process.stdout);
+      tauriDriver.stderr.pipe(process.stderr);
+
+      await waitForDriverReady(tauriDriver, 4444);
+    } catch (error) {
+      await stopDriver(tauriDriver).catch(() => {});
+      removeE2eHome();
+      throw error;
+    }
   },
 
   onComplete: async () => {
     // Shut down tauri-driver and wait for the launcher process itself. Each CI
     // spec uses a new sidecar port, so any PyInstaller child still unwinding
     // cannot be mistaken for the next app's managed server.
-    await stopDriver(tauriDriver);
+    try {
+      await stopDriver(tauriDriver);
+    } finally {
+      removeE2eHome();
+    }
   },
 };
