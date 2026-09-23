@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -267,13 +268,20 @@ def _refresh_access_token(
     return auth
 
 
-def oauth_authenticate() -> SubscriptionAuth:
+def oauth_authenticate(
+    on_url_ready: Callable[[str], object] | None = None,
+) -> SubscriptionAuth:
     """Authenticate via xAI OAuth PKCE flow and return tokens.
 
     If valid grok CLI tokens already exist (~/.grok/auth.json), they are
     returned immediately without opening a browser.  Otherwise, the xAI
     PKCE flow opens the user's browser and waits for the OAuth callback on
     localhost:{OAUTH_CALLBACK_PORT}.
+
+    Args:
+        on_url_ready: Optional callback invoked with the auth URL before the
+            browser is opened.  Return ``False`` to skip opening a browser
+            while leaving the PKCE flow running.  Raise to abort the flow.
     """
     import base64
     import hashlib
@@ -304,6 +312,10 @@ def oauth_authenticate() -> SubscriptionAuth:
         "code_challenge_method": "S256",
     }
     auth_url = f"{OAUTH_AUTH_URL}?{urlencode(auth_params)}"
+
+    should_open_browser = True
+    if on_url_ready is not None:
+        should_open_browser = on_url_ready(auth_url) is not False
 
     result: dict = {}
 
@@ -343,13 +355,23 @@ def oauth_authenticate() -> SubscriptionAuth:
             f"Could not start callback server on port {OAUTH_CALLBACK_PORT}: {e}"
         ) from e
 
-    logger.info("Opening browser for xAI authentication (url: %s)", auth_url)
+    if should_open_browser:
+        logger.info("Opening browser for xAI authentication (url: %s)", auth_url)
 
-    def _open() -> None:
-        time.sleep(0.5)
-        webbrowser.open(auth_url)
+        def _open() -> None:
+            time.sleep(0.5)
+            if not webbrowser.open(auth_url):
+                logger.warning(
+                    "webbrowser.open() returned False for xAI OAuth; URL: %s",
+                    auth_url,
+                )
 
-    threading.Thread(target=_open, daemon=True).start()
+        threading.Thread(target=_open, daemon=True).start()
+    else:
+        logger.info(
+            "Headless host: skipping browser open for xAI authentication (url: %s)",
+            auth_url,
+        )
 
     deadline = time.time() + 300
     try:

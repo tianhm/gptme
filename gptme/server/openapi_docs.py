@@ -340,6 +340,47 @@ class UserConfigFilePatchRequest(BaseModel):
     )
 
 
+class SubscriptionConnectRequest(BaseModel):
+    """Request to start a subscription OAuth flow."""
+
+    provider: str = Field(
+        ...,
+        description="Subscription provider: openai-subscription, grok-subscription, or openrouter",
+    )
+
+
+class SubscriptionConnectStartResponse(BaseModel):
+    """Response when a subscription OAuth task is started."""
+
+    task_id: str = Field(..., description="Opaque task ID to poll for status")
+    status: str = Field("pending", description="Always 'pending' on creation")
+
+
+class SubscriptionConnectStatusResponse(BaseModel):
+    """Status of a running or completed subscription OAuth task."""
+
+    task_id: str = Field(..., description="Opaque task ID")
+    status: str = Field(
+        ...,
+        description="One of: pending, connected, error",
+    )
+    provider: str = Field(..., description="Subscription provider slug")
+    model: str | None = Field(
+        None,
+        description="Recommended default model after successful auth (provider/model)",
+    )
+    error: str | None = Field(None, description="Error message when status=error")
+    oauth_url: str | None = Field(
+        None,
+        description=(
+            "OAuth authorization URL. Set once the background thread starts the "
+            "PKCE flow. On headless hosts the server skips opening a browser but "
+            "keeps the PKCE callback alive so the client can display this URL "
+            "for the user to finish authentication."
+        ),
+    )
+
+
 class UserConfigFilePatchResponse(UserConfigFileResponse):
     """Response after updating one config value."""
 

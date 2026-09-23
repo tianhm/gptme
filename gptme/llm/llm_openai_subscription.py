@@ -40,7 +40,7 @@ import threading
 import time
 import webbrowser
 from base64 import urlsafe_b64decode
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
@@ -259,11 +259,18 @@ class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(html.encode())
 
 
-def oauth_authenticate() -> SubscriptionAuth:
+def oauth_authenticate(
+    on_url_ready: Callable[[str], object] | None = None,
+) -> SubscriptionAuth:
     """Perform OAuth authentication flow.
 
     Opens browser for user to log in, handles callback, and exchanges
     authorization code for tokens.
+
+    Args:
+        on_url_ready: Optional callback invoked with the auth URL before the
+            browser is opened.  Return ``False`` to skip opening a browser
+            while leaving the PKCE flow running.  Raise to abort the flow.
     """
     if not _is_port_available(OAUTH_CALLBACK_PORT):
         raise ValueError(
@@ -288,6 +295,10 @@ def oauth_authenticate() -> SubscriptionAuth:
     }
     auth_url = f"{OAUTH_AUTH_URL}?{urlencode(auth_params)}"
 
+    should_open_browser = True
+    if on_url_ready is not None:
+        should_open_browser = on_url_ready(auth_url) is not False
+
     # Reset handler state (protected by port check - only one flow at a time)
     _OAuthCallbackHandler.authorization_code = None
     _OAuthCallbackHandler.error = None
@@ -299,14 +310,24 @@ def oauth_authenticate() -> SubscriptionAuth:
     )
     server.timeout = 120  # 2 minutes should be sufficient for browser auth
 
-    print("\n🔐 Opening browser for OpenAI authentication...", flush=True)
-    print(f"   If browser doesn't open, visit:\n   {auth_url}", flush=True)
+    if should_open_browser:
+        print("\n🔐 Opening browser for OpenAI authentication...", flush=True)
+        print(f"   If browser doesn't open, visit:\n   {auth_url}", flush=True)
 
-    def open_browser() -> None:
-        time.sleep(0.5)
-        webbrowser.open(auth_url)
+        def open_browser() -> None:
+            time.sleep(0.5)
+            if not webbrowser.open(auth_url):
+                logger.warning(
+                    "webbrowser.open() returned False for OpenAI OAuth; URL: %s",
+                    auth_url,
+                )
 
-    threading.Thread(target=open_browser, daemon=True).start()
+        threading.Thread(target=open_browser, daemon=True).start()
+    else:
+        print(
+            f"\n🔐 Headless host — open this URL to authenticate:\n   {auth_url}",
+            flush=True,
+        )
 
     print(
         f"   Waiting for authentication callback on port {OAUTH_CALLBACK_PORT}...",

@@ -110,6 +110,9 @@ from .openapi_docs import (
     MessageCreateRequest,
     SessionResponse,
     StatusResponse,
+    SubscriptionConnectRequest,
+    SubscriptionConnectStartResponse,
+    SubscriptionConnectStatusResponse,
     UserApiKeySaveRequest,
     UserApiKeySaveResponse,
     UserConfigFilePatchRequest,
@@ -3342,6 +3345,304 @@ def api_user_default_model():
             "restart_required": restart_required,
         }
     )
+
+
+# In-memory task store for subscription OAuth flows (task_id -> state dict).
+# Tasks are transient: they live only for the current server process.
+# Flask's threaded server (and gunicorn gthread) share this process, so a lock
+# is required around prune/lookup/insert/worker updates. gevent or
+# multiprocessing would still need a proper shared store; gptme-server doesn't
+# use those.
+_subscription_tasks: dict[str, dict] = {}
+_subscription_tasks_lock = threading.Lock()
+_SUBSCRIPTION_TASK_TTL_S = 15 * 60
+
+# Subscription provider slugs that use OAuth/PKCE instead of an API key.
+SUBSCRIPTION_PROVIDERS = frozenset(
+    {"openai-subscription", "grok-subscription", "openrouter"}
+)
+
+# Recommended default model string for each subscription provider.
+_SUBSCRIPTION_DEFAULT_MODELS: dict[str, str] = {
+    "openai-subscription": "openai-subscription/gpt-5.2",
+    "grok-subscription": "grok-subscription/grok-4.6",
+    "openrouter": "openrouter/openrouter/auto",
+}
+
+_SUBSCRIPTION_PUBLIC_KEYS = (
+    "task_id",
+    "status",
+    "provider",
+    "model",
+    "error",
+    "oauth_url",
+)
+
+
+def _public_subscription_task(task: dict) -> dict:
+    return {key: task.get(key) for key in _SUBSCRIPTION_PUBLIC_KEYS}
+
+
+def _prune_subscription_tasks(now: float | None = None) -> None:
+    """Drop tasks older than the TTL. Caller must hold `_subscription_tasks_lock`."""
+    cutoff = (now if now is not None else time.monotonic()) - _SUBSCRIPTION_TASK_TTL_S
+    stale = [
+        task_id
+        for task_id, task in _subscription_tasks.items()
+        if float(task.get("created_at", 0)) < cutoff
+    ]
+    for task_id in stale:
+        _subscription_tasks.pop(task_id, None)
+
+
+def _pending_subscription_task(provider: str) -> dict | None:
+    """Return the in-flight task for provider, if any. Caller must hold the lock."""
+    for task in _subscription_tasks.values():
+        if task.get("provider") == provider and task.get("status") == "pending":
+            return task
+    return None
+
+
+def _reuse_or_create_subscription_task(provider: str) -> tuple[str, bool]:
+    """Return `(task_id, created)` for one in-flight flow per provider.
+
+    Prune, lookup, and insert are atomic under `_subscription_tasks_lock` so
+    concurrent POSTs cannot start two OAuth threads for the same provider.
+    """
+    import secrets as _secrets
+
+    with _subscription_tasks_lock:
+        _prune_subscription_tasks()
+        existing = _pending_subscription_task(provider)
+        if existing is not None:
+            return str(existing["task_id"]), False
+        task_id = _secrets.token_urlsafe(16)
+        _subscription_tasks[task_id] = {
+            "task_id": task_id,
+            "status": "pending",
+            "provider": provider,
+            "model": None,
+            "error": None,
+            "oauth_url": None,
+            "created_at": time.monotonic(),
+        }
+        return task_id, True
+
+
+def _current_flask_app() -> flask.Flask:
+    """Unwrap Flask's LocalProxy so a background thread can push an app context.
+
+    Typeshed types `current_app` as `Flask`, which has no `_get_current_object`.
+    """
+    get_current = getattr(flask.current_app, "_get_current_object", None)
+    app = get_current() if callable(get_current) else flask.current_app
+    return cast(flask.Flask, app)
+
+
+def _persist_subscription_default_model(provider: str, app: flask.Flask) -> str | None:
+    """Persist the provider's default model so a fresh install can start a session."""
+    model = _SUBSCRIPTION_DEFAULT_MODELS.get(provider)
+    if not model:
+        return None
+    try:
+        with app.app_context():
+            _persist_default_model(model)
+    except Exception:
+        logger.warning(
+            "Could not apply subscription default model %s in-process; writing config only",
+            model,
+            exc_info=True,
+        )
+        try:
+            set_config_value("models.default", model, reload=False)
+            os.environ["MODEL"] = model
+        except Exception:
+            logger.warning(
+                "Failed to persist subscription default model %s", model, exc_info=True
+            )
+            return None
+    return model
+
+
+def _is_headless_server() -> bool:
+    """Return True if no interactive browser is available on the server host.
+
+    ``BROWSER`` is an explicit override (the user named a browser command).
+    CI, ``GPTME_HEADLESS``, SSH without a display, Windows services, and
+    Unix hosts without ``DISPLAY``/``WAYLAND_DISPLAY`` are treated as
+    headless. macOS/Windows desktops are not assumed to always have a
+    browser — remote/service sessions still count as headless.
+    """
+    import sys
+
+    if os.environ.get("BROWSER"):
+        return False
+    if os.environ.get("CI") or os.environ.get("GPTME_HEADLESS"):
+        return True
+    has_display = any(os.environ.get(v) for v in ("DISPLAY", "WAYLAND_DISPLAY"))
+    if (
+        os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT")
+    ) and not has_display:
+        return True
+    if sys.platform == "win32":
+        return os.environ.get("SESSIONNAME", "").lower() == "services"
+    if sys.platform == "darwin":
+        return False
+    return not has_display
+
+
+def _run_subscription_oauth(task_id: str, provider: str, app: flask.Flask) -> None:
+    """Background thread: run OAuth flow, update task state on completion."""
+    with _subscription_tasks_lock:
+        created_at = (_subscription_tasks.get(task_id) or {}).get(
+            "created_at", time.monotonic()
+        )
+
+    def _on_url_ready(url: str) -> bool:
+        """Store the OAuth URL; return False to skip opening a local browser.
+
+        Headless hosts must keep the PKCE flow alive: the client shows
+        ``oauth_url`` so the user can finish auth against the callback
+        listener. Raising here would drop the verifier and the listener.
+        """
+        with _subscription_tasks_lock:
+            task = _subscription_tasks.get(task_id)
+            if task is not None:
+                task["oauth_url"] = url
+        if _is_headless_server():
+            logger.info(
+                "Headless server: skipping browser open; OAuth URL stored for client"
+            )
+            return False
+        return True
+
+    try:
+        if provider == "openai-subscription":
+            from ..llm.llm_openai_subscription import oauth_authenticate
+
+            oauth_authenticate(on_url_ready=_on_url_ready)
+        elif provider == "grok-subscription":
+            from ..llm.llm_grok_subscription import (
+                oauth_authenticate as grok_oauth_authenticate,
+            )
+
+            grok_oauth_authenticate(on_url_ready=_on_url_ready)
+        elif provider == "openrouter":
+            from ..llm.llm_openrouter_subscription import oauth_get_api_key
+
+            api_key = oauth_get_api_key(on_url_ready=_on_url_ready)
+            # Persist and apply immediately so the running server picks it up.
+            env_var = "OPENROUTER_API_KEY"
+            set_config_value(f"env.{env_var}", api_key, reload=False, local=True)
+            os.environ[env_var] = api_key
+        else:
+            raise ValueError(f"Unknown subscription provider: {provider}")
+
+        model = _SUBSCRIPTION_DEFAULT_MODELS.get(provider)
+        _persist_subscription_default_model(provider, app)
+        with _subscription_tasks_lock:
+            _subscription_tasks[task_id] = {
+                "task_id": task_id,
+                "status": "connected",
+                "provider": provider,
+                "model": model,
+                "error": None,
+                "created_at": created_at,
+            }
+        logger.info("Subscription OAuth completed for provider %s", provider)
+    except Exception as exc:
+        logger.warning("Subscription OAuth failed for %s: %s", provider, exc)
+        with _subscription_tasks_lock:
+            existing_oauth_url = (_subscription_tasks.get(task_id) or {}).get(
+                "oauth_url"
+            )
+            _subscription_tasks[task_id] = {
+                "task_id": task_id,
+                "status": "error",
+                "provider": provider,
+                "model": None,
+                "error": str(exc),
+                "oauth_url": existing_oauth_url,
+                "created_at": created_at,
+            }
+
+
+@v2_api.route("/api/v2/user/subscription-connect", methods=["POST"])
+@require_auth
+@api_doc(
+    summary="Start subscription provider OAuth flow",
+    description=(
+        "Starts a background OAuth/PKCE flow for a subscription provider "
+        "(openai-subscription, grok-subscription, or openrouter). "
+        "Opens the system browser on the server host and waits for the local "
+        "OAuth callback. Returns a task_id that the client polls via "
+        "GET /api/v2/user/subscription-connect/{task_id}. "
+        "Only one flow per provider can run at a time (port binding constraint)."
+    ),
+    request_body=SubscriptionConnectRequest,
+    responses={
+        202: SubscriptionConnectStartResponse,
+        400: ErrorResponse,
+    },
+    tags=["user"],
+)
+def api_subscription_connect():
+    """Start a subscription OAuth flow in a background thread."""
+    req_json = request.get_json(silent=True)
+    if req_json is None:
+        return flask.jsonify({"error": "No JSON data provided"}), 400
+    if not isinstance(req_json, dict):
+        return flask.jsonify({"error": "JSON body must be an object"}), 400
+
+    provider = req_json.get("provider")
+    if not isinstance(provider, str) or provider not in SUBSCRIPTION_PROVIDERS:
+        return flask.jsonify(
+            {
+                "error": f"provider must be one of: {', '.join(sorted(SUBSCRIPTION_PROVIDERS))}"
+            }
+        ), 400
+
+    task_id, created = _reuse_or_create_subscription_task(provider)
+    if not created:
+        logger.info(
+            "Reusing pending subscription OAuth task %s for provider %s",
+            task_id,
+            provider,
+        )
+        return flask.jsonify({"task_id": task_id, "status": "pending"}), 202
+
+    app = _current_flask_app()
+    threading.Thread(
+        target=_run_subscription_oauth, args=(task_id, provider, app), daemon=True
+    ).start()
+    logger.info("Started subscription OAuth task %s for provider %s", task_id, provider)
+    return flask.jsonify({"task_id": task_id, "status": "pending"}), 202
+
+
+@v2_api.route("/api/v2/user/subscription-connect/<task_id>", methods=["GET"])
+@require_auth
+@api_doc(
+    summary="Poll subscription OAuth task status",
+    description=(
+        "Returns the current status of a subscription OAuth task started via "
+        "POST /api/v2/user/subscription-connect. "
+        "Poll until status is 'connected' or 'error'."
+    ),
+    responses={
+        200: SubscriptionConnectStatusResponse,
+        404: ErrorResponse,
+    },
+    tags=["user"],
+)
+def api_subscription_connect_status(task_id: str):
+    """Return the status of a subscription OAuth task."""
+    with _subscription_tasks_lock:
+        _prune_subscription_tasks()
+        task = _subscription_tasks.get(task_id)
+        payload = None if task is None else _public_subscription_task(task)
+    if payload is None:
+        return flask.jsonify({"error": "Unknown task ID"}), 404
+    return flask.jsonify(payload)
 
 
 @v2_api.route("/api/v2/user/favorites", methods=["POST"])

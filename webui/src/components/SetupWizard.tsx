@@ -16,9 +16,12 @@ import { useTauriServerStatus } from '@/hooks/useTauriServerStatus';
 import {
   API_KEY_PROVIDER_METADATA,
   API_KEY_PROVIDER_OPTIONS,
+  SUBSCRIPTION_PROVIDER_OPTIONS,
   type ApiKeyProvider,
+  type SubscriptionProvider,
 } from '@/utils/apiKeyProviders';
 import { formatUnknownError, messageFromApiErrorBody } from '@/utils/errors';
+import { isLocalApiBaseUrl } from '@/utils/openConversationPath';
 import { fetchProviderConfigured } from '@/utils/providerStatus';
 import { isTauriEnvironment, invokeTauri } from '@/utils/tauri';
 import { isDemoMode, processConnectionFromHash } from '@/utils/connectionConfig';
@@ -28,7 +31,16 @@ import {
   type SetupWizardStep,
 } from '@/stores/setupWizard';
 import { use$ } from '@legendapp/state/react';
-import { Monitor, Cloud, ArrowRight, Check, Terminal, ExternalLink, Copy } from 'lucide-react';
+import {
+  Monitor,
+  Cloud,
+  ArrowRight,
+  Check,
+  Terminal,
+  ExternalLink,
+  Copy,
+  Loader2,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 type SetupStep = SetupWizardStep;
@@ -64,6 +76,19 @@ function getCloudAuthUrl(): string {
   return `${cloudBaseUrl || 'https://gptme.ai'}/authorize`;
 }
 
+function safeHttpUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.href;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function isHostedPageOrigin(): boolean {
   if (typeof window === 'undefined' || !window.location) {
     return false;
@@ -78,6 +103,8 @@ const SERVER_START_RETRY_COUNT = 6;
 const SERVER_START_RETRY_DELAY_MS = 250;
 const SERVER_READY_RETRY_COUNT = 10;
 const SERVER_READY_RETRY_DELAY_MS = 250;
+const SUBSCRIPTION_POLL_INTERVAL_MS = 2000;
+const SUBSCRIPTION_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -136,6 +163,13 @@ export function SetupWizard() {
   const [recommendedModels, setRecommendedModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [subscriptionProvider, setSubscriptionProvider] =
+    useState<SubscriptionProvider>('openai-subscription');
+  const [subscriptionConnecting, setSubscriptionConnecting] = useState(false);
+  const [subscriptionTaskId, setSubscriptionTaskId] = useState<string | null>(null);
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
+  const [subscriptionOauthUrl, setSubscriptionOauthUrl] = useState<string | null>(null);
+  const subscriptionPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const completeSetup = useCallback(() => {
     updateSettings({ hasCompletedSetup: true });
@@ -498,6 +532,124 @@ export function SetupWizard() {
       );
     }
   };
+
+  const stopSubscriptionPoll = () => {
+    if (subscriptionPollRef.current) {
+      clearInterval(subscriptionPollRef.current);
+      subscriptionPollRef.current = null;
+    }
+  };
+
+  const finishSubscriptionConnect = async (model?: string) => {
+    stopSubscriptionPoll();
+    if (model) {
+      try {
+        await fetch(`${connectionConfig.baseUrl}/api/v2/user/default-model`, {
+          method: 'POST',
+          headers: withAuthHeaders(api.authHeader, { 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ model }),
+        });
+      } catch {
+        // Backend already persisted models.default; in-process apply is best-effort.
+      }
+    }
+    setSubscriptionConnecting(false);
+    setSubscriptionTaskId(null);
+    completeSetup();
+    setStep('complete');
+  };
+
+  const failSubscriptionConnect = (message: string) => {
+    stopSubscriptionPoll();
+    setSubscriptionConnecting(false);
+    setSubscriptionTaskId(null);
+    setSubscriptionError(message);
+  };
+
+  const handleSubscriptionConnect = async () => {
+    setSubscriptionConnecting(true);
+    setSubscriptionError(null);
+    setSubscriptionTaskId(null);
+    setSubscriptionOauthUrl(null);
+    try {
+      const resp = await fetch(`${connectionConfig.baseUrl}/api/v2/user/subscription-connect`, {
+        method: 'POST',
+        headers: withAuthHeaders(api.authHeader, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ provider: subscriptionProvider }),
+      });
+      if (!resp.ok) {
+        const data: unknown = await resp.json().catch(() => null);
+        throw new Error(messageFromApiErrorBody(data, `Failed to start OAuth (${resp.status})`));
+      }
+      const data = (await resp.json()) as { task_id: string; status: string };
+      setSubscriptionTaskId(data.task_id);
+
+      let stopped = false;
+      const startedAt = Date.now();
+      const pollOnce = async () => {
+        if (stopped) return;
+        if (Date.now() - startedAt > SUBSCRIPTION_POLL_TIMEOUT_MS) {
+          stopped = true;
+          failSubscriptionConnect('Sign-in timed out. Please try again.');
+          return;
+        }
+        try {
+          const statusResp = await fetch(
+            `${connectionConfig.baseUrl}/api/v2/user/subscription-connect/${data.task_id}`,
+            { headers: withAuthHeaders(api.authHeader) }
+          );
+          if (stopped) return;
+          if (statusResp.status === 404 || (statusResp.status >= 400 && statusResp.status < 500)) {
+            stopped = true;
+            failSubscriptionConnect('Sign-in session was lost. Please try again.');
+            return;
+          }
+          if (!statusResp.ok) return;
+          const statusData = (await statusResp.json()) as {
+            status: string;
+            error?: string;
+            model?: string;
+            oauth_url?: string | null;
+          };
+          const oauthUrl = safeHttpUrl(statusData.oauth_url);
+          if (oauthUrl) {
+            setSubscriptionOauthUrl(oauthUrl);
+          }
+          if (statusData.status === 'connected') {
+            stopped = true;
+            await finishSubscriptionConnect(statusData.model);
+          } else if (statusData.status === 'error') {
+            stopped = true;
+            failSubscriptionConnect(statusData.error ?? 'OAuth flow failed. Please try again.');
+          }
+        } catch {
+          // Ignore transient network errors; the next interval retry will pick up.
+        }
+      };
+
+      stopSubscriptionPoll();
+      await pollOnce();
+      if (!stopped) {
+        subscriptionPollRef.current = setInterval(() => {
+          void pollOnce();
+        }, SUBSCRIPTION_POLL_INTERVAL_MS);
+      }
+    } catch (err) {
+      setSubscriptionConnecting(false);
+      setSubscriptionError(formatUnknownError(err, 'Failed to start subscription sign-in.'));
+    }
+  };
+
+  // Clean up subscription poll on unmount
+  useEffect(() => {
+    return () => {
+      if (subscriptionPollRef.current) clearInterval(subscriptionPollRef.current);
+    };
+  }, []);
+
+  // OAuth opens a browser on the server host, so this UI is only safe when the
+  // API is loopback — not a remote URL that happens to contain "localhost".
+  const isLocalServer = isLocalApiBaseUrl(connectionConfig.baseUrl);
 
   const handleCloudLogin = async () => {
     // Open the cloud auth URL — the deep-link flow (gptme://) or URL fragment
@@ -1032,6 +1184,83 @@ export function SetupWizard() {
                   : 'Then restart the server and check again.'}
               </p>
             </div>
+            {(canManageApiKeyInApp || isLocalServer) && (
+              <div className="rounded-lg border bg-muted/40 p-4 text-sm">
+                <p className="font-medium">Use a subscription</p>
+                <p className="mt-1 text-muted-foreground">
+                  Sign in with ChatGPT, Grok, or OpenRouter — no API key needed.
+                </p>
+                <div className="mt-3 flex flex-col gap-3">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="setup-subscription-provider">Subscription</Label>
+                    <select
+                      id="setup-subscription-provider"
+                      className="h-9 rounded-md border bg-background px-3 text-sm"
+                      value={subscriptionProvider}
+                      onChange={(e) =>
+                        setSubscriptionProvider(e.target.value as SubscriptionProvider)
+                      }
+                      disabled={subscriptionConnecting}
+                    >
+                      {SUBSCRIPTION_PROVIDER_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground">
+                      {
+                        SUBSCRIPTION_PROVIDER_OPTIONS.find((o) => o.value === subscriptionProvider)
+                          ?.description
+                      }
+                    </p>
+                  </div>
+                  {subscriptionConnecting && subscriptionTaskId && (
+                    <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted px-3 py-2 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                        Sign in with your browser to complete authentication…
+                      </div>
+                      {subscriptionOauthUrl && (
+                        <a
+                          href={subscriptionOauthUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-testid="setup-wizard-oauth-url"
+                          className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-2"
+                        >
+                          Open sign-in page
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+                  {subscriptionError && (
+                    <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                      {subscriptionError}
+                    </div>
+                  )}
+                  <Button
+                    onClick={() => void handleSubscriptionConnect()}
+                    disabled={subscriptionConnecting}
+                    className="gap-2"
+                    data-testid="setup-wizard-subscription-connect"
+                  >
+                    {subscriptionConnecting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Waiting for sign-in…
+                      </>
+                    ) : (
+                      <>
+                        Connect with subscription
+                        <ExternalLink className="h-4 w-4" />
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
             <DialogFooter className="gap-2 sm:gap-0">
               <Button variant="outline" onClick={() => setStep('cloud')}>
                 Use gptme.ai instead
