@@ -8,6 +8,7 @@ Data models live in session_models.py; execution logic in session_step.py.
 
 import dataclasses
 import logging
+import math
 import time
 import uuid
 from collections.abc import Generator
@@ -114,6 +115,24 @@ def _get_optional_string_field(
     if not stripped:
         return flask.jsonify({"error": f"{field} must be a non-empty string"}), 400
     return stripped
+
+
+def _parse_finite_float_in_range(value: object, lo: float, hi: float) -> float | None:
+    """Parse a finite float in [lo, hi], or None if invalid.
+
+    JSON integers larger than ``sys.float_info.max`` raise OverflowError
+    from ``float()`` / ``math.isfinite``; treat those as invalid so the
+    API returns 400 instead of an unhandled 500.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(parsed) or parsed < lo or parsed > hi:
+        return None
+    return parsed
 
 
 # Re-export step-level symbols that other modules may import from here.
@@ -342,6 +361,24 @@ def api_conversation_step(conversation_id: str):
     ):
         return flask.jsonify({"error": "max_tokens must be a positive integer"}), 400
 
+    temperature = req_json.get("temperature")
+    if temperature is not None:
+        parsed_temperature = _parse_finite_float_in_range(temperature, 0.0, 2.0)
+        if parsed_temperature is None:
+            return flask.jsonify(
+                {"error": "temperature must be a finite float in [0.0, 2.0]"}
+            ), 400
+        temperature = parsed_temperature
+
+    top_p = req_json.get("top_p")
+    if top_p is not None:
+        parsed_top_p = _parse_finite_float_in_range(top_p, 0.0, 1.0)
+        if parsed_top_p is None:
+            return flask.jsonify(
+                {"error": "top_p must be a finite float in [0.0, 1.0]"}
+            ), 400
+        top_p = parsed_top_p
+
     if "stream" in req_json:
         stream = req_json["stream"]
         if not isinstance(stream, bool):
@@ -496,6 +533,8 @@ def api_conversation_step(conversation_id: str):
                 reserved=True,
                 step_seq=step_seq,
                 max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
             )
         else:
             # model should be non-None here: the `if not model and not session.use_acp`
@@ -518,6 +557,8 @@ def api_conversation_step(conversation_id: str):
                 reserved=True,
                 step_seq=step_seq,
                 max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
             )
         _step_dispatched = True
     finally:
@@ -690,6 +731,8 @@ def api_conversation_tool_confirm(conversation_id: str):
             chat_config,
             branch=tool_exec.branch,
             max_tokens=tool_exec.max_tokens,
+            temperature=tool_exec.temperature,
+            top_p=tool_exec.top_p,
         )
         return flask.jsonify({"status": "ok", "message": "Tool confirmed"})
 
@@ -711,6 +754,8 @@ def api_conversation_tool_confirm(conversation_id: str):
             chat_config,
             branch=tool_exec.branch,
             max_tokens=tool_exec.max_tokens,
+            temperature=tool_exec.temperature,
+            top_p=tool_exec.top_p,
         )
 
     elif action == "skip":
@@ -774,6 +819,8 @@ def api_conversation_tool_confirm(conversation_id: str):
                     reserved=True,
                     step_seq=skip_step_seq,
                     max_tokens=current_tool.max_tokens,
+                    temperature=current_tool.temperature,
+                    top_p=current_tool.top_p,
                 )
             finally:
                 if not continuation_dispatched:
@@ -803,6 +850,8 @@ def api_conversation_tool_confirm(conversation_id: str):
             chat_config,
             branch=tool_exec.branch,
             max_tokens=tool_exec.max_tokens,
+            temperature=tool_exec.temperature,
+            top_p=tool_exec.top_p,
         )
 
     return flask.jsonify({"status": "ok", "message": f"Tool {action}ed"})
