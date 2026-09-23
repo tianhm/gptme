@@ -201,6 +201,22 @@ class TestGptmeAcpClientInterface:
         with pytest.raises(RuntimeError, match="not connected"):
             _run(client.prompt("fake-session", "hello"))
 
+    def test_prompt_forwards_max_tokens_via_meta(self, tmp_path):
+        client = self.GptmeAcpClient(workspace=tmp_path)
+        client._conn = MagicMock()
+        client._conn.prompt = AsyncMock(return_value=MagicMock(stop_reason="end_turn"))
+
+        _run(client.prompt("session-123", "hello", max_tokens=64))
+
+        await_args = client._conn.prompt.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
+        assert kwargs["session_id"] == "session-123"
+        # Extra kwargs become protocol _meta; the agent unpacks that into
+        # kwargs["gptme"]. Passing _meta= here would nest as _meta._meta.
+        assert kwargs["gptme"] == {"max_tokens": 64}
+        assert "_meta" not in kwargs
+
     def test_new_session_without_connect_raises(self, tmp_path):
         client = self.GptmeAcpClient(workspace=tmp_path)
         with pytest.raises(RuntimeError, match="not connected"):
