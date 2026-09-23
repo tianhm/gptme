@@ -1,8 +1,12 @@
 """Tests for custom OpenAI-compatible providers configuration."""
 
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from gptme.config import Config, ProviderConfig, UserConfig
+from gptme.config.user import get_user_config_runtime_path, load_user_config
 
 
 def test_provider_config_creation():
@@ -76,6 +80,168 @@ def test_backward_compatibility_local_provider():
     """Test that 'local' provider still works with existing env vars."""
     # The "local" provider should still work using OPENAI_BASE_URL
     # This is tested in the init function with the existing elif branch
+
+
+def test_malformed_provider_entries_skipped_not_fatal():
+    """A malformed [[providers]] entry must not crash config loading.
+
+    Regression test: a provider missing a required field (name or base_url)
+    previously raised an unhandled TypeError from `_load_user_config`, which
+    crashed every gptme/gptme-util invocation (including `--help`) since
+    config loading happens eagerly at startup.
+    """
+    config_toml = """
+[[providers]]
+name = "missing-base-url"
+
+[[providers]]
+base_url = "http://localhost:9999/v1"
+
+[[providers]]
+name = "valid"
+base_url = "http://localhost:8000/v1"
+
+[env]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_toml)
+    try:
+        config = load_user_config(f.name)
+        # Only the valid entry should survive; malformed ones are skipped.
+        assert len(config.providers) == 1
+        assert config.providers[0].name == "valid"
+    finally:
+        os.remove(f.name)
+
+
+def test_non_dict_provider_entry_skipped_not_fatal():
+    """A non-table [[providers]] entry (e.g. a bare string) must not crash."""
+    config_toml = """
+providers = ["not-a-table"]
+
+[env]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_toml)
+    try:
+        config = load_user_config(f.name)
+        assert config.providers == []
+    finally:
+        os.remove(f.name)
+
+
+def test_malformed_user_providers_skipped_with_empty_runtime_overlay(
+    tmp_path: Path,
+) -> None:
+    """A runtime overlay with no providers must not make user errors fatal."""
+    main = tmp_path / "config.toml"
+    main.write_text(
+        """
+[[providers]]
+name = "missing-base-url"
+
+[[providers]]
+name = "valid"
+base_url = "http://localhost:8000/v1"
+""",
+        encoding="utf-8",
+    )
+    get_user_config_runtime_path(str(main)).write_text(
+        "# runtime overlay, no providers\n", encoding="utf-8"
+    )
+
+    config = load_user_config(str(main))
+    assert [p.name for p in config.providers] == ["valid"]
+
+
+def test_malformed_user_provider_skipped_alongside_runtime_providers(
+    tmp_path: Path,
+) -> None:
+    """Valid runtime providers survive a malformed extra in user config."""
+    main = tmp_path / "config.toml"
+    main.write_text(
+        """
+[[providers]]
+name = "missing-base-url"
+
+[[providers]]
+name = "valid-user"
+base_url = "http://localhost:8000/v1"
+""",
+        encoding="utf-8",
+    )
+    get_user_config_runtime_path(str(main)).write_text(
+        """
+[[providers]]
+name = "runtime-ok"
+base_url = "http://localhost:9000/v1"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_user_config(str(main))
+    names = [p.name for p in config.providers]
+    assert "missing-base-url" not in names
+    assert "runtime-ok" in names
+    assert "valid-user" in names
+
+
+def test_malformed_same_name_override_does_not_drop_runtime_provider(
+    tmp_path: Path,
+) -> None:
+    """A malformed user override of a runtime provider must not remove it.
+
+    Merge-by-name used to apply unexpected keys onto the runtime entry, after
+    which non-strict parse skipped the whole provider.
+    """
+    main = tmp_path / "config.toml"
+    main.write_text(
+        """
+[[providers]]
+name = "runtime-ok"
+unexpected_key = true
+""",
+        encoding="utf-8",
+    )
+    get_user_config_runtime_path(str(main)).write_text(
+        """
+[[providers]]
+name = "runtime-ok"
+base_url = "http://localhost:9000/v1"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_user_config(str(main))
+    assert [p.name for p in config.providers] == ["runtime-ok"]
+    assert config.providers[0].base_url == "http://localhost:9000/v1"
+
+
+def test_valid_same_name_user_override_still_applies(tmp_path: Path) -> None:
+    """A well-formed same-name override still merges onto the runtime entry."""
+    main = tmp_path / "config.toml"
+    main.write_text(
+        """
+[[providers]]
+name = "runtime-ok"
+api_key = "user-secret"
+""",
+        encoding="utf-8",
+    )
+    get_user_config_runtime_path(str(main)).write_text(
+        """
+[[providers]]
+name = "runtime-ok"
+base_url = "http://localhost:9000/v1"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_user_config(str(main))
+    assert len(config.providers) == 1
+    assert config.providers[0].name == "runtime-ok"
+    assert config.providers[0].base_url == "http://localhost:9000/v1"
+    assert config.providers[0].api_key == "user-secret"
 
 
 def test_custom_provider_supports_tools_api():
