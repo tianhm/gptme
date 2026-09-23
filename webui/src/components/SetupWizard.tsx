@@ -20,6 +20,7 @@ import {
   type ApiKeyProvider,
   type SubscriptionProvider,
 } from '@/utils/apiKeyProviders';
+import { isRetryableConnectionFailure } from '@/utils/api';
 import { formatUnknownError, messageFromApiErrorBody } from '@/utils/errors';
 import { isLocalApiBaseUrl } from '@/utils/openConversationPath';
 import { fetchProviderConfigured } from '@/utils/providerStatus';
@@ -103,6 +104,10 @@ const SERVER_START_RETRY_COUNT = 6;
 const SERVER_START_RETRY_DELAY_MS = 250;
 const SERVER_READY_RETRY_COUNT = 10;
 const SERVER_READY_RETRY_DELAY_MS = 250;
+// On first launch the managed sidecar may need several seconds to start.
+// Retry the initial connect button for up to 15 seconds before giving up.
+const MANAGED_CONNECT_RETRY_COUNT = 15;
+const MANAGED_CONNECT_RETRY_DELAY_MS = 1000;
 const SUBSCRIPTION_POLL_INTERVAL_MS = 2000;
 const SUBSCRIPTION_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -346,7 +351,14 @@ export function SetupWizard() {
       lastAutoAdvanceBaseUrlRef.current = null;
       return;
     }
-    if (!isOpen || step === 'welcome' || step === 'complete' || step === 'provider') return;
+    if (
+      !isOpen ||
+      step === 'welcome' ||
+      step === 'mode' ||
+      step === 'complete' ||
+      step === 'provider'
+    )
+      return;
 
     if (lastAutoAdvanceBaseUrlRef.current === connectionConfig.baseUrl) return;
     lastAutoAdvanceBaseUrlRef.current = connectionConfig.baseUrl;
@@ -463,12 +475,33 @@ export function SetupWizard() {
             }
           : null;
       const trimmedAuthToken = remoteAuthToken.trim();
-      await connect(
-        managedServerConfig ?? {
-          authToken: trimmedAuthToken || null,
-          useAuthToken: Boolean(trimmedAuthToken),
+      const config = managedServerConfig ?? {
+        authToken: trimmedAuthToken || null,
+        useAuthToken: Boolean(trimmedAuthToken),
+      };
+
+      if (managedServerConfig) {
+        // The managed sidecar may still be starting up (slow on first launch,
+        // especially on Windows). Retry transient probe failures (network /
+        // timeout) for up to ~15 s. CORS and HTTP errors cannot recover by
+        // retrying the same origin, so they surface immediately.
+        for (let attempt = 0; attempt < MANAGED_CONNECT_RETRY_COUNT; attempt++) {
+          const isLastAttempt = attempt === MANAGED_CONNECT_RETRY_COUNT - 1;
+          try {
+            // Intermediate failures must not toast — a sidecar that comes up
+            // on attempt 3 would otherwise flash several connection errors.
+            await connect(config, undefined, { suppressErrorToast: !isLastAttempt });
+            return; // success — the isConnected effect calls checkProviderAndAdvance
+          } catch (err) {
+            if (!isRetryableConnectionFailure(api.lastConnectionResult$.get()) || isLastAttempt) {
+              throw err;
+            }
+            await sleep(MANAGED_CONNECT_RETRY_DELAY_MS);
+          }
         }
-      );
+      } else {
+        await connect(config);
+      }
       // The isConnected useEffect will fire and call checkProviderAndAdvance.
     } catch (err) {
       setConnectError(
