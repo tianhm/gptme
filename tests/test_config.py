@@ -3172,88 +3172,24 @@ def test_load_user_config_plugin_sections_preserved(tmp_path):
     assert "headroom_compressor" in content_after
 
 
-def test_chat_config_accepts_gear_field(tmp_path):
-    config = ChatConfig.from_dict({"chat": {"gear": 3, "workspace": str(tmp_path)}})
+def test_chat_config_ignores_legacy_gear_key(tmp_path):
+    """A conversation saved before --gear was removed must still load."""
+    config = ChatConfig.from_dict(
+        {
+            "chat": {
+                "gear": 0,
+                "workspace": str(tmp_path),
+                "model": "anthropic/claude-sonnet-4-6",
+            }
+        }
+    )
 
-    assert config.gear == 3
+    assert config.model == "anthropic/claude-sonnet-4-6"
+    assert not hasattr(config, "gear")
 
 
-@pytest.mark.parametrize("value", ["3", True])
-def test_chat_config_rejects_non_integer_gear(value):
-    with pytest.raises(ValueError, match="chat.gear must be an integer"):
-        ChatConfig.from_dict({"chat": {"gear": value}})
-
-
-def test_project_settings_gear_loaded():
+def test_project_config_ignores_legacy_gear_setting():
+    """A project config written before --gear was removed must still load."""
     config = ProjectConfig.from_dict({"settings": {"gear": 2}})
 
-    assert config.settings.gear == 2
-
-
-def test_setup_config_from_cli_applies_gear_preset(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    logdir = tmp_path / "logs"
-    logdir.mkdir()
-
-    config = setup_config_from_cli(
-        workspace=workspace,
-        logdir=logdir,
-        model=None,
-        tool_allowlist=None,
-        tool_format=None,
-        gear=2,
-        stream=True,
-        interactive=True,
-        agent_path=None,
-    )
-
-    assert config.chat is not None
-    assert config.chat.gear == 2
-    assert config.chat.no_confirm is False
-    assert config.chat.tools == ["read", "patch", "save", "append"]
-
-
-def test_setup_config_from_cli_explicit_tools_override_gear(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    logdir = tmp_path / "logs"
-    logdir.mkdir()
-
-    config = setup_config_from_cli(
-        workspace=workspace,
-        logdir=logdir,
-        model=None,
-        tool_allowlist="read",
-        tool_format=None,
-        gear=3,
-        stream=True,
-        interactive=True,
-        agent_path=None,
-    )
-
-    assert config.chat is not None
-    assert config.chat.gear == 3
-    assert config.chat.tools == ["read"]
-
-
-def test_setup_config_from_cli_noninteractive_gear_profile_adds_complete(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    logdir = tmp_path / "logs"
-    logdir.mkdir()
-
-    config = setup_config_from_cli(
-        workspace=workspace,
-        logdir=logdir,
-        model=None,
-        tool_allowlist=None,
-        tool_format=None,
-        gear=0,
-        stream=True,
-        interactive=False,
-        agent_path=None,
-    )
-
-    assert config.chat is not None
-    assert config.chat.tools == ["read", "chats", "complete"]
+    assert not hasattr(config.settings, "gear")
