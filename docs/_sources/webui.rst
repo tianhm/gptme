@@ -10,6 +10,10 @@ is the richest way to work with gptme and your :doc:`agents <agents>`: a chat
 interface that shows what the agent is doing and what it produced, rather than a
 transcript alone.
 
+.. image:: ../media/screenshots/webui.png
+   :alt: The gptme web UI showing a conversation with a Python code block and its output
+   :width: 100%
+
 Alongside the conversation it renders **artifacts** the agent created, **panels**
 that tools declare at runtime (sandboxed iframes and live apps with their own
 lifecycle), **browser and computer previews** of what the agent sees, tool
@@ -44,9 +48,10 @@ open http://localhost:5700.
 
    Release packages ship the modern UI, which ``gptme-server`` serves from
    ``gptme/server/webui-dist``. A source checkout without ``make bundle-webui``
-   falls back to a minimal legacy page bundled in ``gptme/server/static``. That
-   page is not a supported interface; its templates are currently also reused by
-   the HTML export (``gptme-util chats export <id> -f html``).
+   has no UI to serve: the API keeps working and the browser routes explain how
+   to build or point at one. From the repository root, build it with
+   ``(cd webui && npm run build) && make bundle-webui``, or set
+   ``GPTME_WEBUI_DIR`` to an existing build.
 
 Frontend development
 --------------------
