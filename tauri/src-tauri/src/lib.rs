@@ -19,6 +19,9 @@ use tauri_plugin_shell::ShellExt;
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
 
+mod lan_access;
+use lan_access::{disable_lan_access, enable_lan_access, get_lan_access_status, LanAccess};
+
 const GPTME_SERVER_PORT: u16 = 5700;
 const SERVER_TOKEN_ENV: &str = "GPTME_SERVER_TOKEN";
 
@@ -609,6 +612,9 @@ pub fn run() {
             get_server_status,
             start_server,
             stop_server,
+            enable_lan_access,
+            disable_lan_access,
+            get_lan_access_status,
         ])
         .setup(|app| {
             log::info!("Starting gptme application");
@@ -633,6 +639,10 @@ pub fn run() {
                 log::info!("Deep link event received: {:?}", urls);
                 handle_deep_link_urls(&handle, urls);
             });
+
+            // LAN state must be managed on all platforms so commands can extract it
+            // (even though enable_lan_access returns an error on non-desktop).
+            app.manage(LanAccess::new(server_port()));
 
             #[cfg(desktop)]
             {
@@ -917,10 +927,14 @@ mod tests {
                 // runtime-generic ServerProcess instead.
                 app_handle: Arc::new(Mutex::new(None)),
             })
+            .manage(LanAccess::new(server_port()))
             .invoke_handler(tauri::generate_handler![
                 get_server_status,
                 start_server,
                 stop_server,
+                enable_lan_access,
+                disable_lan_access,
+                get_lan_access_status,
             ])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
