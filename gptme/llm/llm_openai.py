@@ -7,7 +7,7 @@ import os
 import re
 from collections.abc import Generator, Iterable
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import requests
 
@@ -1572,7 +1572,10 @@ def _stream_responses(
         )
 
     stream = client.responses.create(**kwargs)
-    yield from _stream_responses_events(stream, usage_callback=_capture_usage)
+    yield from _stream_responses_events(
+        _guarded_stream_iter(stream, model=model, provider=provider),
+        usage_callback=_capture_usage,
+    )
 
     if captured_metadata is None and reasoning_effort is not None:
         # No usage event arrived; still record what was requested.
@@ -1580,6 +1583,57 @@ def _stream_responses(
             None, model, reasoning_effort=reasoning_effort
         )
     return captured_metadata
+
+
+def _reraise_openai_stream_iteration_error(
+    exc: BaseException, *, model: str, provider: Provider
+) -> NoReturn:
+    """Re-raise a chat-stream iterator crash so retry and recovery can see it.
+
+    The openai SDK raises ``IndexError`` (and similar) inside ``Stream.__next__``
+    when a provider sends a malformed SSE chunk. That is not an
+    ``openai.APIError``, so wrapping it as ``ValueError`` would skip
+    ``_handle_openai_transient_error`` and ``is_provider_error()`` — the
+    session still dies opaque. Preserve real SDK and httpx errors; convert
+    the rest to ``httpx.RemoteProtocolError``.
+    """
+    from openai import OpenAIError  # fmt: skip
+
+    httpx = importlib.import_module("httpx")
+    if isinstance(exc, OpenAIError | httpx.HTTPError):
+        raise exc
+    raise httpx.RemoteProtocolError(
+        f"OpenAI stream iteration failed while parsing a chunk from "
+        f"{model} (provider={provider}): {exc!r}"
+    ) from exc
+
+
+def _guarded_stream_iter(
+    source: Iterable[Any], *, model: str, provider: Provider
+) -> Generator[Any, None, None]:
+    """Advance a provider SDK stream, converting parser crashes on ``next()``.
+
+    Only the advance is guarded, never the consumer body, so genuine bugs in
+    gptme's own processing stay visible. Shared by the Chat Completions and
+    Responses API streams so a malformed SSE event is retryable and classifiable
+    on both paths.
+
+    ``iter(source)`` is unguarded on purpose: ``openai.Stream.__iter__`` only
+    constructs a generator. Chunk parsing runs in ``Stream.__next__`` /
+    ``__stream__``, which is the ``next(iterator)`` call below.
+    """
+    # Parsing crashes on next(), not on constructing the iterator.
+    iterator = iter(source)
+    while True:
+        try:
+            item = next(iterator)
+        except StopIteration:
+            return
+        except Exception as exc:
+            _reraise_openai_stream_iteration_error(exc, model=model, provider=provider)
+        # Yield is outside the try: a consumer .throw() / yield-from throw-in
+        # at this point must stay the original exception, not a protocol error.
+        yield item
 
 
 @retry_generator_on_openai_error()
@@ -1700,7 +1754,7 @@ def stream(
                 reasoning_effort=reasoning_effort,
             )
 
-    for chunk_raw in _stream_obj:
+    for chunk_raw in _guarded_stream_iter(_stream_obj, model=model, provider=provider):
         from openai.types.chat import ChatCompletionChunk  # fmt: skip
         from openai.types.chat.chat_completion_chunk import (  # fmt: skip
             ChoiceDeltaToolCall,

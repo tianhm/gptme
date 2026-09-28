@@ -3225,6 +3225,254 @@ class TestOpenRouterPrivacyFallbackRetry:
         assert result == "Hello"
 
 
+class TestOpenAIStreamMalformedChunk:
+    """stream() must convert an SDK chunk-parsing crash into a retryable
+    provider/protocol error carrying model + provider context, while
+    re-raising real SDK and httpx errors unchanged.
+
+    Regression guard for the minimax-m3 `list index out of range` crash
+    (gptme/llm/llm_openai.py stream(), 2026-09-28) that died opaque and
+    unclassifiable. Wrapping as ValueError was not enough: retry and
+    interactive recovery do not recognize ValueError. See gptme/gptme#3984.
+    """
+
+    @staticmethod
+    def _setup_stream(monkeypatch, stream_obj):
+        from gptme.message import Message
+
+        mock_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **kwargs: stream_obj)
+            )
+        )
+        monkeypatch.setattr(llm_openai, "get_client", lambda provider: mock_client)
+        monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
+        monkeypatch.setattr(
+            llm_openai, "_should_use_responses_api", lambda *args: False
+        )
+        # Avoid the autouse GPTME_TEST_MAX_RETRIES=2 backoff on retryable errors
+        # unless a test is specifically asserting retry behaviour.
+        monkeypatch.setenv("GPTME_TEST_MAX_RETRIES", "1")
+        return [Message(role="user", content="Hi")]
+
+    @staticmethod
+    def _raising_stream(exc: BaseException):
+        """openai.Stream-shaped stub: parsing crashes on next(), not iter().
+
+        The SDK's Stream.__iter__ is a generator; Stream.__next__ forwards to
+        the internal __stream__ iterator where malformed SSE parsing raises.
+        A generator __iter__ that raises before its first yield happens to
+        exercise next() too, but it hides the real crash site.
+        """
+
+        class _BadStream:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise exc
+
+        return _BadStream()
+
+    def test_malformed_chunk_raises_retryable_protocol_error(self, monkeypatch):
+        """A chunk-parsing IndexError surfaces as httpx.RemoteProtocolError."""
+        import httpx
+
+        from gptme.llm import is_provider_error, mark_llm_reply_origin
+
+        messages = self._setup_stream(
+            monkeypatch, self._raising_stream(IndexError("list index out of range"))
+        )
+        with pytest.raises(
+            httpx.RemoteProtocolError, match="OpenAI stream iteration failed"
+        ) as excinfo:
+            list(
+                llm_openai.stream(
+                    messages,
+                    "openrouter/minimax/minimax-m3",
+                    None,
+                )
+            )
+        err = excinfo.value
+        msg = str(err)
+        assert "OpenAI stream iteration failed" in msg
+        assert "minimax-m3" in msg
+        assert "openrouter" in msg
+        assert "list index out of range" in msg
+        assert isinstance(err.__cause__, IndexError)
+        assert not is_provider_error(err)
+        mark_llm_reply_origin(err)
+        assert is_provider_error(err)
+
+    def test_api_error_during_iteration_reraises_unchanged(self, monkeypatch):
+        """A real provider API error mid-stream is not converted."""
+        err = _make_api_status_error(
+            "rate limited", 429, body={"error": "rate limited"}
+        )
+
+        messages = self._setup_stream(monkeypatch, self._raising_stream(err))
+        with pytest.raises(openai.APIStatusError) as excinfo:
+            list(
+                llm_openai.stream(
+                    messages,
+                    "openrouter/deepseek/deepseek-v4-flash-0731",
+                    None,
+                )
+            )
+        assert excinfo.value is err
+
+    def test_httpx_transport_error_during_iteration_reraises_unchanged(
+        self, monkeypatch
+    ):
+        """Raw httpx transport errors keep retry handling; not wrapped."""
+        import httpx
+
+        err = httpx.ConnectError("connection reset")
+
+        messages = self._setup_stream(monkeypatch, self._raising_stream(err))
+        with pytest.raises(httpx.ConnectError) as excinfo:
+            list(
+                llm_openai.stream(
+                    messages,
+                    "openrouter/minimax/minimax-m3",
+                    None,
+                )
+            )
+        assert excinfo.value is err
+
+    def test_malformed_chunk_is_retried_before_output(self, monkeypatch):
+        """Malformed-chunk errors are retried by the stream decorator."""
+        calls = {"n": 0}
+
+        class _GoodStream:
+            response = SimpleNamespace(headers={})
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise StopIteration
+
+        def create(**_kwargs):
+            calls["n"] += 1
+            return (
+                self._raising_stream(IndexError("list index out of range"))
+                if calls["n"] < 2
+                else _GoodStream()
+            )
+
+        mock_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        monkeypatch.setattr(llm_openai, "get_client", lambda provider: mock_client)
+        monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
+        monkeypatch.setattr(
+            llm_openai, "_should_use_responses_api", lambda *args: False
+        )
+        # Pin 2 attempts (one retry). GPTME_TEST_MAX_RETRIES only short-circuits
+        # the backoff; the decorator's loop count comes from get_max_retries(),
+        # so GPTME_LLM_MAX_RETRIES must be pinned too — otherwise a supported
+        # GPTME_LLM_MAX_RETRIES=1 gives the loop a single attempt and
+        # calls["n"]==2 fails.
+        monkeypatch.setenv("GPTME_TEST_MAX_RETRIES", "2")
+        monkeypatch.setenv("GPTME_LLM_MAX_RETRIES", "2")
+        monkeypatch.setattr(llm_openai, "backoff_wait", lambda *a, **k: False)
+
+        from gptme.message import Message
+
+        list(
+            llm_openai.stream(
+                [Message(role="user", content="Hi")],
+                "openrouter/minimax/minimax-m3",
+                None,
+            )
+        )
+        assert calls["n"] == 2
+
+    def test_responses_api_malformed_event_raises_retryable_protocol_error(
+        self, monkeypatch
+    ):
+        """The Responses API stream is guarded too (default for GPT-5/o-series).
+
+        Same class of SDK parsing crash as the Chat Completions path: a
+        malformed SSE event from the provider must not escape as an opaque
+        ``IndexError``, since native OpenAI GPT-5/o-series route through the
+        Responses API.
+        """
+        import httpx
+
+        from gptme.llm import is_provider_error, mark_llm_reply_origin
+
+        mock_client = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=Mock(
+                    return_value=self._raising_stream(
+                        IndexError("list index out of range")
+                    )
+                )
+            )
+        )
+        monkeypatch.setattr(llm_openai, "get_client", lambda provider: mock_client)
+        monkeypatch.setattr(llm_openai, "_is_proxy", lambda client: False)
+
+        with pytest.raises(
+            httpx.RemoteProtocolError, match="OpenAI stream iteration failed"
+        ) as excinfo:
+            list(
+                llm_openai._stream_responses(
+                    [Message(role="user", content="Hi")],
+                    "openai/gpt-5",
+                    None,
+                    get_model("openai/gpt-5"),
+                )
+            )
+        err = excinfo.value
+        assert "gpt-5" in str(err)
+        assert "openai" in str(err)
+        assert isinstance(err.__cause__, IndexError)
+        assert not is_provider_error(err)
+        mark_llm_reply_origin(err)
+        assert is_provider_error(err)
+
+    def test_consumer_throw_is_not_converted_to_protocol_error(self):
+        """Only next() is guarded; a consumer .throw() stays the original exception.
+
+        Wrapping ``yield next(iterator)`` in try/except catches exceptions thrown
+        into the generator at the yield point (``.throw()`` or ``yield from``)
+        and would misclassify a genuine consumer bug as a provider protocol
+        error. Regression for gptme/gptme#3984 AI-review P1.
+        """
+        import httpx
+
+        gen = llm_openai._guarded_stream_iter(
+            iter(["chunk"]),
+            model="openrouter/minimax/minimax-m3",
+            provider="openrouter",
+        )
+        assert next(gen) == "chunk"
+        with pytest.raises(IndexError, match="consumer bug") as excinfo:
+            gen.throw(IndexError("consumer bug"))
+        assert not isinstance(excinfo.value, httpx.RemoteProtocolError)
+        assert excinfo.value.__cause__ is None
+
+    def test_guard_converts_indexerror_from_next_not_iter(self):
+        """Directly exercise the next() boundary the SDK crash actually hits."""
+        import httpx
+
+        gen = llm_openai._guarded_stream_iter(
+            self._raising_stream(IndexError("list index out of range")),
+            model="openrouter/minimax/minimax-m3",
+            provider="openrouter",
+        )
+        with pytest.raises(
+            httpx.RemoteProtocolError, match="OpenAI stream iteration failed"
+        ) as excinfo:
+            next(gen)
+        assert isinstance(excinfo.value.__cause__, IndexError)
+
+
 class TestRecordUsageCacheTokens:
     """Tests for _record_usage cache token extraction.
 
