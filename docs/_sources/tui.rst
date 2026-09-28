@@ -39,6 +39,10 @@ Start a new conversation in the current directory::
 
     gptme-tui
 
+Or start with a prompt, like with ``gptme`` (chain several with ``-``)::
+
+    gptme-tui "write a script that counts lines" - "now add tests"
+
 Pick a conversation to resume from a list (or start a new one), or resume
 a specific one by name::
 
@@ -48,6 +52,11 @@ a specific one by name::
 Conversations are stored in the same format and location as CLI conversations,
 so they can be opened interchangeably: start in the TUI, resume in the CLI
 (``gptme --resume``), or vice versa (``gptme-tui -n <name>``).
+
+To switch without leaving the conversation, use ``/restart cli`` in the TUI or
+``/restart tui`` in the CLI. ``/restart web`` opens the conversation in the
+:doc:`web UI <webui>` of a running ``gptme-server``
+(see :doc:`commands`).
 
 Inline mode (experimental)
 --------------------------
@@ -82,6 +91,9 @@ current settings.
 - ``/display hidden [on|off]``: messages sent to the model but normally not
   shown, such as token-usage and time notices. Off by default; set
   ``GPTME_TUI_DISPLAY_HIDDEN=1`` to show them from startup.
+- ``/display highlight [on|off]``: syntax-highlight commands in tool-call
+  titles and output summaries. On by default; set
+  ``GPTME_TUI_DISPLAY_HIGHLIGHT=0`` to turn it off from startup.
 
 :kbd:`Ctrl+O` is the shorthand for both: it expands tool output and thinking,
 or collapses both when both are already expanded.
@@ -122,6 +134,6 @@ Limitations
 -----------
 
 The TUI is young and intentionally minimal. Commands that need an external
-terminal program (e.g. ``/edit`` spawning ``$EDITOR``) don't work yet; resume
-the conversation in the CLI for those. Non-interactive/scripted use should
+terminal program (e.g. ``/edit`` spawning ``$EDITOR``) don't work yet; switch
+the conversation to the CLI for those with ``/restart cli``. Non-interactive/scripted use should
 keep using ``gptme`` directly.
