@@ -4,8 +4,12 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from .app import GptmeApp
 
 from ..config import setup_config_from_cli
 from ..dirs import get_logs_dir
@@ -45,16 +49,37 @@ def _print_history(manager: LogManager, limit: int = 50) -> None:
     """Print past messages to the terminal before an inline session starts."""
     from rich.console import Console
 
-    from .app import renderables_for_message
+    from .app import (
+        _show_hidden_default,
+        _show_thinking_default,
+        renderables_for_message,
+    )
 
     console = Console()
-    msgs = [m for m in manager.log if not m.hide]
+    show_hidden = _show_hidden_default()
+    msgs = [m for m in manager.log if show_hidden or not m.hide]
     if len(msgs) > limit:
         console.print(f"[dim]… {len(msgs) - limit} earlier messages not shown[/dim]")
         msgs = msgs[-limit:]
+    show_thinking = _show_thinking_default()
     for msg in msgs:
-        for renderable in renderables_for_message(msg):
+        for renderable in renderables_for_message(msg, show_thinking=show_thinking):
             console.print(renderable)
+
+
+def _finish_session(app: "GptmeApp", conversation_name: str) -> None:
+    """Run SESSION_END hooks, then re-exec if /restart was requested.
+
+    ``_do_restart`` replaces the process and never returns, so session-end
+    cleanup (persistent shell, orphaned subagents, cost summary) has to run
+    first.
+    """
+    app.end_session()
+    if app.restart_requested:
+        from ..tools.restart import _do_restart
+
+        print(f"Restarting gptme-tui with conversation: {conversation_name}")
+        _do_restart(conversation_name)
 
 
 @click.command("gptme-tui")
@@ -194,6 +219,8 @@ def main(
         app.run(inline=True, inline_no_clear=True, mouse=False)
     else:
         app.run()
+    # SESSION_END before re-exec: _do_restart never returns
+    _finish_session(app, logdir.name)
     print(f"Conversation saved: {logdir.name}")
     print(f"Resume with: gptme-tui -n {logdir.name}  (or gptme -r in the CLI)")
     sys.exit(0)

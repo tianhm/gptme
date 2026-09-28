@@ -6,12 +6,14 @@ prompts submitted while the agent is working are queued (#569), and tool
 output is rendered in collapsible sections for a compact view.
 """
 
+import asyncio
 import contextlib
 import contextvars
 import io
 import logging
 import os.path
 import re
+import signal
 import sys
 
 try:
@@ -34,8 +36,9 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.filter import ANSIToTruecolor
+from textual.geometry import Offset, Size
 from textual.message import Message as TextualMessage
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -49,6 +52,7 @@ from textual.worker import Worker, WorkerState
 
 from ..chat import step
 from ..commands import execute_cmd, get_command_completer, get_user_commands
+from ..config import get_config
 from ..constants import DECLINED_CONTENT, INTERRUPT_CONTENT
 from ..dirs import get_pt_history_file
 from ..hooks import HookType, register_hook, trigger_hook, unregister_hook
@@ -79,6 +83,8 @@ logger = logging.getLogger(__name__)
 
 # Max messages rendered when resuming a long conversation
 MAX_INITIAL_MESSAGES = 100
+# Max lines of the inline queued-prompts view (matches #queued max-height)
+MAX_QUEUED_SHOWN = 5
 
 
 def _queued_prompt_text(item: str | Message) -> str:
@@ -100,6 +106,7 @@ def _summarize(content: str, maxlen: int = 80) -> str:
 
 
 _THINK_RE = re.compile(r"<think(?:ing)?>(.*?)</think(?:ing)?>", re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think(?:ing)?>")
 _THINK_SIG_RE = re.compile(r"<!--\s*think-sig:.*?-->\s*", re.DOTALL)
 
 # Matches the `tool` format: @tool_name(call_id): {...json...}. Calls end at
@@ -121,7 +128,10 @@ def _split_thinking(content: str) -> list[tuple[bool, str]]:
     """Split message content into (is_thinking, text) segments.
 
     Detects <think>/<thinking> blocks and separates them from normal content
-    so the TUI can render them in collapsible sections.
+    so the TUI can render them in collapsible sections. An unclosed trailing
+    block (interrupted or malformed output) is treated as thinking too, matching
+    ``_strip_thinking`` — otherwise hidden mode would print the reasoning as
+    ordinary content.
     """
     segments: list[tuple[bool, str]] = []
     last_end = 0
@@ -134,9 +144,64 @@ def _split_thinking(content: str) -> list[tuple[bool, str]]:
             segments.append((True, inner))
         last_end = m.end()
     tail = content[last_end:]
-    if tail.strip():
+    if open_m := _THINK_OPEN_RE.search(tail):
+        before = tail[: open_m.start()]
+        if before.strip():
+            segments.append((False, before))
+        inner = _THINK_SIG_RE.sub("", tail[open_m.end() :]).strip()
+        if inner:
+            segments.append((True, inner))
+    elif tail.strip():
         segments.append((False, tail))
     return segments
+
+
+def _strip_thinking(text: str) -> str:
+    """Drop thinking from (possibly still-streaming) content, for previews.
+
+    Removes closed ``<think>`` blocks and cuts an unclosed trailing one.
+    """
+    text = _THINK_RE.sub("", text)
+    if m := _THINK_OPEN_RE.search(text):
+        text = text[: m.start()]
+    return text
+
+
+def _thinking_stub(text: str) -> str:
+    """One-line placeholder for a hidden thinking block."""
+    n = len(text.splitlines())
+    lines = f"{n} line{'s' if n != 1 else ''}"
+    return f"▸ Thinking ({lines} hidden, /display thinking to show)"
+
+
+def _role_label(role: str) -> str:
+    """Display name for a message role, matching the CLI.
+
+    Uses the configured user name and the agent name from ``[agent].name``
+    in gptme.toml, falling back to the capitalized role.
+    """
+    config = get_config()
+    if role == "user":
+        return config.user.user.name
+    if role == "assistant":
+        agent_config = config.chat and config.chat.agent_config
+        if agent_config and agent_config.name:
+            return agent_config.name
+    return role.capitalize()
+
+
+def _show_thinking_default() -> bool:
+    """Whether thinking is displayed at startup (``GPTME_TUI_DISPLAY_THINKING``)."""
+    return bool(get_config().get_env_bool("GPTME_TUI_DISPLAY_THINKING", default=False))
+
+
+def _show_hidden_default() -> bool:
+    """Whether hidden messages are displayed at startup (``GPTME_TUI_DISPLAY_HIDDEN``).
+
+    Hidden messages (e.g. token/time notices) are sent to the model but not
+    normally shown.
+    """
+    return bool(get_config().get_env_bool("GPTME_TUI_DISPLAY_HIDDEN", default=False))
 
 
 def _split_tool_calls(text: str) -> list[tuple[bool, str]]:
@@ -341,20 +406,28 @@ class UserMessage(Vertical):
         self.content = content.strip()
 
     def compose(self) -> ComposeResult:
-        label = "User (queued)" if "queued" in self.classes else "User"
+        label = _role_label("user")
+        if "queued" in self.classes:
+            label += " (queued)"
         yield Static(Text(label), classes="role")
         yield Markdown(self.content)
+
+
+def _collapsible_title(title: str) -> str:
+    """Tool-call titles start with ▶ for inline panels; Collapsible draws its own."""
+    return title.removeprefix("▶ ")
 
 
 class AssistantMessage(Vertical):
     """A completed assistant message, rendered as markdown."""
 
-    def __init__(self, content: str):
+    def __init__(self, content: str, show_thinking: bool = False):
         super().__init__(classes="message assistant")
         self.content = content.strip()
+        self.show_thinking = show_thinking
 
     def compose(self) -> ComposeResult:
-        yield Static(Text("Assistant"), classes="role")
+        yield Static(Text(_role_label("assistant")), classes="role")
         think_segs = _split_thinking(self.content)
         has_thinking = any(is_think for is_think, _ in think_segs)
         has_tool_calls = any(
@@ -370,7 +443,7 @@ class AssistantMessage(Vertical):
                 yield Collapsible(
                     Markdown(text),
                     title="Thinking",
-                    collapsed=True,
+                    collapsed=not self.show_thinking,
                     classes="thinking-block",
                 )
             else:
@@ -381,7 +454,7 @@ class AssistantMessage(Vertical):
                         title, code, lang = _tool_call_renderable(seg)
                         yield Collapsible(
                             Static(Syntax(code, lang, theme="ansi_dark")),
-                            title=title,
+                            title=_collapsible_title(title),
                             collapsed=True,
                             classes="tool-call-block",
                         )
@@ -389,7 +462,7 @@ class AssistantMessage(Vertical):
                         for title, code, lang in _xml_tool_renderables(seg):
                             yield Collapsible(
                                 Static(Syntax(code, lang, theme="ansi_dark")),
-                                title=title,
+                                title=_collapsible_title(title),
                                 collapsed=True,
                                 classes="tool-call-block",
                             )
@@ -397,20 +470,40 @@ class AssistantMessage(Vertical):
                         title, code, lang = _markdown_tool_renderable(seg)
                         yield Collapsible(
                             Static(Syntax(code, lang, theme="ansi_dark")),
-                            title=title,
+                            title=_collapsible_title(title),
                             collapsed=True,
                             classes="tool-call-block",
                         )
 
 
+_SYSTEM_TAG_RE = re.compile(r"\A<(system_\w+)>(.*)</\1>\Z", re.DOTALL)
+
+
+def _system_display_text(content: str) -> str:
+    """System message text for display, without a wrapping <system_*> tag.
+
+    Hooks wrap notices (cwd changes, warnings) in tags meant for the model.
+    """
+    content = content.strip()
+    if m := _SYSTEM_TAG_RE.match(content):
+        return m.group(2).strip()
+    return content
+
+
 class SystemMessage(Vertical):
-    """A system/tool-output message, collapsed by default (like <details>)."""
+    """A system/tool-output message, collapsed by default (like <details>).
+
+    One-line messages are shown as-is: there is nothing to expand.
+    """
 
     def __init__(self, content: str):
         super().__init__(classes="message system")
-        self.content = content.strip()
+        self.content = _system_display_text(content)
 
     def compose(self) -> ComposeResult:
+        if "\n" not in self.content:
+            yield Static(Text(self.content), classes="system-line")
+            return
         yield Collapsible(
             Markdown(self.content),
             title=_summarize(self.content),
@@ -421,22 +514,29 @@ class SystemMessage(Vertical):
 class StreamingMessage(Vertical):
     """Live view of the assistant response while tokens stream in."""
 
-    def __init__(self) -> None:
+    def __init__(self, show_thinking: bool = True) -> None:
         super().__init__(classes="message assistant streaming")
         self._buffer = ""
+        self.show_thinking = show_thinking
         self._body = Static(Text("Generating…"), classes="progress-placeholder")
 
     def compose(self) -> ComposeResult:
-        yield Static(Text("Assistant"), classes="role")
+        yield Static(Text(_role_label("assistant")), classes="role")
         yield self._body
+
+    def _visible(self) -> str:
+        return self._buffer if self.show_thinking else _strip_thinking(self._buffer)
 
     def append_token(self, token: str) -> None:
         self._buffer += token
-        self._body.update(Text(self._buffer))
+        if visible := self._visible().strip():
+            self._body.update(Text(visible))
+        else:
+            self.set_thinking(bool(_THINK_OPEN_RE.search(self._buffer)))
 
     def set_thinking(self, is_thinking: bool) -> None:
         """Update the placeholder when the model transitions in/out of thinking."""
-        if not self._buffer:
+        if not self._visible().strip():
             label = "Thinking…" if is_thinking else "Generating…"
             self._body.update(Text(label))
 
@@ -507,18 +607,20 @@ class BouncingError(Static):
         )
 
 
-def renderables_for_message(msg: Message, expanded: bool = False) -> list:
+def renderables_for_message(
+    msg: Message, expanded: bool = False, show_thinking: bool = True
+) -> list:
     """Rich renderables for a message, for native-scrollback (inline) mode."""
 
     content = msg.content.strip()
     if msg.role == "user":
         return [
-            Text("User", style="bold green"),
+            Text(_role_label("user"), style="bold green"),
             Padding(RichMarkdown(content), (0, 0, 0, 2)),
             Text(),
         ]
     if msg.role == "assistant":
-        items: list = [Text("Assistant", style="bold blue")]
+        items: list = [Text(_role_label("assistant"), style="bold blue")]
         think_segs = _split_thinking(content)
         has_tool_calls = any(
             not is_think and _has_tool_calls(t) for is_think, t in think_segs
@@ -529,7 +631,9 @@ def renderables_for_message(msg: Message, expanded: bool = False) -> list:
             items.append(Padding(RichMarkdown(content), (0, 0, 0, 2)))
         else:
             for is_think, text in think_segs:
-                if is_think:
+                if is_think and not show_thinking:
+                    items.append(Text(_thinking_stub(text), style="dim"))
+                elif is_think:
                     items.append(
                         Panel(RichMarkdown(text), title="Thinking", expand=False)
                     )
@@ -567,11 +671,27 @@ def renderables_for_message(msg: Message, expanded: bool = False) -> list:
         items.append(Text())
         return items
     # system/tool output: compact summary line, optionally expanded
+    content = _system_display_text(content)
+    if "\n" not in content:
+        return [Text(content, style="dim"), Text()]
     renderables: list = [Text(f"▶ {_summarize(content)}", style="dim")]
     if expanded:
         renderables.append(Padding(RichMarkdown(content), (0, 0, 0, 2)))
     renderables.append(Text())
     return renderables
+
+
+# display-only settings toggled by /display (they never affect the model)
+DISPLAY_SETTINGS = ("thinking", "outputs", "hidden")
+_ON = ("on", "show", "expanded", "true", "1")
+_OFF = ("off", "hide", "collapsed", "false", "0")
+
+# TUI-local commands (handled by the app, not the shared registry) and the
+# completion candidates for each positional argument
+TUI_COMMANDS: dict[str, list[list[str]]] = {
+    "quit": [],
+    "display": [list(DISPLAY_SETTINGS), ["on", "off"]],
+}
 
 
 def complete_input(text: str) -> list[str]:
@@ -582,16 +702,22 @@ def complete_input(text: str) -> list[str]:
     parts = text.split(None, 1)
     if len(parts) == 1 and not text.endswith(" "):
         # completing the command name itself
-        return sorted(c for c in get_user_commands() if c.startswith(text))
+        commands = set(get_user_commands()) | {f"/{c}" for c in TUI_COMMANDS}
+        return sorted(c for c in commands if c.startswith(text))
     # completing command arguments
-    completer = get_command_completer(parts[0][1:])
-    if completer is None:
-        return []
     arg_text = parts[1] if len(parts) > 1 else ""
     args = arg_text.split()
     partial = args[-1] if args and not arg_text.endswith(" ") else ""
     prev_args = args[:-1] if args and not arg_text.endswith(" ") else args
     base = text[: len(text) - len(partial)]
+    if (positional := TUI_COMMANDS.get(parts[0][1:])) is not None:
+        if len(prev_args) >= len(positional):
+            return []
+        choices = positional[len(prev_args)]
+        return [base + c for c in choices if c.startswith(partial)]
+    completer = get_command_completer(parts[0][1:])
+    if completer is None:
+        return []
     try:
         return sorted(
             base + candidate
@@ -671,6 +797,12 @@ class ChatInput(TextArea):
             event.prevent_default()
             self._clear_completions()
             self.post_message(self.Submitted(self.text))
+            return
+        if event.key == "ctrl+d" and not self.text:
+            # like a shell: Ctrl+D quits on empty input, else deletes forward
+            event.stop()
+            event.prevent_default()
+            await self.run_action("app.quit")
             return
         if event.key in ("alt+enter", "shift+enter", "ctrl+j"):
             event.stop()
@@ -800,6 +932,12 @@ class ConfirmScreen(ModalScreen[ConfirmationResult]):
             yield Static(
                 Text(f"Execute {self.tool_name}?", style="bold"), id="confirm-title"
             )
+            # key hints go above the preview: a tall preview can push the
+            # dialog past the (height-capped) inline region and clip its end
+            yield Static(
+                Text("[y] execute   [n] skip   [a] auto-confirm session"),
+                id="confirm-help",
+            )
             with VerticalScroll(id="confirm-preview"):
                 yield Static(
                     Syntax(
@@ -809,10 +947,6 @@ class ConfirmScreen(ModalScreen[ConfirmationResult]):
                         background_color="default",
                     )
                 )
-            yield Static(
-                Text("[y] execute   [n] skip   [a] auto-confirm session"),
-                id="confirm-help",
-            )
 
     def action_confirm(self) -> None:
         self.dismiss(ConfirmationResult.confirm())
@@ -846,12 +980,12 @@ class UrlConfirmScreen(ModalScreen):
         )
         with Vertical(id="confirm-dialog"):
             yield Static(Text(title, style="bold"), id="confirm-title")
-            with VerticalScroll(id="confirm-preview"):
-                yield Static(body)
             yield Static(
                 Text("[y/enter] fetch   [n/esc] skip"),
                 id="confirm-help",
             )
+            with VerticalScroll(id="confirm-preview"):
+                yield Static(body)
 
     def action_confirm(self) -> None:
         self.dismiss(self.urls)
@@ -872,6 +1006,10 @@ class GptmeApp(App):
     Screen:inline {
         height: auto;
         max-height: 40%;
+        /* Textual pads the inline region with blank lines above and below;
+           the full-screen layout has neither */
+        border-top: none;
+        border-bottom: none;
     }
     #live {
         height: auto;
@@ -912,6 +1050,9 @@ class GptmeApp(App):
     .message.system {
         border-left: thick $surface-lighten-2;
         padding-left: 1;
+    }
+    .message.system > .system-line {
+        color: $text-muted;
     }
     .message.system Collapsible {
         border: none;
@@ -965,27 +1106,50 @@ class GptmeApp(App):
         height: auto;
         background: ansi_default;
     }
+    #queued {
+        height: auto;
+        max-height: 5;
+        margin: 0 1;
+        color: $text-muted;
+        background: ansi_default;
+    }
+    /* input between two horizontal rules, prompt marker on the left */
+    #input-row {
+        height: auto;
+        margin-top: 1;
+        border-top: solid $foreground 25%;
+        border-bottom: solid $foreground 25%;
+        background: ansi_default;
+    }
+    #prompt-marker {
+        width: 2;
+        background: ansi_default;
+    }
     #input {
-        margin: 1 1 0 1;
+        border: none;
+        padding: 0;
         height: auto;
         max-height: 10;
         background: ansi_default;
     }
-    #input-hint {
+    #input .text-area--cursor-line {
+        background: transparent;
+    }
+    /* status lines up with the input text, key hints on the right */
+    #status-row {
         height: 1;
-        margin: 0 3;
+        margin: 0 2;
+        background: ansi_default;
+    }
+    #status-row Static {
         color: $text-muted;
         background: ansi_default;
     }
     #status {
-        height: 1;
-        margin-top: 1;
-        padding: 0 1;
-        color: $text-muted;
-        background: ansi_default;
+        width: 1fr;
     }
-    Screen:inline #status {
-        margin-top: 0;
+    #keys {
+        width: auto;
     }
     ConfirmScreen {
         align: center middle;
@@ -1021,7 +1185,9 @@ class GptmeApp(App):
         Binding("escape", "interrupt", "Interrupt", show=True),
         Binding("ctrl+c", "interrupt_or_quit", "Interrupt/Quit", priority=True),
         Binding("ctrl+d", "quit", "Quit", show=True),
-        Binding("ctrl+o", "toggle_outputs", "Expand/collapse outputs", show=True),
+        Binding(
+            "ctrl+o", "toggle_details", "Expand/collapse outputs+thinking", show=True
+        ),
     ]
 
     def __init__(
@@ -1056,7 +1222,8 @@ class GptmeApp(App):
         self._chat_ctx = contextvars.copy_context()
         # Own one CostTracker window for this TUI run so command admission
         # and generation workers share the same tracking_id.
-        self._chat_ctx.run(
+        # kept for the status bar, which can't enter _chat_ctx mid-generation
+        self._session_costs = self._chat_ctx.run(
             CostTracker.ensure_session, session_id_for_logdir(self.manager.logdir)
         )
         self._skill_session_id = str(uuid4())
@@ -1070,6 +1237,8 @@ class GptmeApp(App):
         self._stream_widget: StreamingMessage | None = None
         self._tool_placeholder: ToolPlaceholder | None = None
         self._outputs_expanded = False
+        self.show_thinking = _show_thinking_default()
+        self.show_hidden = _show_hidden_default()
         self._stdio_sink: IO[str] | None = None
         self._real_stdout: IO[str] | None = None
         self._real_stderr: IO[str] | None = None
@@ -1078,6 +1247,10 @@ class GptmeApp(App):
         # lives in a ContextVar inside _chat_ctx, which the UI thread
         # cannot enter while a worker is running
         self._model: ModelMeta | None = None
+        # set by /restart; main() re-execs gptme-tui after the app exits
+        self.restart_requested = False
+        # True while our SIGWINCH handler is installed (inline mode only)
+        self._inline_sigwinch_installed = False
 
     # ------------------------------------------------------------------ UI
 
@@ -1086,22 +1259,25 @@ class GptmeApp(App):
             # native-scrollback mode: no in-app chat view; completed messages
             # are printed into the terminal's scrollback via _print_above
             yield Static(id="live")
-            yield ChatInput(id="input")
-            yield Static(
-                Text("Type a message… (Enter to send, Ctrl+J / Alt+Enter for newline)"),
-                id="input-hint",
-            )
-            yield Static(id="status")
+            # queued prompts stay visible here until dispatched: printing them
+            # into scrollback would duplicate them once they are submitted
+            yield Static(id="queued")
+            yield from self._compose_input()
             return
         yield VerticalScroll(id="chat")
         with Vertical(id="bottom"):
             yield Static("", id="completions")
+            yield from self._compose_input()
+
+    def _compose_input(self) -> ComposeResult:
+        with Horizontal(id="input-row"):
+            yield Static(Text("❯"), id="prompt-marker")
             yield ChatInput(id="input")
-            yield Static(
-                Text("Type a message… (Enter to send, Ctrl+J / Alt+Enter for newline)"),
-                id="input-hint",
-            )
+        with Horizontal(id="status-row"):
             yield Static(id="status")
+            yield Static(
+                Text("Enter send · Ctrl+J newline · Ctrl+O details"), id="keys"
+            )
 
     def on_mount(self) -> None:
         # Redirect stdout/stderr to a log file: core machinery (tool output
@@ -1132,7 +1308,9 @@ class GptmeApp(App):
             func=self._tui_confirm_hook,
             priority=100,
         )
-        if not self.inline:
+        if self.inline:
+            self._install_inline_resize_handler()
+        else:
             # inline mode prints history to the terminal before the app starts
             self._render_history()
             # prevent the chat scroll area from stealing focus; input is always
@@ -1145,23 +1323,116 @@ class GptmeApp(App):
 
     def on_unmount(self) -> None:
         self._quitting = True
+        self._restore_inline_resize_handler()
         self._interrupt_event.set()
         abandon_skill_invocations(self.manager.logdir, self._skill_session_id)
         record_skill_phase(
             self.manager.logdir, self._active_skill_invocation_id, "abandoned"
         )
         unregister_hook("tui_confirm", HookType.TOOL_CONFIRM)
-        if self._real_stdout is not None:
+        # The saved streams are Textual's stdout/stderr captures, and unmount
+        # can run after Textual has already restored the real streams:
+        # only undo our own redirect, or later prints go to a dead capture.
+        if self._real_stdout is not None and sys.stdout is self._stdio_sink:
             sys.stdout = self._real_stdout
-        if self._real_stderr is not None:
+        if self._real_stderr is not None and sys.stderr is self._stdio_sink:
             sys.stderr = self._real_stderr
         if self._stdio_sink is not None:
             self._stdio_sink.close()
             self._stdio_sink = None
 
+    def _install_inline_resize_handler(self) -> None:
+        """Replace the inline driver's SIGWINCH handler.
+
+        Textual's inline driver clears the whole visible screen (``ESC[2J``)
+        on resize, blanking the native scrollback shown above the app. Clear
+        only the app region instead. After the terminal reflows a narrower
+        width, fragments of the old region may remain above; that is
+        preferable to wiping the visible transcript.
+        """
+        if not hasattr(signal, "SIGWINCH") or self._driver is None:
+            return
+        loop = asyncio.get_running_loop()
+
+        def on_resize(signum, frame) -> None:
+            if self._quitting:
+                return
+            try:
+                loop.call_soon_threadsafe(self._on_inline_resize)
+            except RuntimeError:
+                # loop closed between unmount and SIG_DFL restore
+                return
+
+        signal.signal(signal.SIGWINCH, on_resize)
+        self._inline_sigwinch_installed = True
+
+    def _restore_inline_resize_handler(self) -> None:
+        """Drop our SIGWINCH handler so post-exit resizes don't hit a dead app.
+
+        Textual's Linux inline driver already resets SIGWINCH to SIG_DFL in
+        ``disable_input()``, which runs before Unmount. Restoring the previous
+        handler here would reinstall Textual's dead callback. Tests use the
+        headless driver, whose ``disable_input`` is a no-op, so we must reset
+        ourselves. SIG_DFL is the right post-exit default in both cases.
+        """
+        if not self._inline_sigwinch_installed or not hasattr(signal, "SIGWINCH"):
+            return
+        signal.signal(signal.SIGWINCH, signal.SIG_DFL)
+        self._inline_sigwinch_installed = False
+
+    def _on_inline_resize(self) -> None:
+        if self._quitting:
+            return
+        driver = self._driver
+        if driver is None:
+            return
+        width, height = driver._get_terminal_size()  # type: ignore[attr-defined]
+        # Between frames the cursor is parked at the caret offset from the
+        # region origin (see _print_above); move to the origin and clear down.
+        # Region lines are full-width, so on a narrower terminal each one the
+        # terminal reflowed now spans several rows.
+        # Textual parks this on App after the first inline frame. SIGWINCH can
+        # fire before that, so match _print_above and don't assume it exists.
+        caret = getattr(self, "_previous_cursor_position", None)
+        if caret is None:
+            caret = Offset(0, 0)
+        old_width = self.size.width
+        rows_per_line = -(-old_width // width) if 0 < width < old_width else 1
+        up = caret.y * rows_per_line + (caret.x // width if width else 0)
+        sequence = "\r"
+        if up:
+            sequence += Control.move(0, -up).segment.text
+        driver.write(sequence + "\x1b[J")
+        self._previous_cursor_position = Offset(0, 0)
+        size = Size(width, height)
+        self.post_message(events.Resize(size, size))
+
+    def end_session(self) -> None:
+        """Run SESSION_END hooks (e.g. the cost summary), like the CLI on exit.
+
+        Called after the app has exited, so hook output reaches the terminal.
+        """
+
+        def run_hooks() -> None:
+            if msgs := trigger_hook(
+                HookType.SESSION_END,
+                logdir=self.manager.logdir,
+                manager=self.manager,
+            ):
+                for msg in msgs:
+                    self.manager.append(msg)
+
+        try:
+            # cost tracking and other session state live in the chat context
+            self._chat_ctx.run(run_hooks)
+        except RuntimeError:
+            # a generation thread that outlived the app still holds the context
+            logger.warning("Skipping session-end hooks: generation still running")
+        self.manager.write(sync=True)
+
     def _render_history(self) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        msgs = [m for m in self.manager.log if not m.hide]
+        msgs = [m for m in self.manager.log if self.show_hidden or not m.hide]
         if len(msgs) > MAX_INITIAL_MESSAGES:
             chat.mount(
                 InfoMessage(
@@ -1179,7 +1450,7 @@ class GptmeApp(App):
         if msg.role == "user":
             return UserMessage(msg.content)
         if msg.role == "assistant":
-            return AssistantMessage(msg.content)
+            return AssistantMessage(msg.content, show_thinking=self.show_thinking)
         if msg.role == "system":
             return SystemMessage(msg.content)
         return None
@@ -1222,9 +1493,13 @@ class GptmeApp(App):
         self.refresh()
 
     def _show_message(self, msg: Message) -> None:
+        if msg.hide and not self.show_hidden:  # e.g. token/time notices
+            return
         cost_text = inline_cost_text(msg) if msg.role == "assistant" else None
         if self.inline:
-            renderables = renderables_for_message(msg, self._outputs_expanded)
+            renderables = renderables_for_message(
+                msg, self._outputs_expanded, show_thinking=self.show_thinking
+            )
             if cost_text:
                 renderables.insert(-1, Text(cost_text, style="dim"))
             self._print_above(*renderables)
@@ -1279,10 +1554,31 @@ class GptmeApp(App):
                 parts.append(f"{tokens // 1000}k/{model.context // 1000}k ({pct:.0f}%)")
             except Exception:  # token counting must never break the UI
                 pass
+        if cost := sum(e.cost for e in self._session_costs.snapshot_entries()):
+            parts.append(f"${cost:.2f}")
         parts.append(self.state)
         if self.prompt_queue:
             parts.append(f"{len(self.prompt_queue)} queued")
         self.query_one("#status", Static).update(Text(" | ".join(parts)))
+        if self.inline:
+            self._update_queued_view()
+
+    def _update_queued_view(self) -> None:
+        """Show pending prompts above the input (inline mode)."""
+        # the view is capped at MAX_QUEUED_SHOWN lines (CSS max-height)
+        shown = self.prompt_queue
+        if len(shown) > MAX_QUEUED_SHOWN:
+            shown = shown[: MAX_QUEUED_SHOWN - 1]
+        lines = [
+            f"⏳ queued: {_summarize(_queued_prompt_text(item), maxlen=100)}"
+            for item in shown
+        ]
+        if hidden := len(self.prompt_queue) - len(shown):
+            lines.append(f"   … +{hidden} more queued")
+        text = Text("\n".join(lines))
+        queued = self.query_one("#queued", Static)
+        queued.update(text)
+        queued.display = bool(self.prompt_queue)
 
     def _set_state(self, state: str) -> None:
         self.state = state
@@ -1344,9 +1640,7 @@ class GptmeApp(App):
             return
         if self.generating:
             self.prompt_queue.append(text)
-            if self.inline:
-                self._print_above(Text(f"(queued) {text}", style="bright_black"))
-            else:
+            if not self.inline:
                 widget = UserMessage(text, queued=True)
                 self._queued_widgets.append(widget)
                 self._mount_in_chat(widget)
@@ -1369,6 +1663,9 @@ class GptmeApp(App):
         if cmd in ("quit", "q"):  # TUI-local alias for /exit
             self.exit()
             return
+        if cmd == "display":  # TUI-local: display only, allowed while working
+            self._display_command(text.split()[1:])
+            return
         if cmd in self.UNSUPPORTED_COMMANDS:
             self._show_info(
                 f"/{cmd} takes over the terminal and is not supported in the "
@@ -1379,6 +1676,13 @@ class GptmeApp(App):
             self._show_info(
                 "Commands can't run while the agent is working; retry when idle."
             )
+            return
+        if cmd == "restart":
+            # The shared command prompts on stdin and execs in place, which
+            # can't work under Textual: exit cleanly, main() re-execs.
+            self.manager.write(sync=True)
+            self.restart_requested = True
+            self.exit()
             return
 
         msg = Message("user", text, quiet=True)
@@ -1404,7 +1708,13 @@ class GptmeApp(App):
         except SystemExit:  # /exit
             self.exit()
             return
-        except EOFError:
+        except (EOFError, RuntimeError) as e:
+            # prompt_toolkit prompts call asyncio.run(), which fails inside
+            # Textual's running loop; other RuntimeErrors are real failures
+            if isinstance(e, RuntimeError) and "event loop" not in str(e):
+                logger.exception("Command failed")
+                self._show_info(f"Command failed: {e}", error=True)
+                return
             self._show_info(
                 f"/{cmd} needs interactive input, which the TUI doesn't "
                 f"support; pass arguments directly (e.g. /{cmd} <args>) or "
@@ -1435,6 +1745,64 @@ class GptmeApp(App):
             # Drain it and start a turn, matching the CLI chat loop.
             self._drain_command_queued_prompts()
         self._update_status()
+
+    def _display_command(self, args: list[str]) -> None:
+        """``/display [thinking|outputs|hidden] [on|off]``: display-only settings.
+
+        No setting lists the current state; no value toggles.
+        """
+        usage = "Usage: /display [thinking|outputs|hidden] [on|off]"
+        # name -> (current value, setter, on/off wording)
+        settings = {
+            "thinking": (self.show_thinking, self._set_thinking, ("shown", "hidden")),
+            "outputs": (
+                self._outputs_expanded,
+                self._set_outputs,
+                ("expanded", "collapsed"),
+            ),
+            "hidden": (
+                self.show_hidden,
+                self._set_hidden,
+                ("messages shown", "messages hidden"),
+            ),
+        }
+        if not args:
+            state = ", ".join(
+                f"{name}: {words[0] if value else words[1]}"
+                for name, (value, _, words) in settings.items()
+            )
+            self._show_info(f"{state}\n{usage}")
+            return
+        name = args[0].lower()
+        value = args[1].lower() if len(args) > 1 else None
+        if name not in settings or len(args) > 2:
+            self._show_info(usage, error=True)
+            return
+        current, setter, words = settings[name]
+        if value is None:
+            on = not current
+        elif value in _ON:
+            on = True
+        elif value in _OFF:
+            on = False
+        else:
+            self._show_info(usage, error=True)
+            return
+        setter(on)
+        note = " (applies to new output)" if self.inline else ""
+        self._show_info(f"{name.capitalize()} {words[0 if on else 1]}{note}.")
+
+    def _set_hidden(self, on: bool) -> None:
+        self.show_hidden = on
+        self._rebuild_chat()
+
+    def _set_thinking(self, on: bool) -> None:
+        self.show_thinking = on
+        if self._stream_widget is not None:
+            self._stream_widget.show_thinking = on
+        if not self.inline:
+            for block in self.query(".thinking-block").results(Collapsible):
+                block.collapsed = not on
 
     def _drain_command_queued_prompts(self) -> None:
         """Turn durable prompts queued by a command into a TUI user turn.
@@ -1618,7 +1986,7 @@ class GptmeApp(App):
     def _set_stream_thinking(self, is_thinking: bool) -> None:
         if self._stream_widget is not None:
             self._stream_widget.set_thinking(is_thinking)
-        if self.inline and not self._stream_text:
+        if self.inline and not self._stream_preview().strip():
             label = "Thinking…" if is_thinking else "Generating…"
             with contextlib.suppress(Exception):
                 self.query_one("#live", Static).update(Text(label, style="dim"))
@@ -1630,20 +1998,32 @@ class GptmeApp(App):
         if self.inline:
             self.query_one("#live", Static).update(Text("Generating…", style="dim"))
         elif self._stream_widget is None:
-            self._stream_widget = StreamingMessage()
+            self._stream_widget = StreamingMessage(self.show_thinking)
             self._mount_in_chat(self._stream_widget)
+
+    def _stream_preview(self) -> str:
+        if self.show_thinking:
+            return self._stream_text
+        return _strip_thinking(self._stream_text)
 
     def _on_stream_token(self, token: str) -> None:
         if self.inline:
             # live preview in the inline region: show the last few lines
             self._stream_text += token
-            lines = self._stream_text.strip().splitlines()[-6:]
+            lines = self._stream_preview().strip().splitlines()[-6:]
             self.query_one("#live", Static).update(
                 Text("\n".join(lines), style="bright_black")
+                if lines
+                else Text(
+                    "Thinking…"
+                    if _THINK_OPEN_RE.search(self._stream_text)
+                    else "Generating…",
+                    style="dim",
+                )
             )
             return
         if self._stream_widget is None:
-            self._stream_widget = StreamingMessage()
+            self._stream_widget = StreamingMessage(self.show_thinking)
             self._mount_in_chat(self._stream_widget)
         chat = self.query_one("#chat", VerticalScroll)
         stick = chat.scroll_offset.y >= chat.max_scroll_y - 2
@@ -1789,18 +2169,24 @@ class GptmeApp(App):
         else:
             self.exit()
 
-    def action_toggle_outputs(self) -> None:
-        self._outputs_expanded = not self._outputs_expanded
+    def action_toggle_details(self) -> None:
+        """Ctrl+O: expand outputs and thinking, or collapse both if expanded."""
+        on = not (self._outputs_expanded and self.show_thinking)
+        self._set_outputs(on)
+        self._set_thinking(on)
         if self.inline:
-            # scrollback is immutable; the toggle affects future tool output
-            self._show_info(
-                "Tool output will be printed "
-                + ("expanded" if self._outputs_expanded else "collapsed")
-                + " from now on."
-            )
+            # scrollback is immutable; the toggle affects future output
+            state = "expanded" if on else "collapsed"
+            self._show_info(f"Tool output and thinking {state} from now on.")
+
+    def _set_outputs(self, expanded: bool) -> None:
+        self._outputs_expanded = expanded
+        if self.inline:
             return
+        # thinking has its own setting (/display thinking)
         for collapsible in self.query(Collapsible):
-            collapsible.collapsed = not self._outputs_expanded
+            if not collapsible.has_class("thinking-block"):
+                collapsible.collapsed = not expanded
 
     async def action_quit(self) -> None:
         self._quitting = True
