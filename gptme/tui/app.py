@@ -9,6 +9,7 @@ output is rendered in collapsible sections for a compact view.
 import asyncio
 import contextlib
 import contextvars
+import functools
 import io
 import logging
 import os.path
@@ -73,6 +74,12 @@ from ..tools import ToolFormat, ToolUse
 from ..tools.base import ToolUse as ToolUseType
 from ..tools.base import get_tool_format
 from ..tools.complete import SessionCompleteException
+from ..tools.restart import (
+    Interface,
+    RestartError,
+    parse_restart_target,
+    prepare_web_switch,
+)
 from ..util.content import is_message_command
 from ..util.context import extract_urls, include_paths
 from ..util.cost_display import inline_cost_text
@@ -1345,8 +1352,15 @@ class GptmeApp(App):
         # lives in a ContextVar inside _chat_ctx, which the UI thread
         # cannot enter while a worker is running
         self._model: ModelMeta | None = None
-        # set by /restart; main() re-execs gptme-tui after the app exits
+        # set by /restart [cli|web]; main() re-execs (gptme-tui, or gptme for
+        # "cli") or opens restart_web_url after the app has exited
         self.restart_requested = False
+        self.restart_target: Interface | None = None
+        self.restart_web_url: str | None = None
+        # id of the /restart web check running in a worker, if any; only the
+        # current one may act, and new input cancels it
+        self._web_restart_seq = 0
+        self._web_restart_pending: int | None = None
         # True while our SIGWINCH handler is installed (inline mode only)
         self._inline_sigwinch_installed = False
 
@@ -1755,6 +1769,10 @@ class GptmeApp(App):
         chat_input.text = ""
         if text:
             chat_input._push_history(text)
+            if self._web_restart_pending is not None:
+                # new input wins over a /restart web still being checked
+                self._web_restart_pending = None
+                self._show_info("Cancelled /restart web: new input was submitted.")
         logger.debug(
             "input submitted: %r (generating=%s, queue=%d)",
             text[:80],
@@ -1809,7 +1827,7 @@ class GptmeApp(App):
         if cmd in self.UNSUPPORTED_COMMANDS:
             self._show_info(
                 f"/{cmd} takes over the terminal and is not supported in the "
-                "TUI; resume this conversation in the CLI to use it."
+                "TUI; switch to the CLI with /restart cli to use it."
             )
             return
         if self.generating:
@@ -1819,10 +1837,26 @@ class GptmeApp(App):
             return
         if cmd == "restart":
             # The shared command prompts on stdin and execs in place, which
-            # can't work under Textual: exit cleanly, main() re-execs.
-            self.manager.write(sync=True)
-            self.restart_requested = True
-            self._request_exit()
+            # can't work under Textual: exit cleanly, main() re-execs (or
+            # opens the web UI). Check the target first so a failure keeps
+            # the session open.
+            try:
+                target = parse_restart_target(text.split()[1:])
+            except RestartError as e:
+                self._show_info(str(e))
+                return
+            if target == "web":
+                # network checks: off the event loop so the UI stays responsive
+                self._show_info("Looking for a gptme-server…")
+                self._web_restart_seq += 1
+                self._web_restart_pending = self._web_restart_seq
+                self.run_worker(
+                    functools.partial(self._web_restart_worker, self._web_restart_seq),
+                    thread=True,
+                    group="restart",
+                )
+                return
+            self._request_restart("cli" if target == "cli" else None, None)
             return
 
         msg = Message("user", text, quiet=True)
@@ -2005,6 +2039,40 @@ class GptmeApp(App):
         self.run_worker(
             self._generation_worker, thread=True, exclusive=True, group="generation"
         )
+
+    def _web_restart_worker(self, request: int) -> None:
+        """Thread worker: check the web UI can take over, then exit to it."""
+        try:
+            url = prepare_web_switch(self.manager.logdir.name)
+        except RestartError as e:
+            self.call_from_thread(self._finish_web_check, request, str(e))
+            return
+        self.call_from_thread(self._finish_web_check, request, None, url)
+
+    def _finish_web_check(
+        self, request: int, error: str | None, url: str | None = None
+    ) -> None:
+        """Back on the UI thread: act on the web check if it's still current."""
+        if self._web_restart_pending != request:
+            return  # cancelled by new input, or superseded by a newer check
+        self._web_restart_pending = None
+        if error is not None:
+            self._show_info(error)
+        else:
+            self._request_restart(None, url)
+
+    def _request_restart(self, target: Interface | None, web_url: str | None) -> None:
+        """Exit so main() re-execs into ``target`` (or opens ``web_url``)."""
+        if self.generating or len(self.screen_stack) > 1:
+            # e.g. a prompt started while the web check ran, or a dialog
+            # (tool/URL confirmation) is open: don't drop it by exiting
+            self._show_info("Not restarting: the agent is busy; retry when idle.")
+            return
+        self.manager.write(sync=True)
+        self.restart_requested = True
+        self.restart_target = target
+        self.restart_web_url = web_url
+        self._request_exit()
 
     def _generation_worker(self) -> None:
         """Thread worker: run the step loop inside the captured chat context."""

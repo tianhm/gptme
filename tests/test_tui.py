@@ -1568,7 +1568,7 @@ def test_restart_runs_session_end_before_reexec(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "end_session", lambda: order.append("end"))
     monkeypatch.setattr(
         "gptme.tools.restart._do_restart",
-        lambda name: order.append(("restart", name)),
+        lambda name, **kw: order.append(("restart", name)),
     )
     _finish_session(app, "conv")
     assert order == ["end", ("restart", "conv")]
@@ -1582,10 +1582,159 @@ def test_normal_exit_runs_session_end_without_reexec(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "end_session", lambda: called.append("end"))
     monkeypatch.setattr(
         "gptme.tools.restart._do_restart",
-        lambda name: called.append("restart"),
+        lambda name, **kw: called.append("restart"),
     )
     _finish_session(app, "conv")
     assert called == ["end"]
+
+
+@pytest.mark.asyncio
+async def test_restart_cli_requests_switch(tmp_path):
+    """/restart cli exits the TUI with the CLI as re-exec target."""
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", ChatInput)
+        inp.text = "/restart cli"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.restart_requested
+    assert app.restart_target == "cli"
+    assert app.restart_web_url is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arg", ["bogus", "web"])
+async def test_restart_bad_target_keeps_session(tmp_path, monkeypatch, arg):
+    """An unknown target, or /restart web without a server, doesn't exit."""
+    monkeypatch.setattr("gptme.tools.restart._http_status", lambda *a, **kw: None)
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", ChatInput)
+        inp.text = f"/restart {arg}"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.is_running
+    assert not app.restart_requested
+
+
+@pytest.mark.asyncio
+async def test_restart_web_requests_browser(tmp_path, monkeypatch):
+    """The web check runs in a worker thread, then the app exits to the UI."""
+    monkeypatch.setattr(
+        "gptme.tui.app.prepare_web_switch",
+        lambda name: f"http://127.0.0.1:5700/chat/{name}",
+    )
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", ChatInput)
+        inp.text = "/restart web"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    assert app.restart_requested
+    name = app.manager.logdir.name
+    assert app.restart_web_url == f"http://127.0.0.1:5700/chat/{name}"
+
+
+@pytest.mark.asyncio
+async def test_input_during_web_check_cancels_switch(tmp_path, monkeypatch):
+    """A prompt submitted while /restart web is checked must not be lost."""
+    import threading
+
+    release = threading.Event()
+
+    def slow_prepare(name):
+        release.wait(5)
+        return f"http://127.0.0.1:5700/chat/{name}"
+
+    monkeypatch.setattr("gptme.tui.app.prepare_web_switch", slow_prepare)
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", ChatInput)
+        inp.text = "/restart web"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._web_restart_pending is not None
+        # stand-in for a prompt submission (e.g. one awaiting URL confirmation)
+        monkeypatch.setattr(app, "_submit", lambda text: _noop())
+        inp.text = "look at https://example.com"
+        await pilot.press("enter")
+        await pilot.pause()
+        release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.is_running
+    assert not app.restart_requested
+
+
+async def _noop() -> None:
+    return None
+
+
+def test_stale_web_check_is_ignored(tmp_path, monkeypatch):
+    """Only the most recent /restart web check may act."""
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    requested: list[object] = []
+    monkeypatch.setattr(app, "_request_restart", lambda *a: requested.append(a))
+    monkeypatch.setattr(app, "_show_info", lambda *a: requested.append(a))
+    app._web_restart_pending = 2  # a newer check (#2) superseded #1
+    app._finish_web_check(1, None, "http://old/chat/c")
+    app._finish_web_check(1, "old error")
+    assert requested == []
+    app._finish_web_check(2, None, "http://new/chat/c")
+    assert requested == [(None, "http://new/chat/c")]
+    assert app._web_restart_pending is None
+
+
+def test_restart_request_refused_while_generating(tmp_path, monkeypatch):
+    """A prompt sent while the web check ran wins: don't exit mid-generation."""
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    infos: list[str] = []
+    monkeypatch.setattr(app, "_show_info", lambda text, *a: infos.append(text))
+    monkeypatch.setattr(app, "exit", lambda *a, **kw: infos.append("exit"))
+    app.generating = True
+    app._request_restart(None, "http://127.0.0.1:5700/chat/c")
+    assert not app.restart_requested
+    assert "exit" not in infos
+
+
+def test_finish_session_switches_to_cli(tmp_path, monkeypatch):
+    from gptme.tui.main import _finish_session
+
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    app.restart_requested = True
+    app.restart_target = "cli"
+    calls: list[object] = []
+    monkeypatch.setattr(app, "end_session", lambda: calls.append("end"))
+    monkeypatch.setattr(
+        "gptme.tools.restart._do_restart",
+        lambda name, **kw: calls.append((name, kw)),
+    )
+    _finish_session(app, "conv")
+    assert calls == ["end", ("conv", {"target": "cli", "source": "tui"})]
+
+
+def test_finish_session_opens_web_without_reexec(tmp_path, monkeypatch):
+    from gptme.tui.main import _finish_session
+
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    app.restart_requested = True
+    app.restart_web_url = "http://127.0.0.1:5700/chat/conv"
+    calls: list[object] = []
+    monkeypatch.setattr(app, "end_session", lambda: calls.append("end"))
+    monkeypatch.setattr(
+        "gptme.tools.restart._do_restart",
+        lambda name, **kw: calls.append("restart"),
+    )
+    monkeypatch.setattr(
+        "gptme.tools.restart.open_web", lambda url: calls.append(("web", url))
+    )
+    _finish_session(app, "conv")
+    assert calls == ["end", ("web", "http://127.0.0.1:5700/chat/conv")]
 
 
 def test_end_session_prints_cost_summary(tmp_path, capsys):
