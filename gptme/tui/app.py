@@ -1293,6 +1293,7 @@ class GptmeApp(App):
         auto_confirm: bool = False,
         inline: bool = False,
         experimental_jelly_errors: bool = False,
+        initial_prompts: list[str] | None = None,
     ):
         super().__init__()
         # Keep Textual's truecolor theme, but preserve ANSI default through the
@@ -1308,6 +1309,8 @@ class GptmeApp(App):
         self.auto_confirm = auto_confirm
         self.inline = inline
         self.experimental_jelly_errors = experimental_jelly_errors
+        # prompts from the command line, submitted once mounted (see on_mount)
+        self._initial_prompts = list(initial_prompts or [])
         self._stream_text = ""
         # Snapshot the caller's context (default model, output format, …) so
         # worker threads see it — gptme stores this state in ContextVars,
@@ -1415,6 +1418,42 @@ class GptmeApp(App):
         self._update_status()
         # watchdog: tools can reset the tty at any point during execution
         self.set_interval(0.5, self._restore_terminal)
+        if self._initial_prompts:
+            self.call_after_refresh(self._submit_initial_prompts)
+
+    def _enqueue_prompt(self, prompt: str | Message) -> None:
+        """Queue a prompt and, in full-screen mode, show it as a queued widget."""
+        self.prompt_queue.append(prompt)
+        if not self.inline:
+            widget = UserMessage(_queued_prompt_text(prompt), queued=True)
+            self._queued_widgets.append(widget)
+            self._mount_in_chat(widget)
+        self._update_status()
+
+    def _pop_queued_prompt(self) -> str | Message:
+        prompt = self.prompt_queue.pop(0)
+        if self._queued_widgets:
+            self._queued_widgets.pop(0).remove()
+        return prompt
+
+    async def _submit_user_input(self, prompt: str | Message) -> None:
+        """Submit a prompt, or run it as a slash-command like typed input."""
+        if not isinstance(prompt, Message) and is_message_command(prompt):
+            self._handle_command(prompt)
+            if self.generating or self._quitting or not self.prompt_queue:
+                return
+            await self._submit_user_input(self._pop_queued_prompt())
+            return
+        await self._submit(prompt)
+
+    async def _submit_initial_prompts(self) -> None:
+        """Submit command-line prompts like the CLI: the first now, the rest
+        queued, each sent when the previous turn finishes."""
+        first, *rest = self._initial_prompts
+        self._initial_prompts = []
+        for prompt in rest:
+            self._enqueue_prompt(prompt)
+        await self._submit_user_input(first)
 
     def on_unmount(self) -> None:
         self._quitting = True
@@ -1734,12 +1773,7 @@ class GptmeApp(App):
             self._handle_command(text)
             return
         if self.generating:
-            self.prompt_queue.append(text)
-            if not self.inline:
-                widget = UserMessage(text, queued=True)
-                self._queued_widgets.append(widget)
-                self._mount_in_chat(widget)
-            self._update_status()
+            self._enqueue_prompt(text)
         else:
             await self._submit(text)
 
@@ -1751,12 +1785,23 @@ class GptmeApp(App):
     # corrupt the TUI display
     UNSUPPORTED_COMMANDS = frozenset({"edit"})
 
+    def _request_exit(self) -> None:
+        """Request a clean exit, marking us as quitting first.
+
+        ``_quitting`` gates queued-prompt draining and worker callbacks, so it
+        must be set before ``exit()``: otherwise a prompt queued behind a
+        ``/quit`` or ``/restart`` command would still be submitted (and even
+        start a generation) while the app is shutting down.
+        """
+        self._quitting = True
+        self.exit()
+
     def _handle_command(self, text: str) -> None:
         """Run a slash-command through the CLI command registry."""
 
         cmd = text.split()[0].lstrip("/")
         if cmd in ("quit", "q"):  # TUI-local alias for /exit
-            self.exit()
+            self._request_exit()
             return
         if cmd == "display":  # TUI-local: display only, allowed while working
             self._display_command(text.split()[1:])
@@ -1777,7 +1822,7 @@ class GptmeApp(App):
             # can't work under Textual: exit cleanly, main() re-execs.
             self.manager.write(sync=True)
             self.restart_requested = True
-            self.exit()
+            self._request_exit()
             return
 
         msg = Message("user", text, quiet=True)
@@ -1801,7 +1846,7 @@ class GptmeApp(App):
 
                 handled = self._chat_ctx.run(execute_owned_command)
         except SystemExit:  # /exit
-            self.exit()
+            self._request_exit()
             return
         except (EOFError, RuntimeError) as e:
             # prompt_toolkit prompts call asyncio.run(), which fails inside
@@ -2206,11 +2251,9 @@ class GptmeApp(App):
             self._queued_widgets.clear()
             self.query_one("#input", ChatInput)._set_text(text)
         elif self.prompt_queue:
-            prompt = self.prompt_queue.pop(0)
-            if self._queued_widgets:
-                self._queued_widgets.pop(0).remove()
+            prompt = self._pop_queued_prompt()
             self._set_state("idle")
-            await self._submit(prompt)
+            await self._submit_user_input(prompt)
             return
         self._set_state("idle")
 
@@ -2262,7 +2305,7 @@ class GptmeApp(App):
         if self.generating:
             self.action_interrupt()
         else:
-            self.exit()
+            self._request_exit()
 
     def action_toggle_details(self) -> None:
         """Ctrl+O: expand outputs and thinking, or collapse both if expanded."""
@@ -2284,5 +2327,4 @@ class GptmeApp(App):
                 collapsible.collapsed = not expanded
 
     async def action_quit(self) -> None:
-        self._quitting = True
-        self.exit()
+        self._request_exit()

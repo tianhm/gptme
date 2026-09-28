@@ -1877,6 +1877,110 @@ async def test_paste_placeholder_survives_other_edits(tmp_path):
         )
 
 
+def test_tui_accepts_prompt_arguments():
+    from gptme.tui.main import main
+    from gptme.util.multiprompt import group_prompt_args
+
+    params = main.make_context("gptme-tui", ["write it", "-", "test it"]).params
+    assert params["prompts"] == ("write it", "-", "test it")
+    # same grouping as the CLI
+    assert group_prompt_args(params["prompts"]) == ["write it", "test it"]
+
+
+def test_tui_accepts_option_like_prompts():
+    from gptme.tui.main import main
+
+    params = main.make_context("gptme-tui", ["-foo"]).params
+    assert params["prompts"] == ("-foo",)
+
+
+@pytest.mark.asyncio
+async def test_initial_prompts_submit_first_and_queue_rest(tmp_path, monkeypatch):
+    app = GptmeApp(
+        make_manager(tmp_path), workspace=tmp_path, initial_prompts=["one", "two"]
+    )
+    started: list[bool] = []
+    monkeypatch.setattr(app, "_start_generation", lambda: started.append(True))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert [m.content for m in app.manager.log if m.role == "user"] == ["one"]
+        assert app.prompt_queue == ["two"]
+        assert started
+        widgets = app._queued_widgets
+        assert len(widgets) == 1
+        assert isinstance(widgets[0], UserMessage)
+        assert widgets[0].content == "two"
+
+
+@pytest.mark.asyncio
+async def test_initial_prompts_submit_next_when_turn_finishes(tmp_path, monkeypatch):
+    app = GptmeApp(
+        make_manager(tmp_path), workspace=tmp_path, initial_prompts=["one", "two"]
+    )
+    started: list[int] = []
+
+    def fake_start() -> None:
+        started.append(1)
+        app.generating = True
+
+    monkeypatch.setattr(app, "_start_generation", fake_start)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert app.prompt_queue == ["two"]
+        await app._generation_done()
+        await pilot.pause()
+        assert [m.content for m in app.manager.log if m.role == "user"] == [
+            "one",
+            "two",
+        ]
+        assert app.prompt_queue == []
+        assert len(started) == 2
+
+
+@pytest.mark.asyncio
+async def test_initial_slash_command_uses_command_handler(tmp_path, monkeypatch):
+    app = GptmeApp(
+        make_manager(tmp_path),
+        workspace=tmp_path,
+        initial_prompts=["/model mock/echo", "hello"],
+    )
+    handled: list[str] = []
+    started: list[str] = []
+    monkeypatch.setattr(app, "_handle_command", lambda text: handled.append(text))
+    monkeypatch.setattr(app, "_start_generation", lambda: started.append("gen"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert handled == ["/model mock/echo"]
+        assert [m.content for m in app.manager.log if m.role == "user"] == ["hello"]
+        assert started == ["gen"]
+        assert app.prompt_queue == []
+
+
+@pytest.mark.asyncio
+async def test_initial_quit_command_does_not_drain_queue(tmp_path, monkeypatch):
+    """A queued prompt must not be submitted behind an exiting command."""
+    app = GptmeApp(
+        make_manager(tmp_path),
+        workspace=tmp_path,
+        initial_prompts=["/quit", "hello"],
+    )
+    started: list[str] = []
+    monkeypatch.setattr(app, "_start_generation", lambda: started.append("gen"))
+    # Don't really tear the app down: /quit must not submit the queued prompt
+    # even before the app has finished exiting.
+    monkeypatch.setattr(app, "exit", lambda *args, **kwargs: None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+    assert app._quitting is True
+    assert app.prompt_queue == ["hello"]
+    assert [m.content for m in app.manager.log if m.role == "user"] == []
+    assert started == []
+
+
 def _make_conv(logs_dir, name):
     (logs_dir / name).mkdir(parents=True)
     (logs_dir / name / "conversation.jsonl").write_text("{}\n")
