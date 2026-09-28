@@ -1,18 +1,28 @@
 """Tests for time_awareness hook."""
 
+import contextvars
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from dateutil.parser import isoparse
 
 from gptme.hooks.time_awareness import (
     _conversation_start_times_var,
     _get_next_milestone,
+    _last_notice_var,
+    _log_tails_var,
+    _session_start,
     _shown_milestones_var,
     add_time_message,
 )
 from gptme.hooks.types import ToolExecutePostData
+from gptme.logmanager import Log
 from gptme.message import Message
+from gptme.util import clock
+from gptme.util.clock import format_duration, format_timestamp
 
 
 @pytest.fixture
@@ -26,7 +36,11 @@ def reset_contextvars():
     """Reset context vars between tests."""
     tok1 = _conversation_start_times_var.set(None)
     tok2 = _shown_milestones_var.set(None)
+    tok3 = _last_notice_var.set(None)
+    tok4 = _log_tails_var.set(None)
     yield
+    _log_tails_var.reset(tok4)
+    _last_notice_var.reset(tok3)
     _conversation_start_times_var.reset(tok1)
     _shown_milestones_var.reset(tok2)
 
@@ -156,3 +170,437 @@ class TestAddTimeMessage:
         msgs = _call_add_time_message(workspace=workspace)
         assert len(msgs) == 1
         assert msgs[0].hide is True
+
+
+# --- Clock consistency: one timezone-aware clock, full date + tz in notices ---
+
+UTC = timezone.utc
+
+
+@pytest.fixture
+def stockholm_tz(monkeypatch: pytest.MonkeyPatch):
+    """Run with local timezone Europe/Stockholm (UTC+2 in summer), not UTC."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset() not available on this platform")
+    monkeypatch.setenv("TZ", "Europe/Stockholm")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+class FakeClock:
+    """Controllable replacement for gptme.util.clock.now."""
+
+    def __init__(self, utc: datetime) -> None:
+        self.utc = utc
+
+    def __call__(self) -> datetime:
+        return self.utc.astimezone()
+
+
+@pytest.fixture
+def fake_clock(monkeypatch: pytest.MonkeyPatch, stockholm_tz) -> FakeClock:
+    fc = FakeClock(datetime(2026, 9, 27, 13, 0, tzinfo=UTC))
+    monkeypatch.setattr(clock, "now", fc)
+    return fc
+
+
+def _call_with_log(workspace: Path, log: Log) -> list[Message]:
+    results = list(
+        add_time_message(
+            ToolExecutePostData(log=log, workspace=workspace, tool_use=None)
+        )
+    )
+    return [r for r in results if isinstance(r, Message)]
+
+
+_NOTICE_TIME_RE = re.compile(
+    r"The time is now (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \S+ \(UTC([+-]\d{2}):(\d{2})\)"
+)
+
+
+def _notice_time(msg: Message) -> datetime:
+    """Parse the absolute time from a notice, including its UTC offset."""
+    m = _NOTICE_TIME_RE.search(msg.content)
+    assert m, f"notice lacks full date + timezone: {msg.content!r}"
+    offset = timedelta(hours=int(m.group(2)), minutes=int(m.group(3)))
+    return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(
+        tzinfo=timezone(offset)
+    )
+
+
+class TestClockConsistency:
+    def test_notice_uses_local_time_with_date_and_tz(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Local tz != UTC: notice shows local wall time, full date, tz name and offset."""
+        _call_with_log(workspace, Log())
+        fake_clock.utc = datetime(2026, 9, 27, 13, 33, tzinfo=UTC)
+        msgs = _call_with_log(workspace, Log())
+        assert len(msgs) == 1
+        assert "The time is now 2026-09-27 15:33 CEST (UTC+02:00)." in msgs[0].content
+
+    def test_notices_monotonic_across_date_boundary(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Reproduces the report: 13:33 then 09:35 (next day) looked like time going backwards."""
+        fake_clock.utc = datetime(2026, 9, 27, 13, 28, tzinfo=UTC)
+        _call_with_log(workspace, Log())
+        notices = []
+        for t in [
+            datetime(2026, 9, 27, 13, 33, tzinfo=UTC),
+            datetime(2026, 9, 27, 21, 59, tzinfo=UTC),  # 23:59 CEST
+            datetime(2026, 9, 28, 9, 35, tzinfo=UTC),  # 11:35 CEST next day
+            datetime(2026, 9, 28, 10, 4, tzinfo=UTC),
+        ]:
+            fake_clock.utc = t
+            msgs = _call_with_log(workspace, Log())
+            assert len(msgs) == 1
+            notices.append(msgs[0])
+            # Each notice states the real instant, not just HH:MM
+            assert _notice_time(msgs[0]) == t.replace(second=0)
+        times = [_notice_time(m) for m in notices]
+        assert times == sorted(times)
+        assert "2026-09-28 11:35 CEST (UTC+02:00)" in notices[2].content
+
+    def test_mixed_naive_and_aware_timestamps(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Naive (local) and aware (UTC) message timestamps in one log don't break the hook."""
+        fake_clock.utc = datetime(2026, 9, 27, 15, 0, tzinfo=UTC)
+        # Naive local 15:00 CEST == 13:00 UTC, i.e. 2h before "now".
+        start_naive = datetime(2026, 9, 27, 15, 0)  # noqa: DTZ001
+        log = Log(
+            [
+                Message("system", "prompt", timestamp=start_naive),
+                Message(
+                    "user",
+                    "hi",
+                    timestamp=datetime(2026, 9, 27, 14, 50, tzinfo=UTC),
+                ),
+                Message(
+                    "assistant",
+                    "ok",
+                    timestamp=datetime(2026, 9, 27, 16, 59),  # noqa: DTZ001 (naive local)
+                ),
+            ]
+        )
+        msgs = _call_with_log(workspace, log)
+        assert len(msgs) == 1
+        assert "Time elapsed: 2h since session start at 2026-09-27 15:00 CEST" in (
+            msgs[0].content
+        )
+
+    def test_resume_uses_real_session_start_and_reports_gap(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """A resumed conversation (fresh process) measures from its real start and says it resumed."""
+        start = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)
+        last_activity = datetime(2026, 9, 27, 19, 30, tzinfo=UTC)
+        resumed = datetime(2026, 9, 28, 9, 30, tzinfo=UTC)
+        fake_clock.utc = resumed + timedelta(minutes=1)
+        log = Log(
+            [
+                Message("system", "prompt", timestamp=start),
+                Message("assistant", "done for today", timestamp=last_activity),
+                Message("user", "continue", timestamp=resumed),
+                Message("assistant", "ok", timestamp=resumed + timedelta(seconds=30)),
+            ]
+        )
+        msgs = _call_with_log(workspace, log)
+        assert len(msgs) == 1
+        content = msgs[0].content
+        assert "The time is now 2026-09-28 11:31 CEST (UTC+02:00)." in content
+        assert "Time elapsed: 20h 31min since session start at 2026-09-27 15:00" in (
+            content
+        )
+        assert "Resumed after 14h of inactivity" in content
+        assert "last activity 2026-09-27 21:30 CEST (UTC+02:00)" in content
+
+        # The notice lands in the log; the gap is reported once, not on every step.
+        log = Log([*log.messages, *msgs])
+        fake_clock.utc = resumed + timedelta(minutes=2)
+        assert _call_with_log(workspace, log) == []
+
+    def test_state_survives_fresh_context(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """gptme-server runs each turn in a copied context: ContextVar state is lost.
+
+        Milestones and gaps must be derived from the log, so a new context
+        neither repeats the last milestone nor re-reports an old gap.
+        """
+        start = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)
+        resumed = start + timedelta(hours=5)
+        log = Log(
+            [
+                Message("system", "prompt", timestamp=start),
+                Message("user", "continue", timestamp=resumed),
+            ]
+        )
+        fake_clock.utc = resumed + timedelta(minutes=1)
+        msgs = _call_with_log(workspace, log)
+        assert len(msgs) == 1
+        assert "Resumed after 5h" in msgs[0].content
+        log = Log([*log.messages, *msgs])
+
+        # New turn in a fresh, empty context (as a new server turn/process
+        # would see it), same 10-minute milestone window.
+        fake_clock.utc = resumed + timedelta(minutes=3)
+        assert contextvars.Context().run(_call_with_log, workspace, log) == []
+
+        # Next milestone is still shown.
+        fake_clock.utc = resumed + timedelta(minutes=12)
+        (notice,) = contextvars.Context().run(_call_with_log, workspace, log)
+        assert "Resumed" not in notice.content
+        assert "Time elapsed: 5h 12min" in notice.content
+
+    def test_delayed_first_tool_call_after_resume(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """A gap is still reported if the first tool call comes long after the resume."""
+        start = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)
+        resumed = start + timedelta(hours=14)
+        log = Log(
+            [
+                Message("system", "prompt", timestamp=start),
+                Message("user", "continue", timestamp=resumed),
+                Message(
+                    "assistant",
+                    "thinking...",
+                    timestamp=resumed + timedelta(seconds=30),
+                ),
+            ]
+        )
+        # e.g. a long-running tool call finishes 41min after the resume
+        fake_clock.utc = resumed + timedelta(minutes=41)
+        (notice,) = _call_with_log(workspace, log)
+        assert "Resumed after 14h of inactivity" in notice.content
+
+    def test_idle_gap_within_process_reported(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Long idle (e.g. waiting for user input) within one process is reported too."""
+        t0 = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)
+        fake_clock.utc = t0
+        log = Log([Message("system", "prompt", timestamp=t0)])
+        _call_with_log(workspace, log)
+        t1 = t0 + timedelta(hours=3)
+        log = Log([*log.messages, Message("user", "back", timestamp=t1)])
+        fake_clock.utc = t1 + timedelta(minutes=1)
+        msgs = _call_with_log(workspace, log)
+        assert len(msgs) == 1
+        assert "Resumed after 3h of inactivity" in msgs[0].content
+
+    def test_system_prompt_date_agrees_with_notices(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Just after local midnight the prompt date must match the notice date, with tz."""
+        from gptme.prompts.templates import prompt_timeinfo
+
+        fake_clock.utc = datetime(2026, 9, 27, 22, 30, tzinfo=UTC)  # 00:30 CEST 28th
+        (prompt,) = prompt_timeinfo()
+        assert "2026-09-28 CEST (UTC+02:00)" in prompt.content
+        assert "2026-09-27" not in prompt.content
+
+        _call_with_log(workspace, Log())
+        fake_clock.utc += timedelta(minutes=2)
+        (notice,) = _call_with_log(workspace, Log())
+        assert "2026-09-28" in notice.content
+
+    def test_imported_history_older_than_system_prompt(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Session start is the earliest message, not the (newer) generated system prompt."""
+        created = datetime(2026, 9, 28, 9, 0, tzinfo=UTC)
+        history = datetime(2026, 9, 27, 9, 0, tzinfo=UTC)
+        log = Log(
+            [
+                Message("system", "fresh prompt", timestamp=created),
+                Message("user", "old question", timestamp=history),
+                Message("assistant", "old answer", timestamp=history),
+            ]
+        )
+        fake_clock.utc = created + timedelta(minutes=2)
+        (notice,) = _call_with_log(workspace, log)
+        assert "Time elapsed: 1d since session start at 2026-09-27 11:00 CEST" in (
+            notice.content
+        )
+
+    def test_truncated_log_updates_session_start(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """If the log shrinks (e.g. /backtrack) the session start is recomputed."""
+        created = datetime(2026, 9, 28, 9, 0, tzinfo=UTC)
+        history = datetime(2026, 9, 27, 9, 0, tzinfo=UTC)
+        prompt = Message("system", "fresh prompt", timestamp=created)
+        log = Log([prompt, Message("user", "old question", timestamp=history)])
+        fake_clock.utc = created + timedelta(minutes=2)
+        (notice,) = _call_with_log(workspace, log)
+        assert "since session start at 2026-09-27 11:00 CEST" in notice.content
+
+        # The old history is removed; the remaining log starts at `created`.
+        fake_clock.utc = created + timedelta(minutes=6)
+        (notice,) = _call_with_log(workspace, Log([prompt]))
+        assert "Time elapsed: 6min since session start at 2026-09-28 11:00" in (
+            notice.content
+        )
+
+    def test_truncated_log_does_not_suppress_new_milestones(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Rewind must not keep old milestone numbers that would hide new notices.
+
+        A long session records 1/5/10/15/20 in shown_milestones. After /edit
+        drops the imported history, those numbers would suppress the new
+        session's 5-min and 20-min notices unless tracking is reset.
+        """
+        created = datetime(2026, 9, 28, 9, 0, tzinfo=UTC)
+        history = datetime(2026, 9, 27, 9, 0, tzinfo=UTC)
+        prompt = Message("system", "fresh prompt", timestamp=created)
+        log = Log([prompt, Message("user", "old question", timestamp=history)])
+
+        # Walk the long session through early milestones so 5 and 20 are
+        # actually in shown_milestones (a single late call only records the
+        # current one).
+        fake_clock.utc = history
+        _call_with_log(workspace, log)
+        for minutes in (2, 6, 12, 16, 22):
+            fake_clock.utc = history + timedelta(minutes=minutes)
+            msgs = _call_with_log(workspace, log)
+            assert len(msgs) == 1
+            log = Log([*log.messages, *msgs])
+
+        # History and those notices are gone; remaining log starts at `created`.
+        fake_clock.utc = created + timedelta(minutes=6)
+        (notice,) = _call_with_log(workspace, Log([prompt]))
+        assert "Time elapsed: 6min since session start at 2026-09-28 11:00" in (
+            notice.content
+        )
+
+    def test_tail_truncation_same_start_resets_milestones(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Log tail removed via /backtrack without changing the first message.
+
+        When /backtrack removes messages but the session start (earliest
+        timestamp) is unchanged, the P1 scenario: shown_milestones and
+        last_notice from the deleted tail must not suppress new notices for
+        the shorter session.
+        """
+        start = datetime(2026, 9, 28, 9, 0, tzinfo=UTC)
+        prompt = Message("system", "prompt", timestamp=start)
+        msg1 = Message("user", "step 1", timestamp=start + timedelta(minutes=1))
+
+        # Build a session that crosses the 5-min milestone (reaches 10min).
+        log = Log([prompt, msg1])
+        for minutes in (2, 6, 11):
+            fake_clock.utc = start + timedelta(minutes=minutes)
+            msgs = _call_with_log(workspace, log)
+            assert len(msgs) == 1
+            log = Log([*log.messages, *msgs])
+
+        # Sanity: several milestones recorded in this context.
+        assert len(_shown_milestones_var.get()[str(workspace)]) >= 2  # type: ignore[index]
+
+        # /backtrack: drop everything after the original two messages.
+        # The session start is unchanged — only the old guard (start-change) fires.
+        short_log = Log([prompt, msg1])
+        assert _session_start(short_log) == _session_start(log)
+
+        # At minute 6 on the short log the 5-min milestone must be fresh again.
+        # Without the log-length reset it would already be in shown_milestones
+        # and the call would return nothing.
+        fake_clock.utc = start + timedelta(minutes=6)
+        (notice,) = _call_with_log(workspace, short_log)
+        assert "Time elapsed:" in notice.content
+
+    def test_rewind_then_regrow_to_same_length_resets_milestones(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """/backtrack drops a notice, then new messages restore the old length.
+
+        Length alone can't see the rewrite; the message that was last at the
+        previous call is gone, so in-context state must still be reset.
+        """
+        start = datetime(2026, 9, 28, 9, 0, tzinfo=UTC)
+        prompt = Message("system", "prompt", timestamp=start)
+        msg1 = Message("user", "step 1", timestamp=start + timedelta(minutes=1))
+
+        log = Log([prompt, msg1])
+        for minutes in (2, 6):
+            fake_clock.utc = start + timedelta(minutes=minutes)
+            msgs = _call_with_log(workspace, log)
+            assert len(msgs) == 1
+            log = Log([*log.messages, *msgs])
+        assert len(log.messages) == 4
+
+        # Rewind to the first two messages, then two new messages arrive:
+        # same length and start as before, different tail.
+        regrown = Log(
+            [
+                prompt,
+                msg1,
+                Message("user", "redo", timestamp=start + timedelta(minutes=2)),
+                Message("assistant", "ok", timestamp=start + timedelta(minutes=3)),
+            ]
+        )
+        fake_clock.utc = start + timedelta(minutes=7)
+        (notice,) = _call_with_log(workspace, regrown)
+        assert "Time elapsed:" in notice.content
+
+    def test_multiple_tools_in_one_step_report_gap_once(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """The CLI buffers a step's tool outputs; the 2nd tool must not repeat the gap."""
+        start = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)
+        resumed = start + timedelta(hours=14)
+        log = Log(
+            [
+                Message("system", "prompt", timestamp=start),
+                Message("user", "continue", timestamp=resumed),
+            ]
+        )
+        fake_clock.utc = resumed + timedelta(minutes=1)
+        (notice,) = _call_with_log(workspace, log)
+        assert "Resumed after 14h" in notice.content
+        # Same step, same (not yet updated) log: nothing new to report.
+        fake_clock.utc = resumed + timedelta(minutes=1, seconds=20)
+        assert _call_with_log(workspace, log) == []
+
+    def test_notice_timestamp_keeps_offset(
+        self, workspace: Path, fake_clock: FakeClock
+    ) -> None:
+        """Notice timestamps are aware: DST fall-back and save/reload keep the instant."""
+        # 2026-10-25 00:30 UTC == 02:30 CEST; 01:30 UTC == 02:30 CET (repeated hour)
+        start = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
+        log = Log([Message("system", "prompt", timestamp=start)])
+        fake_clock.utc = datetime(2026, 10, 25, 1, 30, tzinfo=UTC)
+        (notice,) = _call_with_log(workspace, log)
+        assert notice.timestamp.tzinfo is not None
+        assert notice.timestamp == fake_clock.utc
+        assert "2026-10-25 02:30 CET (UTC+01:00)" in notice.content
+        # Round-trip through the log's JSON serialization keeps the instant.
+        assert isoparse(notice.to_dict()["timestamp"]) == fake_clock.utc
+
+
+class TestClockFormatting:
+    def test_format_duration(self) -> None:
+        assert format_duration(timedelta(minutes=5)) == "5min"
+        assert format_duration(timedelta(hours=2, minutes=5)) == "2h 5min"
+        assert format_duration(timedelta(hours=14)) == "14h"
+        assert format_duration(timedelta(days=1, hours=3, minutes=7)) == "1d 3h"
+        assert format_duration(timedelta(minutes=-5)) == "0min"
+
+    def test_format_timestamp_utc(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        if not hasattr(time, "tzset"):
+            pytest.skip("time.tzset() not available on this platform")
+        monkeypatch.setenv("TZ", "UTC")
+        time.tzset()
+        try:
+            ts = format_timestamp(datetime(2026, 9, 28, 9, 35, tzinfo=UTC))
+            assert ts == "2026-09-28 09:35 UTC+00:00"
+        finally:
+            monkeypatch.undo()
+            time.tzset()
