@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
+from ..constants import valid_color
 from ..context.config import ContextConfig
 from ..context.selector.config import ContextSelectorConfig
 from ..util import path_with_tilde
@@ -201,6 +202,11 @@ class UserIdentityConfig:
     about: str | None = None
     response_preference: str | None = None
     avatar: str | None = None
+    color: str | None = None
+    """Display color for the user's name (hex, ``rgb(...)`` or a color name)."""
+
+    def __post_init__(self) -> None:
+        self.color = valid_color(self.color, "user")
 
 
 @dataclass
@@ -289,6 +295,11 @@ class AgentConfig:
         dashboard = "https://myagent.github.io/dashboard/"
         repo      = "https://github.com/myorg/myagent"
     """
+    color: str | None = None
+    """Display color for the agent's name (hex, ``rgb(...)`` or a color name)."""
+
+    def __post_init__(self) -> None:
+        self.color = valid_color(self.color, "agent")
 
 
 @dataclass
