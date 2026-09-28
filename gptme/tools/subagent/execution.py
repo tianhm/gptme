@@ -23,12 +23,20 @@ from typing import TYPE_CHECKING, Literal
 from ...llm.retry_abort import bind_thread_generation, release_thread
 from ...message import Message
 from ...prompt_queue import drain_steer_prompts
-from .. import clear_tools, get_tools, load_tool, set_tools
+from .. import (
+    clear_tools,
+    get_available_tools,
+    get_session_allowlist,
+    get_tools,
+    load_tool,
+    set_tools,
+)
 from .._allowlist import (
     is_hint_pattern,
     matching_allowlist_tools,
     tool_matches_allowlist,
 )
+from ..base import ToolSpec
 from .concurrency import get_slot_sem
 from .hooks import notify_completion, notify_progress
 from .persistence import persist_subagent_meta
@@ -73,6 +81,81 @@ def _ensure_subagent_signal_tools_loaded() -> None:
         if tool_name not in loaded_names:
             load_tool(tool_name)
             loaded_names.add(tool_name)
+
+
+def _resolve_profile_tools(
+    tool_allowlist: list[str], profile_name: str | None
+) -> list[ToolSpec]:
+    """Resolve the final toolset for a profile-restricted subagent.
+
+    A profile allowlist restricts the toolset, but it may also name tools that
+    are disabled by default (e.g. ``read``). Load those tools before filtering:
+    without this, a disabled-by-default tool named by the profile is absent
+    from ``get_tools()``, so it is reported as "unknown" and dropped from the
+    allowed set — silently stripping file reads from the built-in
+    explorer/verifier/researcher profiles.
+
+    Matching mirrors ``get_toolchain`` so name globs and ``hint:`` patterns
+    work too (e.g. ``hint:read-only`` or ``*.read``). The operator's session
+    allowlist stays authoritative: a profile can restrict further, never grant
+    a capability the operator excluded.
+    """
+    session_allowlist = get_session_allowlist()
+    # Tools already loaded were vetted against the session allowlist by
+    # init_tools() — including tools exported by operator-allowed .py tool
+    # files, whose names never appear verbatim in the allowlist (it stores
+    # the file path). Only newly loaded tools need the session check.
+    session_vetted_names = {tool.name for tool in get_tools()}
+    loaded_names = set(session_vetted_names)
+    for tool in get_available_tools():
+        if not tool.disabled_by_default or tool.name in loaded_names:
+            continue
+        if not tool_matches_allowlist(tool.name, tool_allowlist, tool.hints):
+            continue
+        if session_allowlist is not None and not tool_matches_allowlist(
+            tool.name, session_allowlist, tool.hints
+        ):
+            # Profile would re-grant a tool the operator's allowlist excluded.
+            continue
+        try:
+            load_tool(tool.name)
+        except ValueError:
+            # Already loaded or otherwise unavailable — the filter below decides.
+            pass
+
+    loaded_tools = get_tools()
+    loaded_names = {tool.name for tool in loaded_tools}
+    # Warn about unknown tool names in profile (typos, missing extras).
+    # Skip hint: patterns — they're always valid (match by capability tag, not name).
+    unknown = {
+        pattern
+        for pattern in tool_allowlist
+        if not is_hint_pattern(pattern)
+        and not matching_allowlist_tools(pattern, loaded_tools)
+    }
+    if unknown:
+        logger.warning(
+            "Profile '%s' references unknown tools: %s (available: %s)",
+            profile_name or "?",
+            ", ".join(sorted(unknown)),
+            ", ".join(sorted(loaded_names)),
+        )
+    available_tools = [
+        tool
+        for tool in loaded_tools
+        if tool_matches_allowlist(tool.name, tool_allowlist, tool.hints)
+        and (
+            session_allowlist is None
+            or tool.name in session_vetted_names
+            or tool_matches_allowlist(tool.name, session_allowlist, tool.hints)
+        )
+    ]
+    # Always include completion/clarification signal tools so restricted
+    # subagents can still end cleanly or ask the parent for more context.
+    for tool in loaded_tools:
+        if tool.name in _SUBAGENT_SIGNAL_TOOLS and tool not in available_tools:
+            available_tools.append(tool)
+    return available_tools
 
 
 def _load_agent_memory(profile_name: str | None) -> tuple[str | None, Path | None]:
@@ -270,37 +353,11 @@ def _create_subagent_thread(
 
     # Get tools, filtered by profile if applicable
     if tool_allowlist is not None:
-        loaded_tools = get_tools()
-        loaded_names = {t.name for t in loaded_tools}
-        # Warn about unknown tool names in profile (typos, missing extras).
-        # Skip hint: patterns — they're always valid (match by capability tag, not name).
-        unknown = {
-            pattern
-            for pattern in tool_allowlist
-            if not is_hint_pattern(pattern)
-            and not matching_allowlist_tools(pattern, loaded_tools)
-        }
-        if unknown:
-            logger.warning(
-                "Profile '%s' references unknown tools: %s (available: %s)",
-                profile.name if profile else "?",
-                ", ".join(sorted(unknown)),
-                ", ".join(sorted(loaded_names)),
-            )
-        available_tools = [
-            tool
-            for tool in loaded_tools
-            if tool_matches_allowlist(tool.name, tool_allowlist, tool.hints)
-        ]
-        # Always include completion/clarification signal tools so restricted
-        # subagents can still end cleanly or ask the parent for more context.
-        required_tools = [
-            tool for tool in loaded_tools if tool.name in _SUBAGENT_SIGNAL_TOOLS
-        ]
-        for tool in required_tools:
-            if tool not in available_tools:
-                available_tools.append(tool)
-        # Hard enforcement: replace loaded tools so execute_msg() only sees allowed tools
+        # Hard enforcement: replace loaded tools so execute_msg() only sees
+        # allowed tools (plus the signal tools needed to end/ask cleanly).
+        available_tools = _resolve_profile_tools(
+            tool_allowlist, profile.name if profile else None
+        )
         set_tools(available_tools)
     else:
         available_tools = get_tools()

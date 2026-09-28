@@ -7555,3 +7555,151 @@ class TestMidTurnSteerInjection:
 
         # Hook must not consume non-steer messages
         assert msgs == []
+
+
+# ---------------------------------------------------------------------------
+# Profile tool resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestProfileToolResolution:
+    """A profile allowlist must be able to name disabled-by-default tools."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_tool_state(self):
+        """Restore pristine tool state after each test (isolation)."""
+        from gptme.tools import clear_tools, init_tools
+
+        yield
+        clear_tools()
+        init_tools(allowlist=None)
+
+    @staticmethod
+    def _setup_base_tools():
+        from gptme.tools import init_tools
+
+        init_tools(allowlist=None)
+
+    def test_profile_loads_disabled_by_default_tool(self):
+        """`read` is disabled by default; explorer's allowlist must still load it.
+
+        Regression: the subagent executor filtered the already-loaded tools and
+        never loaded disabled-by-default tools named by the profile, so the
+        built-in explorer/verifier/researcher profiles silently lost file reads.
+        """
+        from gptme.tools import get_tools
+        from gptme.tools.subagent.execution import (
+            _ensure_subagent_signal_tools_loaded,
+            _resolve_profile_tools,
+        )
+
+        self._setup_base_tools()
+        assert "read" not in {t.name for t in get_tools()}, (
+            "read is expected to be disabled by default"
+        )
+
+        _ensure_subagent_signal_tools_loaded()
+        names = {t.name for t in _resolve_profile_tools(["read", "chats"], "explorer")}
+        assert "read" in names
+        assert "chats" in names
+        # Signal tools are always retained so the subagent can end/ask cleanly.
+        assert {"complete", "clarify"} <= names
+
+    def test_profile_restricts_to_allowlist(self):
+        from gptme.tools.subagent.execution import (
+            _ensure_subagent_signal_tools_loaded,
+            _resolve_profile_tools,
+        )
+
+        self._setup_base_tools()
+        _ensure_subagent_signal_tools_loaded()
+        names = {t.name for t in _resolve_profile_tools(["chats"], "isolated")}
+        assert names & {"shell", "save", "patch"} == set(), (
+            "non-allowlisted tools leaked"
+        )
+        assert "chats" in names
+
+    def test_unknown_profile_tool_warns_without_raising(self, caplog):
+        import logging
+
+        from gptme.tools.subagent.execution import (
+            _ensure_subagent_signal_tools_loaded,
+            _resolve_profile_tools,
+        )
+
+        self._setup_base_tools()
+        _ensure_subagent_signal_tools_loaded()
+        with caplog.at_level(logging.WARNING):
+            names = {t.name for t in _resolve_profile_tools(["not_a_real_tool"], "x")}
+        assert "not_a_real_tool" not in names
+        assert "references unknown tools" in caplog.text
+
+    def test_profile_glob_loads_disabled_by_default_tool(self):
+        """Glob and hint patterns must load disabled-by-default tools too.
+
+        Regression (Greptile P1): only exact tool names were loaded, so a
+        read-only profile expressed as ``hint:read-only`` or a name glob lost
+        ``read`` because it was never loaded before filtering.
+        """
+        from gptme.tools import clear_tools, get_tools
+        from gptme.tools.subagent.execution import (
+            _ensure_subagent_signal_tools_loaded,
+            _resolve_profile_tools,
+        )
+
+        for pattern in ("hint:read-only", "r*"):
+            clear_tools()
+            self._setup_base_tools()
+            assert "read" not in {t.name for t in get_tools()}
+            _ensure_subagent_signal_tools_loaded()
+            names = {
+                t.name
+                for t in _resolve_profile_tools([pattern, "complete", "clarify"], "x")
+            }
+            assert "read" in names, f"pattern {pattern!r} did not load read"
+
+    def test_session_allowlist_not_overridden_by_profile(self):
+        """The operator's session allowlist stays authoritative over a profile.
+
+        Regression (Greptile P1): the profile loader must not load (or keep) a
+        tool the operator excluded — an explorer profile naming ``read`` must
+        not regain file reads under a TOOL_ALLOWLIST=shell session.
+        """
+        from gptme.tools import get_tools, init_tools
+        from gptme.tools.subagent.execution import (
+            _ensure_subagent_signal_tools_loaded,
+            _resolve_profile_tools,
+        )
+
+        init_tools(allowlist=["shell"])
+        _ensure_subagent_signal_tools_loaded()
+        names = {
+            t.name
+            for t in _resolve_profile_tools(["read", "shell", "chats"], "explorer")
+        }
+        assert "read" not in names, "profile re-granted an operator-excluded tool"
+        assert "read" not in {t.name for t in get_tools()}, (
+            "profile loader loaded an operator-excluded tool"
+        )
+        assert "shell" in names
+        assert {"complete", "clarify"} <= names
+
+    def test_file_backed_tool_survives_profile_resolution(self, tmp_path):
+        """A tool loaded from an operator-allowed .py file survives resolution.
+
+        Regression (Greptile P1): the session-allowlist filter compared tool
+        *names* against raw allowlist entries, but a file allowlist stores a
+        path (e.g. ``/path/mytool.py``), so a file-exported tool that both the
+        operator and the profile allowed was silently dropped.
+        """
+        from gptme.tools import init_tools
+        from gptme.tools.subagent.execution import _resolve_profile_tools
+
+        tool_file = tmp_path / "mycustomtool.py"
+        tool_file.write_text(
+            "from gptme.tools.base import ToolSpec\n"
+            "tool = ToolSpec(name='mycustomtool', desc='test tool')\n"
+        )
+        init_tools(allowlist=[str(tool_file)])
+        names = {t.name for t in _resolve_profile_tools(["mycustomtool"], "custom")}
+        assert "mycustomtool" in names, "file-backed tool dropped by session filter"
