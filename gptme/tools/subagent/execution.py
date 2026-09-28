@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -237,6 +238,78 @@ def _build_parent_context_message(parent_messages: list[Message]) -> Message:
         "Focus on your own task — don't re-execute work the parent has already completed._"
     )
     return Message("system", "\n".join(lines))
+
+
+# Thread-mode subagents run chat(), which does a process-wide
+# os.chdir(workspace). Several can run at once, so the parent's cwd is
+# captured when the first one starts and restored only after the last one
+# finishes; restoring earlier would pull a still-running sibling out of its
+# workspace, and capturing per subagent could "restore" a sibling's workspace.
+_cwd_lock = threading.Lock()
+_parent_cwd: str | None = None
+# Workspaces of running thread subagents (a workspace may be shared).
+_active_workspaces: Counter[Path] = Counter()
+# Workspaces of finished subagents that left the process cwd in them while a
+# sibling was still running; the last one to finish undoes that too.
+_left_behind_workspaces: set[Path] = set()
+
+
+def _enter_subagent_cwd(workspace: Path) -> None:
+    """Register a starting thread-mode subagent before its chat() chdirs."""
+    global _parent_cwd
+    with _cwd_lock:
+        if not _active_workspaces:
+            try:
+                _parent_cwd = os.getcwd()
+            except FileNotFoundError:
+                _parent_cwd = None
+            _left_behind_workspaces.clear()
+        _active_workspaces[workspace.resolve()] += 1
+
+
+def _current_cwd() -> Path | None:
+    try:
+        return Path.cwd().resolve()
+    except FileNotFoundError:  # e.g. the worktree was already removed
+        return None
+
+
+def _exit_subagent_cwd(workspace: Path) -> None:
+    """Undo subagents' process-wide chdir once the last one has finished.
+
+    Only restores when the cwd is still a subagent's workspace, so a cwd
+    change made by the parent in the meantime is not clobbered.
+    """
+    global _parent_cwd
+    ws = workspace.resolve()
+    with _cwd_lock:
+        _active_workspaces[ws] -= 1
+        if _active_workspaces[ws] <= 0:
+            del _active_workspaces[ws]
+        current = _current_cwd()
+        if _active_workspaces:
+            # A sibling is still running; don't move the cwd under it. Remember
+            # if this subagent left the cwd in its workspace, so the last one
+            # to finish restores it. Otherwise forget this workspace: a later
+            # move into it is the parent's own.
+            if current == ws:
+                _left_behind_workspaces.add(ws)
+            return
+        parent_cwd, _parent_cwd = _parent_cwd, None
+        left_behind = set(_left_behind_workspaces)
+        _left_behind_workspaces.clear()
+        if parent_cwd is None:
+            return
+        if current is not None and (
+            current not in left_behind | {ws} or current == Path(parent_cwd).resolve()
+        ):
+            return
+        try:
+            os.chdir(parent_cwd)
+        except OSError as e:
+            logger.warning(
+                "Could not restore cwd to %s after subagent: %s", parent_cwd, e
+            )
 
 
 def _create_subagent_thread(
@@ -504,6 +577,10 @@ def _create_subagent_thread(
     # calling set_output_format() before the call) is required — chat() itself
     # calls set_output_format(output_format) at its start, which would otherwise
     # immediately override quiet mode back to the default "text".
+    # chat() calls os.chdir(workspace), which is process-wide. Register so the
+    # parent's cwd is restored when the subagent ran elsewhere (e.g.
+    # isolation="worktree" or an explicit workdir).
+    _enter_subagent_cwd(workspace)
     try:
         chat(
             prompt_msgs,
@@ -526,6 +603,7 @@ def _create_subagent_thread(
         # sub-microsecond race that requires modifying chat() itself to close.
         if prompt_queue_closed is not None:
             prompt_queue_closed.set()
+        _exit_subagent_cwd(workspace)
         # Drain any steer messages that arrived after the last STEP_PRE fired but
         # before chat() returned. These were not deliverable mid-turn; warn so
         # the orchestrator knows the guidance was not seen.
