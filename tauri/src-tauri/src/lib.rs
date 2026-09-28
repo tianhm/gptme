@@ -28,7 +28,7 @@ const SERVER_TOKEN_ENV: &str = "GPTME_SERVER_TOKEN";
 /// Returns the port gptme-server should bind to.
 /// Override at run time with `GPTME_SERVER_PORT=<port>` for development or
 /// testing in environments where the default port is already occupied.
-fn server_port() -> u16 {
+pub(crate) fn server_port() -> u16 {
     std::env::var("GPTME_SERVER_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -46,8 +46,120 @@ const LOCAL_SERVER_UNSUPPORTED: &str =
     "Local gptme-server management is desktop-only. Connect to a remote gptme instance instead.";
 
 #[cfg(desktop)]
-fn is_port_available(port: u16) -> bool {
+pub(crate) fn is_port_available(port: u16) -> bool {
     TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok()
+}
+
+/// Returns the PID listening on `port` (LISTEN state), excluding our own.
+/// Used to identity-check a port holder before killing it.
+#[cfg(unix)]
+pub(crate) fn server_pid_on_port(port: u16) -> Option<u32> {
+    let my_pid = std::process::id();
+    let output = std::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", port), "-sTCP:LISTEN"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .find(|pid| *pid != my_pid)
+}
+
+#[cfg(windows)]
+pub(crate) fn server_pid_on_port(port: u16) -> Option<u32> {
+    let output = std::process::Command::new("netstat")
+        .args(["-ano"])
+        .output()
+        .ok()?;
+    let port_suffix = format!(":{}", port);
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if !line.contains("LISTENING") {
+            continue;
+        }
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if !cols.get(1).copied().unwrap_or("").ends_with(&port_suffix) {
+            continue;
+        }
+        if let Some(pid_str) = cols.last() {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                if pid != std::process::id() {
+                    return Some(pid);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort identity check: does `pid` look like a gptme-server process?
+/// Checks the command line and executable path for the gptme-server binary
+/// name (both `gptme-server` and the Python module form `gptme_server`).
+#[cfg(unix)]
+pub(crate) fn pid_is_gptme_server(pid: u32, token: Option<&str>) -> bool {
+    let matches = |s: &str| s.contains("gptme-server") || s.contains("gptme_server");
+
+    // Linux: /proc is available and cheap.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
+            if matches(&cmdline.replace('\0', " ")) {
+                return true;
+            }
+        }
+        if let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+            if matches(&exe.to_string_lossy()) {
+                return true;
+            }
+        }
+        // Decisive fallback: a server we spawned carries our bearer token in
+        // its environment (SERVER_TOKEN_ENV). A PyInstaller onefile child can
+        // have a cmdline like `/tmp/_MEIxxxx/gptme-server` that the string
+        // match above misses, but its /proc/<pid>/environ still contains the
+        // token we passed at spawn — proof of identity no foreign process can
+        // produce. Compared in memory only; the token is never logged.
+        if let Some(token) = token {
+            if let Ok(environ) = std::fs::read_to_string(format!("/proc/{pid}/environ")) {
+                if environ
+                    .split('\0')
+                    .any(|kv| kv == format!("{SERVER_TOKEN_ENV}={token}"))
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    // macOS and other POSIX (no /proc): use `ps -p PID -o command=`.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output();
+        output
+            .map(|o| matches(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn pid_is_gptme_server(pid: u32, _token: Option<&str>) -> bool {
+    // PowerShell CIM query (wmic is deprecated on Windows 11+).
+    // NOTE: the token-based /proc/<pid>/environ identity check is Linux-only;
+    // Windows has no cheap equivalent, so identity stays cmdline-based there.
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"),
+        ])
+        .output();
+    output
+        .map(|o| {
+            let cmdline = String::from_utf8_lossy(&o.stdout).to_lowercase();
+            cmdline.contains("gptme-server") || cmdline.contains("gptme_server")
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(desktop)]
@@ -135,19 +247,23 @@ async fn probe_server(port: u16) -> ServerProbe {
 
 #[cfg(desktop)]
 struct ServerProcess {
-    child: Arc<Mutex<Option<CommandChild>>>,
+    pub(crate) child: Arc<Mutex<Option<CommandChild>>>,
     // True if we started or reused a gptme-server; false if startup failed
     // (port occupied by an unresponsive foreign process).  Used in cleanup to
     // avoid killing a process that we never owned.
-    owns_port: Arc<AtomicBool>,
+    pub(crate) owns_port: Arc<AtomicBool>,
     // Bearer token shared only with the sidecar and the Tauri webview.
-    token: String,
+    pub(crate) token: String,
     // Held at app setup so #[tauri::command] functions that need the handle
     // can fetch it from state instead of taking AppHandle as a command
     // parameter — the latter would break tests because AppHandle does not
     // implement Deserialize for MockRuntime command dispatch.
-    app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
+    pub(crate) app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
 }
+
+// Non-desktop stub so LAN command signatures stay identical across platforms.
+#[cfg(not(desktop))]
+struct ServerProcess;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 struct ServerStatus {
@@ -248,6 +364,7 @@ async fn start_server(state: tauri::State<'_, ServerProcess>) -> Result<u16, Str
         state.child.clone(),
         state.owns_port.clone(),
         &state.token,
+        None,
     )
     .await?;
     Ok(server_port())
@@ -282,6 +399,7 @@ async fn spawn_server_sidecar(
     state_arc: Arc<Mutex<Option<CommandChild>>>,
     owns_port: Arc<AtomicBool>,
     token: &str,
+    lan_ip: Option<&str>,
 ) -> Result<(), String> {
     if !is_port_available(server_port()) {
         // Port is occupied — probe whether we can actually use the server there.
@@ -343,18 +461,29 @@ async fn spawn_server_sidecar(
     // self-terminates when Tauri itself disappears.
     let tauri_pid = std::process::id().to_string();
     let port_str = server_port().to_string();
+    let mut args: Vec<String> = vec![
+        "--cors-origin".to_string(),
+        cors_origin.to_string(),
+        "--port".to_string(),
+        port_str,
+        "--watch-pid".to_string(),
+        tauri_pid,
+    ];
+    if let Some(ip) = lan_ip {
+        // Expose the server on the LAN. gptme-server runs with bearer auth
+        // (SERVER_TOKEN_ENV), so Host-header validation is disabled and the
+        // token gates access; --allowed-hosts is defense in depth.
+        args.push("--host".to_string());
+        args.push("0.0.0.0".to_string());
+        args.push("--allowed-hosts".to_string());
+        args.push(ip.to_string());
+        log::warn!("gptme-server exposed on LAN via {ip} (bearer-token protected)");
+    }
     let sidecar_command = app
         .shell()
         .sidecar("gptme-server")
         .map_err(|e| format!("Sidecar error: {}", e))?
-        .args([
-            "--cors-origin",
-            cors_origin,
-            "--port",
-            port_str.as_str(),
-            "--watch-pid",
-            tauri_pid.as_str(),
-        ])
+        .args(&args)
         .env(SERVER_TOKEN_ENV, token);
 
     let (mut rx, child) = sidecar_command
@@ -366,6 +495,7 @@ async fn spawn_server_sidecar(
         child.pid()
     );
 
+    let watched_pid = child.pid();
     {
         let mut guard = state_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
         *guard = Some(child);
@@ -401,8 +531,24 @@ async fn spawn_server_sidecar(
                         "[gptme-server] Process terminated with code: {:?}",
                         payload.code
                     );
+                    // Only clear the slot if it still holds OUR child. A LAN
+                    // rebind may already have stored a replacement sidecar by
+                    // the time the old server's Terminated event arrives —
+                    // blindly clearing would orphan the new child handle.
                     if let Ok(mut guard) = state_for_output.lock() {
-                        *guard = None;
+                        match guard.as_ref() {
+                            Some(current) if current.pid() == watched_pid => {
+                                *guard = None;
+                            }
+                            Some(_) => {
+                                log::info!(
+                                    "[gptme-server] Old sidecar ({watched_pid}) terminated \
+                                     after a replacement was already started; keeping the \
+                                     replacement's child handle"
+                                );
+                            }
+                            None => {}
+                        }
                     }
                     // PyInstaller onefile bundles use a launcher process that
                     // spawns the actual Python interpreter as a child. When the
@@ -644,6 +790,8 @@ pub fn run() {
             // LAN state must be managed on all platforms so commands can extract it
             // (even though enable_lan_access returns an error on non-desktop).
             app.manage(LanAccess::new(server_port()));
+            #[cfg(not(desktop))]
+            app.manage(ServerProcess);
 
             #[cfg(desktop)]
             {
@@ -660,7 +808,8 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(err) =
-                        spawn_server_sidecar(&app_handle, child_handle, owns_port, &token).await
+                        spawn_server_sidecar(&app_handle, child_handle, owns_port, &token, None)
+                            .await
                     {
                         log::error!("Failed to start gptme-server: {}", err);
                         if err.contains("already in use") {
@@ -796,7 +945,7 @@ fn cleanup_server_process(app: &tauri::AppHandle) {
             "Cleaning up any remaining process on port {}...",
             server_port()
         );
-        kill_server_on_port(server_port());
+        kill_server_on_port(server_port(), Some(&state.token));
         state.owns_port.store(false, Ordering::Relaxed);
     }
 }
@@ -804,14 +953,14 @@ fn cleanup_server_process(app: &tauri::AppHandle) {
 // Kill all direct children of `pid` (e.g. uvicorn workers).  The parent is
 // killed separately via CommandChild::kill() so we don't need /T here.
 #[cfg(unix)]
-fn kill_subprocesses(pid: u32) {
+pub(crate) fn kill_subprocesses(pid: u32) {
     let _ = std::process::Command::new("pkill")
         .args(["-9", "-P", &pid.to_string()])
         .status();
 }
 
 #[cfg(windows)]
-fn kill_subprocesses(pid: u32) {
+pub(crate) fn kill_subprocesses(pid: u32) {
     // taskkill /T kills the whole process tree including the root; that's fine
     // here because we call this before child.kill(), so the parent gets a
     // second kill attempt which is harmless.
@@ -826,7 +975,7 @@ fn kill_subprocesses(pid: u32) {
 //   - Reuse path (#2258): no CommandChild was tracked
 //   - Subprocess survival: pkill -P missed children for any reason
 #[cfg(unix)]
-fn kill_server_on_port(port: u16) {
+pub(crate) fn kill_server_on_port(port: u16, token: Option<&str>) {
     // -sTCP:LISTEN restricts output to the process actually listening on the
     // port, excluding established client connections (e.g. the Tauri WebView).
     // my_pid guard is belt-and-suspenders in case lsof returns our own PID.
@@ -851,6 +1000,18 @@ fn kill_server_on_port(port: u16) {
                 log::debug!("Skipping self (PID {}) in port {} cleanup", pid, port);
                 continue;
             }
+            // Identity is re-checked immediately before the kill: between the
+            // caller's check and this point the gptme-server may have died and
+            // an unrelated process taken the port (TOCTOU). Never kill a
+            // process we cannot identify as a gptme-server.
+            if !pid_is_gptme_server(pid, token) {
+                log::info!(
+                    "PID {} on port {} is not a gptme-server; refusing to kill it",
+                    pid,
+                    port
+                );
+                continue;
+            }
             log::info!("Killing orphan gptme-server PID {} on port {}", pid, port);
             kill_subprocesses(pid);
             let _ = std::process::Command::new("kill")
@@ -861,7 +1022,7 @@ fn kill_server_on_port(port: u16) {
 }
 
 #[cfg(windows)]
-fn kill_server_on_port(port: u16) {
+pub(crate) fn kill_server_on_port(port: u16, token: Option<&str>) {
     // netstat -ano columns: Proto  LocalAddress  ForeignAddress  State  PID
     // Match the local-address field (col[1]) exactly so ":5700" does not
     // accidentally match ":57001" via substring search.
@@ -884,6 +1045,29 @@ fn kill_server_on_port(port: u16) {
             continue;
         }
         if let Some(pid_str) = cols.last() {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                if pid == std::process::id() {
+                    log::debug!("Skipping self (PID {}) in port {} cleanup", pid, port);
+                    continue;
+                }
+                // Identity re-check immediately before the kill (TOCTOU guard,
+                // same as the unix variant): only kill a verified gptme-server.
+                if !pid_is_gptme_server(pid, token) {
+                    log::info!(
+                        "PID {} on port {} is not a gptme-server; refusing to kill it",
+                        pid,
+                        port
+                    );
+                    continue;
+                }
+            } else {
+                log::warn!(
+                    "Unparseable PID {:?} on port {}; not killing it",
+                    pid_str,
+                    port
+                );
+                continue;
+            }
             log::info!(
                 "Killing orphan gptme-server PID {} on port {}",
                 pid_str,
@@ -898,10 +1082,10 @@ fn kill_server_on_port(port: u16) {
 
 // Stub for platforms that are neither unix nor windows (shouldn't happen for desktop targets).
 #[cfg(not(any(unix, windows)))]
-fn kill_subprocesses(_pid: u32) {}
+pub(crate) fn kill_subprocesses(_pid: u32) {}
 
 #[cfg(not(any(unix, windows)))]
-fn kill_server_on_port(_port: u16) {}
+pub(crate) fn kill_server_on_port(_port: u16, _token: Option<&str>) {}
 
 #[cfg(test)]
 mod tests {
