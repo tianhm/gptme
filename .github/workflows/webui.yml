@@ -14,6 +14,13 @@ on:
       - '.github/workflows/webui-visual-diff.yml'
       - '.github/scripts/diff-screenshots.sh'
 
+# Cancel a PR's older runs when it gets a new push (they're superseded).
+# Every other run (master push, release, dispatch, schedule) gets its own
+# group, so none of them can cancel or replace another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 defaults:
   run:
     working-directory: webui

@@ -11,6 +11,17 @@ on:
   pull_request:
     branches:
       - master
+    # the web UI and desktop app aren't part of the docs build
+    paths-ignore:
+      - 'webui/**'
+      - 'tauri/**'
+
+# Cancel a PR's older runs when it gets a new push (they're superseded).
+# Every other run (master push, release, dispatch, schedule) gets its own
+# group, so none of them can cancel or replace another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
