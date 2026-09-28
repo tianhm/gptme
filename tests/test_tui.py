@@ -1416,6 +1416,7 @@ def test_complete_input_tui_commands():
         "/display thinking",
         "/display outputs",
         "/display hidden",
+        "/display highlight",
     ]
     assert complete_input("/display thinking o") == [
         "/display thinking on",
@@ -1827,7 +1828,7 @@ async def test_tool_call_collapsible_has_single_marker(tmp_path):
         await app.mount(widget)
         await pilot.pause()
         block = widget.query(".tool-call-block").results(Collapsible).__next__()
-        assert block.title == "shell: ls"
+        assert str(block.title) == "shell: ls"
 
 
 def test_system_display_text_strips_wrapper_tags():
@@ -2069,6 +2070,38 @@ async def test_initial_prompts_submit_first_and_queue_rest(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_rebuild_chat_keeps_queued_prompt_visible(tmp_path, monkeypatch):
+    """Queued prompts are TUI-only; rebuilding from the log must remount them."""
+    app = GptmeApp(
+        make_manager(tmp_path), workspace=tmp_path, initial_prompts=["one", "two"]
+    )
+
+    def fake_start() -> None:
+        app.generating = True
+
+    monkeypatch.setattr(app, "_start_generation", fake_start)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        assert app.prompt_queue == ["two"]
+        app._rebuild_chat()
+        await pilot.pause()
+        queued = [w for w in app.query(UserMessage) if "queued" in w.classes]
+        assert len(queued) == 1
+        assert queued[0].content == "two"
+        assert app._queued_widgets == queued
+        # popping after a rebuild must remove the remounted widget, not crash
+        await app._generation_done()
+        await pilot.pause()
+        assert app.prompt_queue == []
+        assert not any("queued" in w.classes for w in app.query(UserMessage))
+        assert [m.content for m in app.manager.log if m.role == "user"] == [
+            "one",
+            "two",
+        ]
+
+
+@pytest.mark.asyncio
 async def test_initial_prompts_submit_next_when_turn_finishes(tmp_path, monkeypatch):
     app = GptmeApp(
         make_manager(tmp_path), workspace=tmp_path, initial_prompts=["one", "two"]
@@ -2250,6 +2283,185 @@ async def test_paste_placeholder_undo_redo(tmp_path):
         assert inp._expand_pastes(inp.text) == "x 1\n2\n3"
 
 
+@pytest.mark.asyncio
+async def test_terminal_focus_changes_keep_input_focused(tmp_path):
+    """Blur must not drop focus (Textual's default), and focus-in restores it."""
+    from textual import events
+
+    app = GptmeApp(make_manager(tmp_path), workspace=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", ChatInput)
+        assert not inp.cursor_blink, "steady cursor, like shells"
+        focused_line = inp.render_line(0)
+        app.post_message(events.AppBlur())
+        await pilot.pause()
+        assert app.focused is inp
+        # still focused, but the rendered cursor is gone while the terminal
+        # is unfocused (checks the actual render: TextArea caches lines)
+        assert not inp._draw_cursor
+        assert inp.render_line(0) != focused_line
+        # focus lost some other way: focus-in puts it back on the input
+        app.screen.set_focus(None)
+        app.post_message(events.AppFocus())
+        await pilot.pause()
+        assert app.focused is inp
+        assert inp._draw_cursor
+        assert inp.render_line(0) == focused_line
+
+
+def test_current_dir_recovers_from_stale_cwd(tmp_path, monkeypatch):
+    import click
+
+    from gptme.tui import main as tui_main
+
+    def stale():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(tui_main.Path, "cwd", staticmethod(stale))
+    monkeypatch.setattr(tui_main.os, "chdir", lambda p: None)
+    monkeypatch.setenv("PWD", str(tmp_path))
+    assert tui_main._current_dir() == tmp_path
+    monkeypatch.setenv("PWD", str(tmp_path / "gone"))
+    with pytest.raises(click.ClickException, match="no longer exists"):
+        tui_main._current_dir()
+
+
+def test_drop_summary_line():
+    from gptme.tui.app import _drop_summary_line
+
+    content = "Shellcheck found potential issues:\n\n```\nSC2044 warning\n```\n"
+    assert _drop_summary_line(content) == "```\nSC2044 warning\n```"
+    # a leading fence is not the title, keep it
+    fenced = "```stdout\nhello\n```"
+    assert _drop_summary_line(fenced) == fenced
+    # nothing but the summary line: keep the content
+    assert _drop_summary_line("just one line") == "just one line"
+
+
+def test_tool_title_highlighting():
+    from gptme.tui.app import _summary_title, _tool_title
+
+    title = _tool_title("▶ shell: ls -la", "bash", highlight=True)
+    assert title.plain == "▶ shell: ls -la"
+    assert title.spans, "expected highlight styles"
+    # Collapsible draws its own marker
+    assert _tool_title("▶ shell: ls", "bash", True, marker=False).plain == "shell: ls"
+    plain = _tool_title("▶ shell: ls", "bash", highlight=False)
+    assert plain.plain == "▶ shell: ls" and not plain.spans
+
+    summary = _summary_title("Ran command: `ls -la` (3 lines)", highlight=True)
+    assert summary.plain == "Ran command: ls -la (3 lines)"
+    assert summary.spans
+    # unmatched backtick stays literal
+    assert _summary_title("a `b", highlight=True).plain == "a `b"
+
+
+def test_tool_format_title_shows_path_not_json():
+    title, code, lang = _tool_call_renderable(
+        '@save(call_1): {"path": "/tmp/x.py", "content": "print(1)"}'
+    )
+    assert title == "▶ save: /tmp/x.py"
+    # the expanded body is the content to be saved, highlighted as its file type
+    assert code == "print(1)"
+    assert lang == "python"
+
+
+def test_patch_renders_as_diff_in_all_formats():
+    patch = "<<<<<<< ORIGINAL\nold line\n=======\nnew line\n>>>>>>> UPDATED"
+    import json
+
+    tool_call = "@patch(c1): " + json.dumps({"path": "a.py", "patch": patch})
+    title, code, lang = _tool_call_renderable(tool_call)
+    assert title == "▶ patch: a.py"
+    assert lang == "diff"
+    assert "-old line" in code and "+new line" in code
+
+    title, code, lang = _markdown_tool_renderable(f"```patch a.py\n{patch}\n```")
+    assert (title, lang) == ("▶ patch: a.py", "diff")
+    assert "-old line" in code and "+new line" in code
+
+    title, code, lang = _markdown_tool_renderable("```save b.md\n# Hi\n```")
+    assert (title, code) == ("▶ save: b.md", "# Hi")
+    assert lang == "markdown"
+
+
+def test_patch_many_renders_per_file_diffs():
+    import json
+
+    patch = "<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED"
+    patches = json.dumps(
+        [{"path": "x.py", "patch": patch}, {"path": "y.py", "patch": patch}]
+    )
+    tool_call = "@patch_many(c1): " + json.dumps({"patches": patches})
+    title, code, lang = _tool_call_renderable(tool_call)
+    assert title == "▶ patch_many: x.py (+1 more)"
+    assert lang == "diff"
+    assert "--- x.py" in code and "--- y.py" in code and "+b" in code
+
+
+def test_patch_many_empty_patches_does_not_crash():
+    """An empty patches list must still render instead of IndexError."""
+    title, code, lang = _tool_call_renderable('@patch_many(c1): {"patches": []}')
+    assert title == "▶ patch_many"
+    assert code == ""
+    assert lang == "diff"
+
+
+def test_patch_preview_skips_placeholders():
+    """`# ...` separators are not file edits; don't show them as -/+ lines."""
+    import json
+
+    patch = (
+        "<<<<<<< ORIGINAL\n"
+        "old\n"
+        "    # ...\n"
+        "tail\n"
+        "=======\n"
+        "new\n"
+        "    # ...\n"
+        "tail\n"
+        ">>>>>>> UPDATED"
+    )
+    title, code, lang = _tool_call_renderable(
+        "@patch(c1): " + json.dumps({"path": "a.py", "patch": patch})
+    )
+    assert title == "▶ patch: a.py"
+    assert lang == "diff"
+    assert "-old" in code and "+new" in code
+    assert "# ..." not in code
+
+
+def test_tool_format_title_non_string_path():
+    """A numeric path must still render instead of crashing the TUI."""
+    title, code, _lang = _tool_call_renderable(
+        '@save(call_1): {"path": 123, "content": "print(1)"}'
+    )
+    assert title == "▶ save: 123"
+    assert code == "print(1)"
+
+
+@pytest.mark.asyncio
+async def test_display_highlight_and_toggle_refocus(tmp_path):
+    manager = make_manager(
+        tmp_path, [Message("system", "Ran command: `ls`\n```stdout\na\n```")]
+    )
+    app = GptmeApp(manager, workspace=tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", ChatInput)
+        inp.text = "/display highlight off"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not app.highlight
+        # clicking a section title toggles it; focus goes back to the input
+        title = app.query_one(SystemMessage).query_one(Collapsible)
+        await pilot.click(title)
+        await pilot.pause()
+        assert not title.collapsed
+        assert app.focused is inp
+
+
 def test_configured_role_color_precedence(monkeypatch):
     from types import SimpleNamespace
 
@@ -2289,3 +2501,32 @@ async def test_messages_use_configured_role_color(tmp_path, monkeypatch):
         # no color configured for the user: theme default kept
         user = app.query_one(UserMessage)
         assert user.styles.border_left[1].hex != "#E5A50A"
+
+
+def test_drop_summary_line_keeps_truncated_first_line():
+    """A first line cut short in the title must stay in the expanded body."""
+    from gptme.tui.app import SUMMARY_MAXLEN, _drop_summary_line
+
+    long_first = "x" * (SUMMARY_MAXLEN + 5)
+    content = f"{long_first}\nmore"
+    assert _drop_summary_line(content) == content
+
+
+def test_restart_not_attempted_when_workspace_is_gone(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from gptme.tools import restart
+    from gptme.tui import main as tui_main
+
+    calls: list[str] = []
+    monkeypatch.setattr(restart, "_do_restart", lambda name: calls.append(name))
+    app = SimpleNamespace(
+        end_session=lambda: None,
+        restart_requested=True,
+        restart_web_url=None,
+        restart_target=None,
+        workspace=tmp_path / "gone",
+    )
+    tui_main._finish_session(app, "conv")  # type: ignore[arg-type]
+    assert calls == []
+    assert "Not restarting" in capsys.readouterr().out

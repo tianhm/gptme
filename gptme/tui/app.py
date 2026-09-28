@@ -100,7 +100,26 @@ def _queued_prompt_text(item: str | Message) -> str:
     return item.content if isinstance(item, Message) else item
 
 
-def _summarize(content: str, maxlen: int = 80) -> str:
+SUMMARY_MAXLEN = 80
+
+
+def _drop_summary_line(content: str) -> str:
+    """Body for an expanded section whose title is ``_summarize(content)``.
+
+    The title already shows the first line, so don't repeat it, unless the
+    title doesn't show it in full: a code fence (the title then just says
+    "output") or a line truncated to fit.
+    """
+    lines = content.strip().splitlines()
+    if not lines:
+        return content
+    first = lines[0].strip()
+    if first.startswith("```") or len(first) > SUMMARY_MAXLEN:
+        return content
+    return "\n".join(lines[1:]).strip("\n") or content
+
+
+def _summarize(content: str, maxlen: int = SUMMARY_MAXLEN) -> str:
     """One-line summary of message content, for collapsed sections."""
     lines = content.strip().splitlines() or [""]
     first = next((line for line in lines if line.strip()), "").strip()
@@ -203,6 +222,11 @@ def _show_thinking_default() -> bool:
     return bool(get_config().get_env_bool("GPTME_TUI_DISPLAY_THINKING", default=False))
 
 
+def _highlight_default() -> bool:
+    """Whether titles are syntax-highlighted at startup (``GPTME_TUI_DISPLAY_HIGHLIGHT``)."""
+    return bool(get_config().get_env_bool("GPTME_TUI_DISPLAY_HIGHLIGHT", default=True))
+
+
 def _show_hidden_default() -> bool:
     """Whether hidden messages are displayed at startup (``GPTME_TUI_DISPLAY_HIDDEN``).
 
@@ -243,16 +267,108 @@ def _tool_call_renderable(call_text: str) -> tuple[str, str, str]:
     json_body = m.group(3)
     try:
         args = json.loads(json_body)
-        code: str = args.get("code") or args.get("command") or json_body
     except Exception:
-        code = json_body
-    first_line = code.split("\n")[0].strip()
+        args = None
+    if not isinstance(args, dict):
+        return _tool_renderable(tool_name, None, json_body)
+    if text := args.get("code") or args.get("command"):
+        return _tool_renderable(tool_name, None, str(text))
+    if tool_name == "patch_many":
+        return _patch_many_renderable(args.get("patches"))
+    path = args.get("path")
+    text = args.get("content") or args.get("patch") or args.get("edit")
+    if isinstance(text, str) and path:
+        return _tool_renderable(tool_name, str(path), text)
+    # unknown shape: title by path if any, expand to all arguments
+    title, _, _ = _tool_renderable(tool_name, None, str(path or json_body))
+    return title, json.dumps(args, indent=2), "json"
+
+
+_PATCH_BLOCK_RE = re.compile(
+    r"<<<<<<< ORIGINAL\n(.*?)\n?=======\n(.*?)\n?>>>>>>> UPDATED", re.DOTALL
+)
+# Same pattern the patch executor splits on (gptme.tools.patch.Patch.from_codeblock)
+_PATCH_PLACEHOLDER_RE = re.compile(r"^[ \t]*(#|//|\") \.\.\. ?.*$")
+# tools whose content is a file's text, highlighted by the file's type
+_FILE_CONTENT_TOOLS = ("save", "append", "morph")
+
+
+def _patch_as_diff(patch: str) -> str | None:
+    """Conflict-marker patch (ORIGINAL/UPDATED blocks) as -/+ diff lines."""
+    blocks = _PATCH_BLOCK_RE.findall(patch)
+    if not blocks:
+        return None
+    lines: list[str] = []
+    for original, updated in blocks:
+        lines.append("@@")
+        lines += [
+            f"-{line}"
+            for line in original.splitlines()
+            if not _PATCH_PLACEHOLDER_RE.match(line)
+        ]
+        lines += [
+            f"+{line}"
+            for line in updated.splitlines()
+            if not _PATCH_PLACEHOLDER_RE.match(line)
+        ]
+    return "\n".join(lines)
+
+
+def _tool_renderable(
+    tool_name: str, path: str | None, text: str
+) -> tuple[str, str, str]:
+    """(title, body, lang) for a tool call, shared by all tool formats.
+
+    File tools are titled by path and show the file content (highlighted by
+    file type) or, for patches, a -/+ diff; other tools show their code.
+    """
+    body, lang = (
+        text.strip("\n"),
+        ("python" if tool_name in ("ipython", "python") else "bash"),
+    )
+    summary = body
+    if path and tool_name in _FILE_CONTENT_TOOLS:
+        lang = Syntax.guess_lexer(path, body)
+        summary = path
+    elif path and tool_name == "patch":
+        if diff := _patch_as_diff(text):
+            body, lang = diff, "diff"
+        else:
+            lang = Syntax.guess_lexer(path, body)
+        summary = path
+    first_line = summary.split("\n")[0].strip()
     if len(first_line) > 55:
         first_line = first_line[:54] + "…"
-    suffix = "…" if ("\n" in code or len(code) > 60) else ""
-    title = f"▶ {tool_name}: {first_line}{suffix}" if first_line else f"▶ {tool_name}"
-    lang = "python" if tool_name in ("ipython", "python") else "bash"
-    return title, code, lang
+    elif "\n" in summary.strip():
+        first_line += " …"  # more lines follow
+    title = f"▶ {tool_name}: {first_line}" if first_line else f"▶ {tool_name}"
+    return title, body, lang
+
+
+def _patch_many_renderable(patches: object) -> tuple[str, str, str]:
+    """patch_many: one diff section per file."""
+    import json
+
+    items = patches
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except Exception:
+            return _tool_renderable("patch_many", None, str(items))
+    if not isinstance(items, list):
+        return _tool_renderable("patch_many", None, str(patches))
+    sections, paths = [], []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path, patch = str(item.get("path", "?")), str(item.get("patch", ""))
+        paths.append(path)
+        sections.append(f"--- {path}\n{_patch_as_diff(patch) or patch}")
+    n = len(paths)
+    if n == 0:
+        return "▶ patch_many", "", "diff"
+    title = f"▶ patch_many: {paths[0]}" + (f" (+{n - 1} more)" if n > 1 else "")
+    return title, "\n".join(sections), "diff"
 
 
 def _split_markdown_tool_calls(content: str) -> list[tuple[bool, str]]:
@@ -339,15 +455,8 @@ def _markdown_tool_renderable(segment: str) -> tuple[str, str, str]:
     from ..codeblock import Codeblock
 
     cb = Codeblock.from_markdown(segment)
-    code = cb.content.strip()
-    tool_name = cb.lang.split()[0] if cb.lang else "tool"
-    first_line = code.split("\n")[0].strip()
-    if len(first_line) > 55:
-        first_line = first_line[:54] + "…"
-    suffix = "…" if ("\n" in code or len(code) > 60) else ""
-    title = f"▶ {tool_name}: {first_line}{suffix}" if first_line else f"▶ {tool_name}"
-    lang = "python" if tool_name in ("ipython", "python") else "bash"
-    return title, code, lang
+    tool_name, _, path = (cb.lang or "tool").partition(" ")
+    return _tool_renderable(tool_name, path.strip() or None, cb.content)
 
 
 def _xml_tool_renderables(segment: str) -> list[tuple[str, str, str]]:
@@ -357,20 +466,10 @@ def _xml_tool_renderables(segment: str) -> list[tuple[str, str, str]]:
     tool_uses = list(_ToolUse._iter_from_xml(segment))
     if not tool_uses:
         return [("▶ tool", segment, "xml")]
-    result = []
-    for tu in tool_uses:
-        tool_name = tu.tool
-        code = (tu.content or "").strip()
-        first_line = code.split("\n")[0].strip()
-        if len(first_line) > 55:
-            first_line = first_line[:54] + "…"
-        suffix = "…" if ("\n" in code or len(code) > 60) else ""
-        title = (
-            f"▶ {tool_name}: {first_line}{suffix}" if first_line else f"▶ {tool_name}"
-        )
-        lang = "python" if tool_name in ("ipython", "python") else "bash"
-        result.append((title, code, lang))
-    return result
+    return [
+        _tool_renderable(tu.tool, tu.args[0] if tu.args else None, tu.content or "")
+        for tu in tool_uses
+    ]
 
 
 def _split_all_tool_calls(text: str) -> list[tuple[bool, str, str]]:
@@ -444,18 +543,58 @@ class UserMessage(Vertical):
         _apply_role_color(self, "user")
 
 
-def _collapsible_title(title: str) -> str:
-    """Tool-call titles start with ▶ for inline panels; Collapsible draws its own."""
-    return title.removeprefix("▶ ")
+def _highlight(code: str, lang: str) -> Text:
+    """Syntax-highlight a snippet into one line of styled text."""
+    text = Syntax(code, lang, theme="ansi_dark", word_wrap=True).highlight(code)
+    text.rstrip()
+    return text
+
+
+_TITLE_RE = re.compile(r"([\w.-]+): (.*)", re.DOTALL)
+
+
+def _tool_title(title: str, lang: str, highlight: bool, marker: bool = True) -> Text:
+    """Tool-call title ``▶ tool: first line`` with the code highlighted.
+
+    Collapsible draws its own ▶, so ``marker=False`` drops ours.
+    """
+    bare = title.removeprefix("▶ ")
+    prefix = "▶ " if marker and bare != title else ""
+    m = _TITLE_RE.fullmatch(bare)
+    if not highlight or not m:
+        return Text(prefix + bare)
+    text = Text(prefix)
+    text.append(f"{m.group(1)}:", style="bold")
+    text.append(" ")
+    text.append_text(_highlight(m.group(2), lang))
+    return text
+
+
+def _summary_title(summary: str, highlight: bool) -> Text:
+    """Output summary with `inline code` spans highlighted as shell."""
+    parts = summary.split("`")
+    if not highlight or len(parts) < 3:
+        return Text(summary)
+    text = Text()
+    for i, part in enumerate(parts):
+        # odd parts sit between backticks; an unmatched last one stays plain
+        if i % 2 and i < len(parts) - 1:
+            text.append_text(_highlight(part, "bash"))
+        else:
+            text.append(part)
+    return text
 
 
 class AssistantMessage(Vertical):
     """A completed assistant message, rendered as markdown."""
 
-    def __init__(self, content: str, show_thinking: bool = False):
+    def __init__(
+        self, content: str, show_thinking: bool = False, highlight: bool = True
+    ):
         super().__init__(classes="message assistant")
         self.content = content.strip()
         self.show_thinking = show_thinking
+        self.highlight = highlight
 
     def on_mount(self) -> None:
         _apply_role_color(self, "assistant")
@@ -487,24 +626,38 @@ class AssistantMessage(Vertical):
                     elif fmt == "tool":
                         title, code, lang = _tool_call_renderable(seg)
                         yield Collapsible(
-                            Static(Syntax(code, lang, theme="ansi_dark")),
-                            title=_collapsible_title(title),
+                            Static(
+                                Syntax(code, lang, theme="ansi_dark", word_wrap=True)
+                            ),
+                            title=_tool_title(
+                                title, lang, self.highlight, marker=False
+                            ),  # type: ignore[arg-type]
                             collapsed=True,
                             classes="tool-call-block",
                         )
                     elif fmt == "xml":
                         for title, code, lang in _xml_tool_renderables(seg):
                             yield Collapsible(
-                                Static(Syntax(code, lang, theme="ansi_dark")),
-                                title=_collapsible_title(title),
+                                Static(
+                                    Syntax(
+                                        code, lang, theme="ansi_dark", word_wrap=True
+                                    )
+                                ),
+                                title=_tool_title(
+                                    title, lang, self.highlight, marker=False
+                                ),  # type: ignore[arg-type]
                                 collapsed=True,
                                 classes="tool-call-block",
                             )
                     else:  # markdown
                         title, code, lang = _markdown_tool_renderable(seg)
                         yield Collapsible(
-                            Static(Syntax(code, lang, theme="ansi_dark")),
-                            title=_collapsible_title(title),
+                            Static(
+                                Syntax(code, lang, theme="ansi_dark", word_wrap=True)
+                            ),
+                            title=_tool_title(
+                                title, lang, self.highlight, marker=False
+                            ),  # type: ignore[arg-type]
                             collapsed=True,
                             classes="tool-call-block",
                         )
@@ -530,17 +683,20 @@ class SystemMessage(Vertical):
     One-line messages are shown as-is: there is nothing to expand.
     """
 
-    def __init__(self, content: str):
+    def __init__(self, content: str, highlight: bool = True):
         super().__init__(classes="message system")
         self.content = _system_display_text(content)
+        self.highlight = highlight
 
     def compose(self) -> ComposeResult:
         if "\n" not in self.content:
-            yield Static(Text(self.content), classes="system-line")
+            yield Static(
+                _summary_title(self.content, self.highlight), classes="system-line"
+            )
             return
         yield Collapsible(
-            Markdown(self.content),
-            title=_summarize(self.content),
+            Markdown(_drop_summary_line(self.content)),
+            title=_summary_title(_summarize(self.content), self.highlight),  # type: ignore[arg-type]
             collapsed=True,
         )
 
@@ -645,7 +801,10 @@ class BouncingError(Static):
 
 
 def renderables_for_message(
-    msg: Message, expanded: bool = False, show_thinking: bool = True
+    msg: Message,
+    expanded: bool = False,
+    show_thinking: bool = True,
+    highlight: bool = True,
 ) -> list:
     """Rich renderables for a message, for native-scrollback (inline) mode."""
 
@@ -686,8 +845,10 @@ def renderables_for_message(
                             title, code, lang = _tool_call_renderable(seg)
                             items.append(
                                 Panel(
-                                    Syntax(code, lang, theme="ansi_dark"),
-                                    title=title,
+                                    Syntax(
+                                        code, lang, theme="ansi_dark", word_wrap=True
+                                    ),
+                                    title=_tool_title(title, lang, highlight),
                                     expand=False,
                                 )
                             )
@@ -695,8 +856,13 @@ def renderables_for_message(
                             for title, code, lang in _xml_tool_renderables(seg):
                                 items.append(
                                     Panel(
-                                        Syntax(code, lang, theme="ansi_dark"),
-                                        title=title,
+                                        Syntax(
+                                            code,
+                                            lang,
+                                            theme="ansi_dark",
+                                            word_wrap=True,
+                                        ),
+                                        title=_tool_title(title, lang, highlight),
                                         expand=False,
                                     )
                                 )
@@ -704,8 +870,10 @@ def renderables_for_message(
                             title, code, lang = _markdown_tool_renderable(seg)
                             items.append(
                                 Panel(
-                                    Syntax(code, lang, theme="ansi_dark"),
-                                    title=title,
+                                    Syntax(
+                                        code, lang, theme="ansi_dark", word_wrap=True
+                                    ),
+                                    title=_tool_title(title, lang, highlight),
                                     expand=False,
                                 )
                             )
@@ -714,8 +882,13 @@ def renderables_for_message(
     # system/tool output: compact summary line, optionally expanded
     content = _system_display_text(content)
     if "\n" not in content:
-        return [Text(content, style="dim"), Text()]
-    renderables: list = [Text(f"▶ {_summarize(content)}", style="dim")]
+        line = _summary_title(content, highlight)
+        line.stylize("dim")
+        return [line, Text()]
+    summary = Text("▶ ")
+    summary.append_text(_summary_title(_summarize(content), highlight))
+    summary.stylize("dim")
+    renderables: list = [summary]
     if expanded:
         renderables.append(Padding(RichMarkdown(content), (0, 0, 0, 2)))
     renderables.append(Text())
@@ -723,7 +896,7 @@ def renderables_for_message(
 
 
 # display-only settings toggled by /display (they never affect the model)
-DISPLAY_SETTINGS = ("thinking", "outputs", "hidden")
+DISPLAY_SETTINGS = ("thinking", "outputs", "hidden", "highlight")
 _ON = ("on", "show", "expanded", "true", "1")
 _OFF = ("off", "hide", "collapsed", "false", "0")
 
@@ -814,6 +987,8 @@ class ChatInput(TextArea):
         # TextArea's init, which already fires the selection watcher
         self._pastes: dict[str, str] = {}
         super().__init__(**kwargs)
+        # steady cursor, like shells; hidden while the terminal is unfocused
+        self.cursor_blink = False
         self._tab_candidates: list[str] = []
         self._tab_index = -1
         self._tab_last = ""
@@ -823,6 +998,22 @@ class ChatInput(TextArea):
         self._history_saved = ""  # text buffered when browsing started
         self._history_edits: dict[str, str] = {}
         self._history_filter: list[str] = []  # prefix-filtered view; empty = unfiltered
+
+    @property
+    def _draw_cursor(self) -> bool:
+        # the input keeps focus when the terminal loses it (see
+        # GptmeApp._watch_app_focus), so hide the cursor then instead
+        return super()._draw_cursor and self.app.app_focus
+
+    def redraw_cursor(self) -> None:
+        """Re-render after the terminal gains/loses focus.
+
+        TextArea caches rendered lines, and with blinking off the cache key
+        doesn't depend on focus, so a plain refresh would redraw the cursor
+        from cache.
+        """
+        self._line_cache.clear()
+        self.refresh()
 
     def _push_history(self, text: str) -> None:
         """Record a submitted entry and persist it to the shared history file."""
@@ -1222,6 +1413,14 @@ class GptmeApp(App):
     .message MarkdownFence {
         margin: 0;
     }
+    /* expanded sections: body directly under the title */
+    .message Collapsible > Contents {
+        padding: 0 0 0 3;
+    }
+    /* the fence's inner label pads a blank line above and below */
+    .message MarkdownFence > Label {
+        padding: 0 1;
+    }
     .message MarkdownBlock:last-child {
         margin-bottom: 0;
     }
@@ -1377,6 +1576,7 @@ class GptmeApp(App):
         self._outputs_expanded = False
         self.show_thinking = _show_thinking_default()
         self.show_hidden = _show_hidden_default()
+        self.highlight = _highlight_default()
         self._stdio_sink: IO[str] | None = None
         self._real_stdout: IO[str] | None = None
         self._real_stderr: IO[str] | None = None
@@ -1631,9 +1831,11 @@ class GptmeApp(App):
         if msg.role == "user":
             return UserMessage(msg.content)
         if msg.role == "assistant":
-            return AssistantMessage(msg.content, show_thinking=self.show_thinking)
+            return AssistantMessage(
+                msg.content, show_thinking=self.show_thinking, highlight=self.highlight
+            )
         if msg.role == "system":
-            return SystemMessage(msg.content)
+            return SystemMessage(msg.content, highlight=self.highlight)
         return None
 
     def _print_above(self, *renderables) -> None:
@@ -1679,7 +1881,10 @@ class GptmeApp(App):
         cost_text = inline_cost_text(msg) if msg.role == "assistant" else None
         if self.inline:
             renderables = renderables_for_message(
-                msg, self._outputs_expanded, show_thinking=self.show_thinking
+                msg,
+                self._outputs_expanded,
+                show_thinking=self.show_thinking,
+                highlight=self.highlight,
             )
             if cost_text:
                 renderables.insert(-1, Text(cost_text, style="dim"))
@@ -1954,11 +2159,11 @@ class GptmeApp(App):
         self._update_status()
 
     def _display_command(self, args: list[str]) -> None:
-        """``/display [thinking|outputs|hidden] [on|off]``: display-only settings.
+        """``/display [thinking|outputs|hidden|highlight] [on|off]``: display-only settings.
 
         No setting lists the current state; no value toggles.
         """
-        usage = "Usage: /display [thinking|outputs|hidden] [on|off]"
+        usage = "Usage: /display [thinking|outputs|hidden|highlight] [on|off]"
         # name -> (current value, setter, on/off wording)
         settings = {
             "thinking": (self.show_thinking, self._set_thinking, ("shown", "hidden")),
@@ -1972,6 +2177,7 @@ class GptmeApp(App):
                 self._set_hidden,
                 ("messages shown", "messages hidden"),
             ),
+            "highlight": (self.highlight, self._set_highlight, ("on", "off")),
         }
         if not args:
             state = ", ".join(
@@ -2002,6 +2208,23 @@ class GptmeApp(App):
     def _set_hidden(self, on: bool) -> None:
         self.show_hidden = on
         self._rebuild_chat()
+
+    def _set_highlight(self, on: bool) -> None:
+        self.highlight = on
+        self._rebuild_chat()
+
+    def _refocus_input_after_toggle(self) -> None:
+        # Clicking a title focuses it (drawn bold) and takes keyboard focus
+        # from the input; hand it back so typing keeps working.
+        if not isinstance(self.screen, ModalScreen):
+            self.query_one("#input").focus()
+
+    # Textual posts the Toggled subclasses, whose handler names differ
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        self._refocus_input_after_toggle()
+
+    def on_collapsible_collapsed(self, event: Collapsible.Collapsed) -> None:
+        self._refocus_input_after_toggle()
 
     def _set_thinking(self, on: bool) -> None:
         self.show_thinking = on
@@ -2036,6 +2259,19 @@ class GptmeApp(App):
         chat = self.query_one("#chat", VerticalScroll)
         chat.remove_children()
         self._render_history()
+        self._remount_queued_prompts()
+
+    def _remount_queued_prompts(self) -> None:
+        """Queued prompts live only in the TUI, not the log.
+
+        Commands that rebuild the chat (``/model``, ``/display highlight``, …)
+        would otherwise drop the waiting widgets while the queue still runs.
+        """
+        self._queued_widgets.clear()
+        for prompt in self.prompt_queue:
+            widget = UserMessage(_queued_prompt_text(prompt), queued=True)
+            self._queued_widgets.append(widget)
+            self._mount_in_chat(widget)
 
     async def _submit(self, prompt: str | Message) -> None:
         if isinstance(prompt, Message):
@@ -2397,7 +2633,23 @@ class GptmeApp(App):
 
     # ------------------------------------------------------------ actions
 
+    def _dismiss_dialog(self) -> bool:
+        """Cancel an open confirmation dialog; True if there was one.
+
+        The generation thread blocks on the tool-confirm dialog, so an
+        interrupt has to answer it (as declined) to take effect.
+        """
+        screen: object = self.screen
+        if isinstance(screen, ConfirmScreen):
+            screen.dismiss(ConfirmationResult.skip(INTERRUPT_CONTENT))
+        elif isinstance(screen, UrlConfirmScreen):
+            screen.dismiss([])
+        else:
+            return False
+        return True
+
     def action_interrupt(self) -> None:
+        self._dismiss_dialog()
         if self.generating:
             self._interrupt_event.set()
             self._set_state("interrupting…")
@@ -2405,7 +2657,7 @@ class GptmeApp(App):
     def action_interrupt_or_quit(self) -> None:
         if self.generating:
             self.action_interrupt()
-        else:
+        elif not self._dismiss_dialog():  # e.g. the URL dialog before a turn
             self._request_exit()
 
     def action_toggle_details(self) -> None:
@@ -2426,6 +2678,34 @@ class GptmeApp(App):
         for collapsible in self.query(Collapsible):
             if not collapsible.has_class("thinking-block"):
                 collapsible.collapsed = not expanded
+
+    # ---------------------------------------------------- terminal focus
+
+    async def _on_app_focus(self, event: events.AppFocus) -> None:
+        event.prevent_default()  # skip App's refresh_bindings(): no footer
+        self.app_focus = True
+
+    async def _on_app_blur(self, event: events.AppBlur) -> None:
+        event.prevent_default()
+        self.app_focus = False
+
+    def _watch_app_focus(self, focus: bool) -> None:
+        """Replace Textual's handling of terminal focus changes (FocusIn/Out).
+
+        Textual restyles every widget on the screen and drops keyboard focus
+        on blur, restoring it on the next focus-in. With a long conversation
+        that is thousands of widgets, freezing the UI for seconds on every
+        tmux pane switch, and focus stays lost if the focus-in is missed or
+        a dialog opened meanwhile. The TUI's CSS has no app :focus/:blur
+        rules, and the input should simply keep focus.
+        """
+        chat_input = self.query_one("#input", ChatInput)
+        if focus and self.screen.focused is None and not self._is_modal_open():
+            self.screen.set_focus(chat_input, scroll_visible=False)
+        chat_input.redraw_cursor()
+
+    def _is_modal_open(self) -> bool:
+        return isinstance(self.screen, ModalScreen)
 
     async def action_quit(self) -> None:
         self._request_exit()
