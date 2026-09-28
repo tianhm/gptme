@@ -1105,6 +1105,25 @@ class ToolUse:
         tool = get_tool(self.tool)
         return bool(tool.execute) if tool else False
 
+    @property
+    def preview_content(self) -> str | None:
+        """What to show when asking to confirm this call.
+
+        Tool-format calls (``@ipython(id): {...}``) carry their arguments in
+        ``kwargs`` and have no ``content``: show what the tool will run
+        (``command`` before ``code``, as shell/tmux run ``command``), else
+        all arguments. Non-string values fall through to the full dump.
+        """
+        if self.content:
+            return self.content
+        if not self.kwargs:
+            return None
+        for key in ("command", "code", "content"):
+            value = self.kwargs.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return json.dumps(self.kwargs, indent=2, default=str)
+
     @classmethod
     def _from_codeblock(cls, codeblock: Codeblock) -> ToolUse | None:
         """Parses a codeblock into a ToolUse. Codeblock must be a supported type.
