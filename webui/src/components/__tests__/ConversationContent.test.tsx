@@ -62,6 +62,8 @@ jest.mock('@/utils/stepGrouping', () => ({
 const mockNavigate = jest.fn();
 const mockConnect = jest.fn();
 const mockCheckConnection = jest.fn().mockResolvedValue(true);
+const mockGetUserInfo = jest.fn().mockResolvedValue({});
+const mockSecondaryGetUserInfo = jest.fn().mockResolvedValue({});
 const mockIsDemoMode = jest.fn(() => false);
 const mockIsLikelyChromeCorsPna = jest.fn((_url: string) => false);
 
@@ -73,6 +75,7 @@ const lastConnectionResult$ = observable<null | {
   message: string;
 }>(null);
 const sessions$ = observable(new Map<string, string>());
+const mockUserInfo$ = observable(null);
 
 // Secondary server observables for serverId tests
 const secondaryIsConnected$ = observable(true);
@@ -166,7 +169,7 @@ jest.mock('@/contexts/ApiContext', () => ({
       lastConnectionResult$,
       sessions$,
       authHeader: null,
-      getUserInfo: jest.fn().mockResolvedValue({}),
+      getUserInfo: mockGetUserInfo,
       step: jest.fn(),
       sendMessage: jest.fn(),
       subscribeToEvents: jest.fn(),
@@ -183,6 +186,9 @@ jest.mock('@/contexts/ApiContext', () => ({
           isConnected$: secondaryIsConnected$,
           lastConnectionResult$: secondaryLastConnectionResult$,
           checkConnection: secondaryCheckConnection,
+          getUserInfo: mockSecondaryGetUserInfo,
+          userInfo$: mockUserInfo$,
+          baseUrl: 'http://127.0.0.1:5701',
         };
       }
       // Unknown server ID falls back to primary (matches ApiContext behavior)
@@ -190,6 +196,9 @@ jest.mock('@/contexts/ApiContext', () => ({
         isConnected$,
         lastConnectionResult$,
         checkConnection: mockCheckConnection,
+        getUserInfo: mockGetUserInfo,
+        userInfo$: mockUserInfo$,
+        baseUrl: 'http://localhost:5700',
       };
     },
     connectionConfig: {
@@ -409,6 +418,13 @@ describe('server disconnected banner — serverId (secondary server)', () => {
     btn.click();
     expect(secondaryCheckConnection).toHaveBeenCalled();
     expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it('fetches user identity from the conversation server, not only the primary', () => {
+    secondaryIsConnected$.set(true);
+    render(<ConversationContent conversationId="demo/test" serverId="secondary-server" />);
+    expect(mockSecondaryGetUserInfo).toHaveBeenCalled();
+    expect(mockGetUserInfo).not.toHaveBeenCalled();
   });
 });
 

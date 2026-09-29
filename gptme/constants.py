@@ -46,12 +46,25 @@ def valid_color(value: object, where: str) -> str | None:
         try:
             Color.parse(value)
             return value
-        except (ColorParseError, ValueError):
+        except (ColorParseError, ValueError, KeyError):
             pass
     import logging
 
     logging.getLogger(__name__).warning("Ignoring invalid %s color %r", where, value)
     return None
+
+
+def color_to_hex(value: object) -> str | None:
+    """Convert a validated Rich color to a CSS-compatible hex value."""
+    if not isinstance(value, str) or not value:
+        return None
+
+    from rich.color import Color, ColorParseError
+
+    try:
+        return Color.parse(value).get_truecolor().hex
+    except (ColorParseError, ValueError, KeyError, AttributeError, TypeError):
+        return None
 
 
 @functools.lru_cache(maxsize=8)
@@ -60,15 +73,20 @@ def _env_agent_color(value: str) -> str | None:
     return valid_color(value, "GPTME_AGENT_COLOR")
 
 
+def env_agent_color() -> str | None:
+    """Validated ``GPTME_AGENT_COLOR``, or None if unset/invalid."""
+    env = os.environ.get("GPTME_AGENT_COLOR")
+    return _env_agent_color(env) if env else None
+
+
 def configured_role_color(role: str) -> str | None:
     """Display color configured for a role, or None to use the default.
 
     The agent color comes from ``GPTME_AGENT_COLOR``, then ``[agent].color``
     in gptme.toml; the user color from ``[user].color``.
     """
-    if role == "assistant" and (env := os.environ.get("GPTME_AGENT_COLOR")):
-        if color := _env_agent_color(env):
-            return color
+    if role == "assistant" and (color := env_agent_color()):
+        return color
     if role not in ("user", "assistant"):
         return None
     from .config import get_config

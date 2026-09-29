@@ -113,12 +113,13 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
     return document.querySelectorAll('[data-conversation-pane]').length <= 1;
   }, []);
 
-  // Fetch user info once (cached in ApiClient)
+  // Fetch user identity for the conversation's server (cached on the client).
+  // ChatMessage reads userInfo$ from getClient(serverId), so a secondary
+  // conversation needs that client's identity, not only the primary.
   useEffect(() => {
-    if (api.isConnected$.get()) {
-      api.getUserInfo().catch(() => {});
-    }
-  }, [api]);
+    if (!isConnected || serverNotFound) return;
+    serverClient.getUserInfo().catch(() => {});
+  }, [serverClient, isConnected, serverNotFound]);
 
   useObserveEffect(api.sessions$.get(conversationId), () => {
     if (!isReadOnly) {
@@ -1023,6 +1024,7 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
               ? `${baseUrl}/api/v2/conversations/${conversationId}/agent/avatar`
               : undefined;
             const agentName = conversation$.data.agent?.name?.peek();
+            const agentColor = conversation$.data.agent?.color?.peek();
 
             return (
               <div
@@ -1040,8 +1042,10 @@ export const ConversationContent: FC<Props> = ({ conversationId, serverId, isRea
                     previousMessage$={previousMessage$}
                     nextMessage$={nextMessage$}
                     conversationId={conversationId}
+                    serverId={serverId}
                     agentAvatarUrl={agentAvatarUrl}
                     agentName={agentName}
+                    agentColor={agentColor}
                     onRetry={isReadOnly ? undefined : retryMessage}
                     onEdit={isReadOnly ? undefined : editMessage}
                     onDelete={isReadOnly ? undefined : deleteMessage}

@@ -162,8 +162,10 @@ interface Props {
   previousMessage$?: Observable<Message | undefined>;
   nextMessage$?: Observable<Message | undefined>;
   conversationId: string;
+  serverId?: string;
   agentAvatarUrl?: string;
   agentName?: string;
+  agentColor?: string | null;
   onRetry?: (message: Message) => void;
   onEdit?: (
     index: number,
@@ -186,8 +188,10 @@ const ChatMessageComponent: FC<Props> = ({
   previousMessage$,
   nextMessage$,
   conversationId,
+  serverId,
   agentAvatarUrl,
   agentName,
+  agentColor,
   onRetry,
   onEdit,
   onDelete,
@@ -197,7 +201,8 @@ const ChatMessageComponent: FC<Props> = ({
   messageIndex,
   hideAvatar,
 }) => {
-  const { api, connectionConfig } = useApi();
+  const { getClient, connectionConfig } = useApi();
+  const client = getClient(serverId);
   const { settings } = useSettings();
   // TTS playback state: which message is currently being spoken (if any).
   const ttsKey = messageIndex !== undefined ? `${conversationId}:${messageIndex}` : null;
@@ -591,18 +596,26 @@ const ChatMessageComponent: FC<Props> = ({
                       chainType$={chainType$}
                       agentAvatarUrl={agentAvatarUrl}
                       agentName={agentName}
+                      userColor={client.userInfo$?.color?.get() ?? undefined}
                       userAvatarUrl={
-                        api.userInfo$.avatar?.get()
-                          ? `${connectionConfig.baseUrl.replace(/\/+$/, '')}/api/v2/user/avatar`
+                        client.userInfo$?.avatar?.get() && client.baseUrl
+                          ? `${client.baseUrl.replace(/\/+$/, '')}/api/v2/user/avatar`
                           : undefined
                       }
-                      userName={api.userInfo$.name?.get()}
+                      userName={client.userInfo$?.name?.get() ?? undefined}
                     />
                   </div>
                 )}
 
                 <div className={`md:px-12`}>
-                  <div className={`group/message relative flex flex-col ${messageClasses$.get()}`}>
+                  <div
+                    className={`group/message relative flex flex-col ${messageClasses$.get()}`}
+                    style={
+                      message$.role.get() === 'assistant' && agentColor
+                        ? { borderLeft: `3px solid ${agentColor}` }
+                        : undefined
+                    }
+                  >
                     {/* Per-message actions — rendered under the message (order-last),
                         aligned left for assistant/system and right for user. */}
                     <div
