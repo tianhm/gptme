@@ -36,12 +36,114 @@ from ..config import (
 )
 from ..credentials import STORED_CREDENTIALS_SOURCE, get_stored_api_key
 from ..info import get_config_info, get_installed_extras
-from ..llm import PROVIDER_API_KEYS, is_plugin_provider, list_available_providers
+from ..llm import (
+    PROVIDER_API_KEYS,
+    get_plugin_api_keys,
+    is_plugin_provider,
+    list_available_providers,
+)
 from ..llm.models import PROVIDERS, get_model, is_custom_provider
 from ..llm.validate import OAUTH_PROVIDERS, PROVIDER_DOCS, validate_api_key
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# Placeholder API keys that are commonly left in config as scaffolding. A
+# provider is marked "available" whenever its key env var is set, so the doctor
+# would otherwise validate these against the live API and report a critical
+# ERROR for a key the user never intended to use. Treat them as not-configured
+# instead. Exact-match only, so a real key that merely contains a token like
+# "test" is never misclassified.
+_PLACEHOLDER_API_KEYS = frozenset(
+    {
+        "test",
+        "testing",
+        "dummy",
+        "dummy-key",
+        "placeholder",
+        "changeme",
+        "your-api-key",
+        "your-key-here",
+        "sk-xxx",
+        "sk-placeholder",
+        "sk-your-key",
+        "sk-test",
+        "sk-dummy",
+        "sk-1234567890",
+        "sk-ant-test",
+        "sk-ant-dummy",
+    }
+)
+
+
+def _is_placeholder_api_key(api_key: str) -> bool:
+    """Return True if an API key is a known placeholder literal.
+
+    Placeholder keys (e.g. "test", "dummy-key") are scaffolding left in config,
+    not real credentials. The doctor must not fire a critical ERROR for them —
+    the provider is only "available" because the env var is set, and validating
+    a placeholder against the live API always fails. Report them as not-configured
+    instead.
+    """
+    return api_key.strip().lower() in _PLACEHOLDER_API_KEYS
+
+
+def _resolve_provider_api_key(
+    provider: str, source: str | None, config: Config
+) -> str | None:
+    """Return the API key that made `provider` available, following runtime precedence.
+
+    Matches runtime auth, not just the discovery label:
+
+    - OAuth-authenticated providers use a token file, not an API key.
+    - Stored credentials are a fallback. ``list_available_providers`` records
+      stored keys before plugin env vars, so a plugin can be labeled stored
+      even when runtime uses ``api_key_env``. Prefer a live env key.
+    - Otherwise `source` is the env var that made the provider available
+      (``PROVIDER_API_KEYS`` entry or a plugin's ``api_key_env``).
+      ``config.get_env`` prefers ``GPTME_<KEY>`` over ``<KEY>``.
+    """
+    if source == "oauth":
+        return None
+    if source == STORED_CREDENTIALS_SOURCE:
+        env_var = PROVIDER_API_KEYS.get(provider) or get_plugin_api_keys().get(provider)
+        if env_var:
+            api_key = config.get_env(env_var)
+            if api_key:
+                return api_key
+        return get_stored_api_key(provider)
+    env_var = source or (
+        "AZURE_OPENAI_API_KEY" if provider == "azure" else f"{provider.upper()}_API_KEY"
+    )
+    return config.get_env(env_var)
+
+
+def _provider_has_placeholder_key(provider: str, source: str, config: Config) -> bool:
+    """Return True when the credential making `provider` available is a placeholder.
+
+    OAuth providers are never API-key gated: a stale placeholder under the
+    derived ``{PROVIDER}_API_KEY`` name must not hide a working login.
+    """
+    if source == "oauth":
+        return False
+    api_key = _resolve_provider_api_key(provider, source, config)
+    return isinstance(api_key, str) and _is_placeholder_api_key(api_key)
+
+
+def _usable_providers(config: Config | None = None) -> list[tuple[str, str]]:
+    """Available providers, excluding any configured only with a placeholder key.
+
+    `list_available_providers` marks a provider available whenever its key env var
+    is set, even for scaffolding literals like "test". The default-model and repair
+    checks must not treat such a provider as usable, or doctor can report
+    "All systems operational" for a model that cannot authenticate.
+    """
+    cfg = config or _doctor_config()
+    return [
+        (str(provider), source)
+        for provider, source in list_available_providers(cfg)
+        if not _provider_has_placeholder_key(str(provider), source, cfg)
+    ]
 
 
 class CheckStatus(Enum):
@@ -117,13 +219,27 @@ def _check_api_keys(verbose: bool = False) -> list[CheckResult]:
             # Key is configured, validate it
             env_var = special_env_vars.get(provider, f"{provider.upper()}_API_KEY")
 
-            # Retrieve the key from the same source that made the provider available.
+            # Same source and GPTME_ precedence as list_available_providers / runtime.
             source = available_provider_map[provider]
-            api_key = os.environ.get(env_var) or config.get_env(env_var)
-            if not api_key and source == STORED_CREDENTIALS_SOURCE:
-                api_key = get_stored_api_key(provider)
+            api_key = _resolve_provider_api_key(provider, source, config)
 
             if api_key:
+                # A placeholder key (e.g. "test", "dummy-key") is scaffolding, not
+                # a real credential. The provider is only "available" because the
+                # env var is set; validating a placeholder against the live API
+                # always fails and would fire a critical ERROR for a key the user
+                # never intended to use. Report it as not-configured instead.
+                if _is_placeholder_api_key(api_key):
+                    results.append(
+                        CheckResult(
+                            name=f"API Key: {provider}",
+                            status=CheckStatus.SKIPPED,
+                            message="Not configured (placeholder key)",
+                            fix_hint=f"Set a real key at: {PROVIDER_DOCS.get(provider, 'provider docs')}",
+                        )
+                    )
+                    continue
+
                 # Validate the key
                 is_valid, error_msg = validate_api_key(api_key, provider)
                 if is_valid and not error_msg:
@@ -206,7 +322,9 @@ def _model_source_label(source: str) -> str:
 def _check_default_model(verbose: bool = False) -> list[CheckResult]:
     """Check that the selected model routes through an available provider."""
     config = _doctor_config()
-    available = [str(provider) for provider, _ in list_available_providers(config)]
+    # A provider configured with only a placeholder key is not usable: it must not
+    # let the selected default model report OK (see _usable_providers).
+    available = [str(provider) for provider, _ in _usable_providers(config)]
     resolution = resolve_model_source(config)
 
     if resolution is None:
@@ -354,7 +472,7 @@ def _subscription_default_candidate(
     ):
         return None
 
-    available = {str(provider) for provider, _ in list_available_providers()}
+    available = {provider for provider, _ in _usable_providers()}
     if "openai-subscription" in available:
         return "openai-subscription"
     if "grok-subscription" in available:
