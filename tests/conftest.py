@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -335,6 +336,29 @@ def restore_cwd():
     original_cwd = os.getcwd()
     yield
     os.chdir(original_cwd)
+
+
+@pytest.fixture(autouse=True)
+def reset_session_allow_hosts() -> Iterator[None]:
+    """Clear the web-tool host allowlist around every test.
+
+    ``set_session_allow_hosts`` writes a module-level ``ContextVar`` that
+    outlives the test that set it on the same xdist worker. A test that installs
+    an explicit allowlist — e.g. the empty ``[]`` in ``test_url_safety.py``,
+    which means "block every host" — otherwise leaks it to every later test on
+    that worker, so an unrelated browser test fails deterministically depending
+    on run order with ``Host 'example.com' is not in the session's
+    allowed-hosts list ()``. Reset to ``None`` (unrestricted, the default)
+    before and after each test so no test can observe or leave a stale list.
+
+    ``tests/test_session_allowlist_isolation.py`` drives this fixture's own
+    generator directly, so the guard fails if the reset wiring is ever removed.
+    """
+    from gptme.tools._url_safety import set_session_allow_hosts
+
+    set_session_allow_hosts(None)
+    yield
+    set_session_allow_hosts(None)
 
 
 #: nodeid -> leaked thread names, collected across the session for the summary.
