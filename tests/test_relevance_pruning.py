@@ -9,11 +9,14 @@ from datetime import datetime, timezone
 from gptme.llm.models import get_default_model, get_model
 from gptme.message import Message
 from gptme.tools.autocompact import (
+    PruneDecision,
     auto_compact_log,
     prune_stale_tool_outputs,
+    read_phase0_shadow_events,
     score_tool_output_relevance,
+    shadow_prune_stale_tool_outputs,
 )
-from gptme.tools.autocompact.scoring import _PRUNE_MIN_AGE
+from gptme.tools.autocompact.scoring import _PRUNE_MIN_AGE, normalize_for_digest
 
 
 def _ts():
@@ -449,3 +452,350 @@ def test_phase0_without_logdir_does_not_advertise_a_path():
     compacted = list(auto_compact_log(log, keep_head=0, limit=100))
     assert "Full output saved to:" not in compacted[0].content
     assert "/tool-outputs/" not in compacted[0].content
+
+
+# ---------------------------------------------------------------------------
+# shadow_prune_stale_tool_outputs — dry-run / evaluation harness
+# ---------------------------------------------------------------------------
+
+
+def test_shadow_returns_prune_decisions():
+    """shadow_prune_stale_tool_outputs yields PruneDecision objects, not messages."""
+    large_content = "word " * 400
+    old_output = _tool_out(large_content)
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [old_output] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name())
+
+    assert len(decisions) > 0
+    assert all(isinstance(d, PruneDecision) for d in decisions)
+
+
+def test_shadow_does_not_modify_log():
+    """Shadow pass must leave the original log completely unchanged."""
+    large_content = "word " * 400
+    old_output = _tool_out(large_content)
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    original_content = old_output.content
+    log = [old_output] + padding
+
+    shadow_prune_stale_tool_outputs(log, _model_name())
+
+    assert log[0].content == original_content, "Shadow pass must not mutate messages"
+    assert len(log) == _PRUNE_MIN_AGE + 3
+
+
+def test_shadow_drop_matches_prune_drop():
+    """Shadow decisions must agree with the live pass on which messages to drop."""
+    large_content = "word " * 400
+    old_output = _tool_out(large_content)
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [old_output] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name())
+    pruned, _ = prune_stale_tool_outputs(log, _model_name())
+
+    dropped_idxs = {d.idx for d in decisions if d.decision == "drop"}
+    stubbed_idxs = {
+        i
+        for i, (orig, pruned_m) in enumerate(zip(log, pruned))
+        if orig.content != pruned_m.content
+    }
+    assert dropped_idxs == stubbed_idxs, "Shadow decisions must match live pass stubs"
+
+
+def test_shadow_tokens_saved_positive_for_dropped():
+    """Dropped decisions must report positive tokens_saved."""
+    large_content = "word " * 400
+    old_output = _tool_out(large_content)
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [old_output] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name())
+    drops = [d for d in decisions if d.decision == "drop"]
+
+    assert drops, "Expected at least one drop decision"
+    assert all(d.tokens_saved > 0 for d in drops)
+    assert all(d.tokens > d.stub_tokens for d in drops)
+
+
+def test_shadow_keeps_do_not_save_tokens():
+    """Keep decisions must report tokens_saved == 0."""
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE)]
+
+    # Make the output reference a real path so it scores high (keep)
+    referenced_content = "Contents of /tmp/myfile.py:\n" + "result = 42\n" * 200
+    ref_output = _tool_out(referenced_content)
+    later_ref = _user("Now update /tmp/myfile.py")
+    log2 = [ref_output] + padding + [later_ref]
+
+    decisions = shadow_prune_stale_tool_outputs(log2, _model_name())
+    keeps = [d for d in decisions if d.decision == "keep"]
+
+    assert all(d.tokens_saved == 0 for d in keeps)
+    assert all(d.stub_tokens == 0 for d in keeps)
+
+
+def test_shadow_content_digest_is_stable():
+    """Content digest must be consistent across repeated calls."""
+    large_content = "word " * 400
+    old_output = _tool_out(large_content)
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [old_output] + padding
+
+    d1 = shadow_prune_stale_tool_outputs(log, _model_name())
+    d2 = shadow_prune_stale_tool_outputs(log, _model_name())
+
+    assert [d.content_digest for d in d1] == [d.content_digest for d in d2]
+    # Digest is a short hex string
+    assert all(len(d.content_digest) == 8 for d in d1)
+    assert all(all(c in "0123456789abcdef" for c in d.content_digest) for d in d1)
+
+
+def test_shadow_keep_head_respected():
+    """Messages in the keep_head prefix must not produce any decision."""
+    large_content = "word " * 400
+    head_output = _tool_out(large_content)  # idx 0 → in head
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [head_output] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name(), keep_head=1)
+
+    assert all(d.idx != 0 for d in decisions), (
+        "Head message must not appear in decisions"
+    )
+
+
+def test_shadow_non_tool_system_messages_excluded():
+    """System messages that are not tool results are skipped by the shadow pass."""
+    large_content = "word " * 400
+    # A system message with no call_id and not after a tool call — not a tool result
+    system_instructions = Message("system", large_content, _ts())
+    tool_output = _tool_out(large_content, call_id="call-other")
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [system_instructions, tool_output] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name())
+
+    # Non-tool system messages should produce no decision; the tool output must.
+    assert decisions, "Shadow must record the tool-output candidate"
+    assert all(d.idx != 0 for d in decisions)
+    assert any(d.idx == 1 for d in decisions)
+
+
+def test_shadow_tokens_saved_matches_estimate_stub_not_short_stub():
+    """Shadow savings must match the persisted recovery stub, not the no-logdir one-liner.
+
+    Direct ``prune_stale_tool_outputs`` without a logdir emits a short stub that
+    overstates savings. Evaluation is about production (logdir present), so
+    shadow uses ``for_estimate=True``.
+    """
+    stale_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(stale_content, call_id="call-est-shadow")] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name())
+    _, estimate_saved = prune_stale_tool_outputs(log, _model_name(), for_estimate=True)
+    _, short_saved = prune_stale_tool_outputs(log, _model_name())
+
+    assert sum(d.tokens_saved for d in decisions) == estimate_saved
+    assert estimate_saved < short_saved
+
+
+def test_shadow_persists_ledger_when_logdir_set(tmp_path):
+    """Shadow pass with logdir must append a phase0-shadow.jsonl record."""
+    large_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(large_content)] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name(), logdir=tmp_path)
+    events = read_phase0_shadow_events(tmp_path)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["trigger"] == "phase0-shadow"
+    assert event["n_candidates"] == len(decisions)
+    assert event["n_drop"] == sum(1 for d in decisions if d.decision == "drop")
+    assert event["tokens_saved"] == sum(d.tokens_saved for d in decisions)
+    assert len(event["decisions"]) == len(decisions)
+
+
+def test_shadow_does_not_write_without_logdir(tmp_path, monkeypatch):
+    """Calling shadow without logdir must not create a ledger file."""
+    monkeypatch.chdir(tmp_path)
+    large_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(large_content)] + padding
+
+    shadow_prune_stale_tool_outputs(log, _model_name())
+
+    assert not (tmp_path / "phase0-shadow.jsonl").exists()
+
+
+def test_auto_compact_log_writes_phase0_shadow_ledger(tmp_path):
+    """Live compaction with a logdir records the pre-mutation shadow ledger."""
+    stale_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(stale_content)] + padding
+
+    list(auto_compact_log(log, keep_head=0, limit=100, logdir=tmp_path))
+
+    events = read_phase0_shadow_events(tmp_path)
+    assert len(events) == 1
+    assert events[0]["n_drop"] >= 1
+    assert events[0]["tokens_saved"] > 0
+    # Live pass mutates the working log, but the ledger is the original payload.
+    dropped = [d for d in events[0]["decisions"] if d["decision"] == "drop"]
+    assert dropped
+    assert dropped[0]["content_digest"] == PruneDecision._digest(stale_content)
+
+
+def test_digest_matches_formatted_reread():
+    """A later read-tool wrapper of the same payload must share the digest."""
+    payload = "def greet():\n    return 'hi'"
+    fenced = "````src/greet.py\n1\tdef greet():\n2\t    return 'hi'\n````"
+    triple = "```src/greet.py\n1\tdef greet():\n2\t    return 'hi'\n```"
+    padded = "````src/greet.py\n  1\tdef greet():\n  2\t    return 'hi'\n````"
+    tagged = "````src/greet.py\n[src/greet.py#abc]\n1\tdef greet():\n2\t    return 'hi'\n````"
+
+    expected = PruneDecision._digest(payload)
+    assert PruneDecision._digest(fenced) == expected
+    assert PruneDecision._digest(triple) == expected
+    assert PruneDecision._digest(padded) == expected
+    assert PruneDecision._digest(tagged) == expected
+    # Unrelated framing must not collide with a different payload.
+    assert PruneDecision._digest("other") != expected
+    assert "def greet():" in normalize_for_digest(fenced)
+
+
+def test_digest_does_not_collide_on_unnumbered_payloads():
+    """Line-number stripping must not hash distinct unnumbered outputs as equal.
+
+    A space after digits is not cat -n (read uses a tab). ``42 value`` must
+    stay distinct from ``value``.
+    """
+    numberedish = "42 value\n43 items"
+    unnumbered = "value\nitems"
+    assert normalize_for_digest(numberedish) == numberedish
+    assert PruneDecision._digest(numberedish) != PruneDecision._digest(unnumbered)
+    # A single numbered-looking line in otherwise raw output must not strip.
+    mixed = "header\n42 value\nfooter"
+    assert normalize_for_digest(mixed) == mixed
+
+
+def test_shadow_tokens_saved_matches_live_with_logdir(tmp_path, monkeypatch):
+    """With a logdir, shadow tokens_saved must match the live persisted stub.
+
+    Freeze time at the single source of the path format
+    (:func:`gptme.util.output_storage.large_output_path`) so the estimated
+    recovery path uses the same timestamp as ``save_large_output``; the
+    content hash is already shared by construction.
+    """
+    frozen = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr("gptme.util.output_storage.datetime", FrozenDateTime)
+
+    stale_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(stale_content, call_id="call-logdir-shadow")] + padding
+
+    decisions = shadow_prune_stale_tool_outputs(log, _model_name(), logdir=tmp_path)
+    assert not list((tmp_path / "tool-outputs").rglob("*.txt")), (
+        "shadow pass must not write recovery files"
+    )
+
+    _, live_saved = prune_stale_tool_outputs(log, _model_name(), logdir=tmp_path)
+
+    assert sum(d.tokens_saved for d in decisions) == live_saved
+    assert any(d.decision == "drop" for d in decisions)
+    assert list((tmp_path / "tool-outputs" / "autocompact").glob("*.txt"))
+
+
+def test_shadow_ledger_rotates_when_oversized(tmp_path, monkeypatch):
+    """An oversized shadow ledger rotates to ``phase0-shadow.jsonl.1`` on append.
+
+    Growth is bounded: the ledger records per-message decisions on every
+    compaction, so the append path must not grow it without limit.
+    """
+    from gptme.tools.autocompact import events as shadow_events
+
+    monkeypatch.setattr(shadow_events, "SHADOW_LOG_MAX_BYTES", 10)
+    log_path = tmp_path / "phase0-shadow.jsonl"
+    log_path.write_text("x" * 100)
+
+    large_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(large_content)] + padding
+
+    shadow_prune_stale_tool_outputs(log, _model_name(), logdir=tmp_path)
+
+    rotated = tmp_path / "phase0-shadow.jsonl.1"
+    assert rotated.exists(), "oversized ledger must rotate to .1"
+    assert rotated.read_text() == "x" * 100
+    # The current file holds only the fresh record after rotation.
+    assert len(read_phase0_shadow_events(tmp_path)) == 1
+
+
+def test_shadow_reader_includes_rotated_records(tmp_path, monkeypatch):
+    """Rotated records stay readable: the reader spans ``.1`` then the current file.
+
+    Rotation bounds on-disk growth, but evaluation must still see decisions
+    retained in the previous generation rather than only the post-rotation file.
+    """
+    from gptme.tools.autocompact import events as shadow_events
+
+    monkeypatch.setattr(shadow_events, "SHADOW_LOG_MAX_BYTES", 10)
+    log_path = tmp_path / "phase0-shadow.jsonl"
+    log_path.write_text('{"generation": 0}\n')
+
+    large_content = "word " * 400
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    log = [_tool_out(large_content)] + padding
+    shadow_prune_stale_tool_outputs(log, _model_name(), logdir=tmp_path)
+
+    assert (tmp_path / "phase0-shadow.jsonl.1").exists()
+    events = read_phase0_shadow_events(tmp_path)
+    # Retained record first, then the fresh record appended this pass.
+    assert [e.get("generation") for e in events if "generation" in e] == [0]
+    assert len(events) == 2
+    assert events[-1]["trigger"] == "phase0-shadow"
+
+
+def test_shadow_reader_reads_under_rotation_lock(tmp_path, monkeypatch):
+    """The reader holds the rotation lock across both ledger generations.
+
+    Rotation runs under ``_event_lock``. The reader must too, or a rotation
+    between the ``.1`` and current reads can move the current records into
+    ``.1`` after it was read, silently dropping them from evaluation.
+    """
+    import contextlib
+
+    from gptme.tools.autocompact import events as shadow_events
+
+    (tmp_path / "phase0-shadow.jsonl").write_text('{"generation": 0}\n')
+
+    acquisitions: list[str] = []
+    real_lock = shadow_events._event_lock
+
+    @contextlib.contextmanager
+    def tracking_lock(logdir, log_name=shadow_events.EVENT_LOG_NAME):
+        acquisitions.append(log_name)
+        with real_lock(logdir, log_name):
+            yield
+
+    monkeypatch.setattr(shadow_events, "_event_lock", tracking_lock)
+    events = read_phase0_shadow_events(tmp_path)
+
+    assert acquisitions == [shadow_events.SHADOW_LOG_NAME]
+    assert [e["generation"] for e in events] == [0]
+
+
+def test_shadow_reader_missing_logdir_returns_empty(tmp_path):
+    """A missing logdir yields no records instead of raising."""
+    assert read_phase0_shadow_events(tmp_path / "does-not-exist") == []

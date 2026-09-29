@@ -8,15 +8,139 @@ score_tool_output_relevance() assigns each tool result a keep/drop score
 based on age, error content, and whether any of its paths/commands appear
 in later messages.  A low score + large size → eligible for pre-pass drop
 before the Phase 2 truncation even fires.
+
+PruneDecision is the per-message record emitted by the shadow/dry-run pass
+(shadow_prune_stale_tool_outputs) so callers can analyse what Phase 0 would
+have done without actually modifying the log.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from ...message import Message
+
+
+@dataclass(frozen=True)
+class PruneDecision:
+    """Record of a Phase-0 keep/drop decision for one tool-output message.
+
+    Fields
+    ------
+    idx:
+        Position in the original log.
+    decision:
+        ``"keep"`` — message would be left unchanged.
+        ``"drop"`` — message would be replaced by a short stub.
+    score:
+        Relevance score returned by :func:`score_tool_output_relevance`.
+        ``None`` when the message was not eligible (too recent, non-tool, etc.)
+        and is always kept without scoring.
+    tokens:
+        Original token count of the message.
+    stub_tokens:
+        Token count of the replacement stub (only meaningful when
+        ``decision == "drop"``; 0 for kept messages).
+    tokens_saved:
+        ``tokens - stub_tokens`` when dropped, else 0.
+    content_digest:
+        First 8 hex characters of the SHA-256 of *normalized* original
+        content (see :func:`normalize_for_digest`). Compare against later
+        tool outputs after the same normalization to measure false-drop
+        rate. A later ``read`` of the same payload matches even though the
+        raw message includes a path label, cat -n line numbers, and code
+        fences. Unnumbered output is left intact, so ``42 value`` does not
+        collide with ``value``. Shell-formatted output (prompts, pytest,
+        ``ls``) still will not match a later ``read`` of an underlying file
+        — that is a remaining limit of this metric, not a content match.
+    """
+
+    idx: int
+    decision: Literal["keep", "drop"]
+    score: float | None
+    tokens: int
+    stub_tokens: int
+    tokens_saved: int
+    content_digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "idx": self.idx,
+            "decision": self.decision,
+            "score": self.score,
+            "tokens": self.tokens,
+            "stub_tokens": self.stub_tokens,
+            "tokens_saved": self.tokens_saved,
+            "content_digest": self.content_digest,
+        }
+
+    @staticmethod
+    def _digest(content: str) -> str:
+        return hashlib.sha256(normalize_for_digest(content).encode()).hexdigest()[:8]
+
+
+_FENCE_OPEN = re.compile(r"^(`{3,4})[^\n]*\n")
+# gptme's read tool emits ``{line_no:>width}\t{line}`` (cat -n). Require a tab
+# after the number — a space would hash ``42 value`` the same as ``value``.
+_LINE_NUMBER_PREFIX = re.compile(r"(?m)^[ \t]*\d+\t")
+
+
+def _strip_cat_n_prefixes(text: str) -> str:
+    """Strip cat -n / read-tool line numbers only when the payload looks numbered.
+
+    The pattern runs on read-tool output, not every tool result. A majority of
+    non-empty lines must use a tab after the number; otherwise the text is
+    returned unchanged so unnumbered payloads keep their leading digits.
+    """
+    lines = text.split("\n")
+    nonempty = [line for line in lines if line]
+    if not nonempty:
+        return text
+    numbered = sum(1 for line in nonempty if _LINE_NUMBER_PREFIX.match(line))
+    if numbered * 2 < len(nonempty):
+        return text
+    return _LINE_NUMBER_PREFIX.sub("", text)
+
+
+def normalize_for_digest(content: str) -> str:
+    """Strip read-tool framing so a reread hashes like the original payload.
+
+    gptme's ``read`` tool wraps file contents in a markdown fence (3 or 4
+    backticks) with a path label and cat -n line numbers. Hashing the raw
+    wrapper would miss that reread and understate false drops.
+
+    Line numbers are stripped only when they look like cat -n (tab after the
+    number, majority of lines). Unnumbered output such as ``42 value`` is
+    left intact so it does not collide with ``value``.
+
+    Remaining limit: shell-formatted output (prompts, pytest, ``ls`` columns)
+    still will not match a later ``read`` of an underlying file. This digest
+    is a same-payload check, not a path-identity check.
+    """
+    text = content.strip("\n")
+    match = _FENCE_OPEN.match(text)
+    if match:
+        fence = match.group(1)
+        rest = text[match.end() :]
+        closing = f"\n{fence}"
+        if rest.endswith(fence):
+            text = rest.removesuffix(fence).removesuffix("\n")
+        elif closing in rest:
+            text = rest[: rest.rfind(closing)]
+    first_line, sep, remainder = text.partition("\n")
+    if (
+        sep
+        and first_line.startswith("[")
+        and first_line.endswith("]")
+        and "#" in first_line
+    ):
+        text = remainder
+    return _strip_cat_n_prefixes(text)
+
 
 # --- Enhanced Scoring Patterns (Issue #149) ---
 # Semantic patterns for value-aware retention
