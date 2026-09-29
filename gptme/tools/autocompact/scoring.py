@@ -2,9 +2,21 @@
 
 Provides heuristic-based sentence scoring and extractive summarization
 for compressing long messages while preserving high-value content.
+
+Also provides relevance scoring for tool outputs (Phase 0 pre-pass):
+score_tool_output_relevance() assigns each tool result a keep/drop score
+based on age, error content, and whether any of its paths/commands appear
+in later messages.  A low score + large size → eligible for pre-pass drop
+before the Phase 2 truncation even fires.
 """
 
+from __future__ import annotations
+
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ...message import Message
 
 # --- Enhanced Scoring Patterns (Issue #149) ---
 # Semantic patterns for value-aware retention
@@ -65,6 +77,12 @@ _ACTION_RESULT_PATTERNS = [
 # Windows paths: C:\path\to\file.ext, C:/path/to/file (extension optional)
 _FILE_PATH_PATTERN = re.compile(
     r"(?:[/~][a-zA-Z0-9_\-./]+(?:\.[a-zA-Z0-9]+)?|[A-Za-z]:[/\\][a-zA-Z0-9_\-./\\]+(?:\.[a-zA-Z0-9]+)?)"
+)
+# Relative paths the absolute/home/drive pattern misses, e.g. src/config.py.
+# Requires at least one slash and a file extension so "and/or" does not match.
+# Negative lookbehind avoids matching inside URLs (https://host/path/file.py).
+_RELATIVE_FILE_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?:\./)?(?:[A-Za-z0-9_.-]+/)+\.?[A-Za-z0-9_.-]+\.[A-Za-z0-9]+"
 )
 _URL_PATTERN = re.compile(r'https?://[^\s<>"\')]+')
 _ERROR_INDICATOR_PATTERNS = [
@@ -292,3 +310,74 @@ def compress_content(content: str, target_ratio: float = 0.7) -> str:
         compressed = compressed.replace(marker, code_block)
 
     return compressed
+
+
+# ---------------------------------------------------------------------------
+# Phase-0 relevance scoring for tool outputs
+# ---------------------------------------------------------------------------
+
+# Minimum age (distance from the end of the log) before a tool output is even
+# considered for the pre-pass.  Very recent results are always kept verbatim.
+_PRUNE_MIN_AGE = 3
+
+
+def _extract_file_paths(content: str) -> set[str]:
+    """Return all file-path-like tokens found in content.
+
+    Includes absolute Unix/Windows paths and relative paths such as
+    ``src/config.py`` so a later mention of that file still counts as a
+    reference.
+    """
+    return set(_FILE_PATH_PATTERN.findall(content)) | set(
+        _RELATIVE_FILE_PATH_PATTERN.findall(content)
+    )
+
+
+def score_tool_output_relevance(
+    msg: Message,
+    idx: int,
+    log: list[Message],
+) -> float:
+    """Score a tool-output message for 'still needed?'
+
+    Returns a float in roughly [0, 5].  Higher = more likely to be needed.
+    Callers should keep anything >= a threshold (e.g. 1.0) and drop the rest.
+
+    Eligibility guards (hard-coded):
+    - Pinned messages always score max.
+    - Messages within the last ``_PRUNE_MIN_AGE`` positions always score max.
+    - Only ``role=="system"`` messages are scored (callers still must filter
+      to actual tool outputs so instructions/knowledge are not pruned).
+    - Error/failure content always scores max (age must not override this).
+    - File paths still referenced by a later message always score max.
+
+    Heuristics (additive, for outputs that are not a hard keep):
+    - Age penalty: -0.15 per position from the end (capped at -2.0)
+    """
+    if msg.role != "system":
+        return 5.0  # non-tool messages: don't touch
+
+    if msg.pinned:
+        return 5.0
+
+    log_length = len(log)
+    distance_from_end = log_length - idx - 1
+
+    if distance_from_end < _PRUNE_MIN_AGE:
+        return 5.0  # too recent — always keep
+
+    # Fail-safe: errors and still-referenced paths are always kept. An additive
+    # boost is not enough — the age cap of -2.0 would otherwise drop an
+    # unreferenced error (2.0 - 2.0 = 0.0) below the prune threshold.
+    for pattern in _ERROR_INDICATOR_PATTERNS:
+        if pattern.search(msg.content):
+            return 5.0
+
+    own_paths = _extract_file_paths(msg.content)
+    if own_paths:
+        later_content = "\n".join(m.content for m in log[idx + 1 :])
+        if any(p in later_content for p in own_paths):
+            return 5.0
+
+    # Age penalty: older = less relevant (capped)
+    return 0.0 - min(distance_from_end * 0.15, 2.0)

@@ -1,9 +1,13 @@
-"""Rule-based compaction engine — the 3-phase compaction algorithm.
+"""Rule-based compaction engine — the 4-phase compaction algorithm.
 
 Implements strategic removal of content from conversations:
+0. Replace stale tool outputs in place with a short stub (relevance-scored)
 1. Strip reasoning tags from older messages (age-based)
 2. Truncate largest tool results first (oh-my-opencode strategy)
 3. Extractive compression for long assistant messages
+
+Phase 0 replaces messages rather than deleting them so tool-call/result pairs
+stay provider-valid and later phases can still index into conversation.jsonl.
 """
 
 import logging
@@ -18,11 +22,162 @@ from ...util.master_context import (
     build_master_context_index,
     create_master_context_reference,
 )
-from ...util.output_storage import create_tool_result_summary
+from ...util.output_storage import create_tool_result_summary, save_large_output
 from ...util.reduce import message_contains_tool_use, reduce_log
-from .scoring import compress_content
+from .scoring import compress_content, score_tool_output_relevance
 
 logger = logging.getLogger(__name__)
+
+# Score threshold below which a tool output is eligible for pre-pass stubbing.
+# Messages that score below this AND exceed the minimum size are replaced in
+# place (never deleted — that would break tool-call pairing and master-context
+# index mapping used by Phases 2–3).
+_PRUNE_SCORE_THRESHOLD = 1.0
+
+# Minimum token size before a tool output is eligible for pre-pass pruning.
+# Small results are cheap; only stub results that actually reclaim meaningful
+# budget.
+_PRUNE_MIN_TOKENS = 200
+
+# Representative recovery path used when estimating (no logdir). The estimate
+# must use a stub as long as the persisted form auto_compact_log emits;
+# a one-line stub overestimates savings and can select rule-based trim when
+# the real recovery text would miss MIN_SAVINGS_RATIO.
+_STUB_PATH_PLACEHOLDER = (
+    "/home/user/.local/share/gptme/logs/"
+    "workspace-name/conversation-XXXXXXXX/"
+    "tool-outputs/autocompact/20260101_000000-deadbeef.txt"
+)
+
+
+def _is_tool_output(msg: Message, prev: Message | None) -> bool:
+    """True when ``msg`` is a tool result, not instructions or knowledge.
+
+    Structured tool results carry ``call_id``. Markdown/XML tool format emits a
+    system message immediately after an assistant tool-call. Other ``system``
+    messages (agent instructions, knowledge files) must not be pruned.
+    """
+    if msg.role != "system":
+        return False
+    if msg.call_id:
+        return True
+    return prev is not None and message_contains_tool_use(prev)
+
+
+def _format_stale_output_stub(msg_tokens: int, saved_path: str) -> str:
+    """Canonical Phase 0 stub text — shared by the engine and the estimator."""
+    return (
+        f"[Stale tool output pruned - {msg_tokens} tokens]. "
+        f"Full output saved to: {saved_path}\n"
+        "You can read or grep this file if needed."
+    )
+
+
+def _stale_output_stub(
+    msg: Message,
+    msg_tokens: int,
+    logdir: Path | None,
+    *,
+    for_estimate: bool = False,
+) -> str:
+    """In-place replacement for a pruned tool result.
+
+    Persists the original content under ``logdir/tool-outputs/`` so recovery
+    survives ``/compact trim`` rewriting conversation.jsonl. Byte-range
+    references into that file are intentionally not used: trim overwrites it,
+    and a dangling range would return the stub (or garbage) instead of the
+    original result.
+
+    ``for_estimate=True`` uses the recovery-path template with a placeholder
+    so savings accounting matches the persisted form, without writing a file
+    or showing a fake path to a user-facing caller.
+    """
+    if logdir is not None:
+        _, saved_path = save_large_output(
+            content=msg.content,
+            logdir=logdir,
+            output_type="autocompact",
+            original_tokens=msg_tokens,
+        )
+        return _format_stale_output_stub(msg_tokens, str(saved_path))
+    if for_estimate:
+        return _format_stale_output_stub(msg_tokens, _STUB_PATH_PLACEHOLDER)
+    return f"[Stale tool output pruned - {msg_tokens} tokens]"
+
+
+def prune_stale_tool_outputs(
+    log: list[Message],
+    model_name: str,
+    keep_head: int = 0,
+    logdir: Path | None = None,
+    *,
+    for_estimate: bool = False,
+) -> tuple[list[Message], int]:
+    """Phase 0 pre-pass: stub stale tool outputs that are unlikely to be needed.
+
+    Replaces tool-output messages in place (same list length, same indices)
+    when they:
+    1. Are actual tool results (``call_id`` or immediately after a tool-call).
+    2. Are not pinned and not in the protected head.
+    3. Score below ``_PRUNE_SCORE_THRESHOLD`` from ``score_tool_output_relevance``.
+    4. Are at least ``_PRUNE_MIN_TOKENS`` tokens (small results are kept for free).
+
+    The function never stubs:
+    - Non-tool ``system`` messages (instructions, knowledge).
+    - Pinned messages.
+    - Messages within the protected ``keep_head`` prefix.
+    - Messages within the last ``_PRUNE_MIN_AGE`` positions (very recent).
+    - Tool results that contain error/failure content.
+    - Tool results whose paths are still referenced by later messages.
+
+    In-place replacement (not deletion) keeps tool-call/result pairs
+    provider-valid and preserves 1:1 index mapping into conversation.jsonl
+    for Phase 2/3 master-context references. Original content is saved under
+    ``logdir/tool-outputs/`` when ``logdir`` is set, so recovery does not
+    depend on conversation.jsonl surviving a later rewrite.
+
+    When ``for_estimate`` is set, the stub uses the same recovery-path
+    template with a placeholder so savings are not overstated — but no file
+    is written and the stub is not user-facing. Direct engine calls without
+    ``logdir`` emit a short stub that does not advertise a path.
+
+    Returns:
+        (pruned_log, tokens_saved) — same length as ``log``, and tokens saved.
+    """
+    pruned: list[Message] = []
+    tokens_saved = 0
+
+    for idx, msg in enumerate(log):
+        if msg.pinned or idx < keep_head:
+            pruned.append(msg)
+            continue
+
+        prev = log[idx - 1] if idx > 0 else None
+        if not _is_tool_output(msg, prev):
+            pruned.append(msg)
+            continue
+
+        msg_tokens = len_tokens(msg.content, model_name)
+        if msg_tokens < _PRUNE_MIN_TOKENS:
+            pruned.append(msg)
+            continue
+
+        relevance = score_tool_output_relevance(msg, idx, log)
+        if relevance < _PRUNE_SCORE_THRESHOLD:
+            stub = _stale_output_stub(
+                msg, msg_tokens, logdir, for_estimate=for_estimate
+            )
+            stub_tokens = len_tokens(stub, model_name)
+            tokens_saved += max(0, msg_tokens - stub_tokens)
+            logger.debug(
+                f"Phase 0: stubbing stale tool output at idx {idx} "
+                f"(score={relevance:.2f}, tokens={msg_tokens} -> {stub_tokens})"
+            )
+            pruned.append(msg.replace(content=stub))
+        else:
+            pruned.append(msg)
+
+    return pruned, tokens_saved
 
 
 def auto_compact_log(
@@ -82,6 +237,27 @@ def auto_compact_log(
 
     # If we are below the configured limit and no safe projection applies, return as-is.
     tokens = len_tokens(log, model=model.model)
+    initial_tokens = tokens  # preserved for final reduction_pct even after Phase 0
+
+    # Phase 0: Relevance-scored pruning of stale tool outputs.
+    # Only when already over budget — same gate as estimate_compaction_savings —
+    # so under-limit logs are returned unchanged. Stubs (does not delete) old,
+    # large, unreferenced tool outputs in place so tool-call pairing and
+    # master-context indices stay valid. Surviving content is kept verbatim.
+    phase0_tokens_saved = 0
+    if tokens >= limit:
+        log, phase0_tokens_saved = prune_stale_tool_outputs(
+            log,
+            model.model,
+            keep_head=keep_head,
+            logdir=logdir,
+        )
+        if phase0_tokens_saved > 0:
+            logger.info(
+                f"Phase 0 pruned {phase0_tokens_saved:,} tokens of stale tool outputs "
+                f"({len(log)} messages remaining)"
+            )
+            tokens = len_tokens(log, model=model.model)
 
     # Calculate message positions from end (for age-based reasoning stripping)
     log_length = len(log)
@@ -103,7 +279,7 @@ def auto_compact_log(
         for idx, msg in enumerate(log)
     )
 
-    # Only return early if nothing needs processing
+    # Only return early if nothing more is needed (Phase 0 may have been enough)
     if (
         not needs_reasoning_strip
         and not needs_compacting
@@ -193,7 +369,7 @@ def auto_compact_log(
 
             # Add master context reference for exact recovery
             # Note: idx must match the message position in conversation.jsonl
-            # This is safe because Phase 1-2 preserve message positions (1:1 mapping)
+            # This is safe because Phases 0-2 preserve message positions (1:1 mapping)
             if master_logfile and idx < len(master_context_index):
                 byte_range = master_context_index[idx]
                 # Get first line as preview
@@ -244,7 +420,7 @@ def auto_compact_log(
             if compressed_tokens < msg_tokens:
                 # Add master context reference for exact recovery
                 # Note: idx must match the message position in conversation.jsonl
-                # This is safe because Phases 1-3 preserve message positions (1:1 mapping)
+                # This is safe because Phases 0-3 preserve message positions (1:1 mapping)
                 if master_logfile and idx < len(master_context_index):
                     byte_range = master_context_index[idx]
                     # Get first line as preview
@@ -271,14 +447,24 @@ def auto_compact_log(
     # Check if we're now within limits
     final_tokens = len_tokens(compacted_log, model.model)
     total_saved = (
-        tool_result_tokens_saved + compression_tokens_saved + reasoning_tokens_saved
+        phase0_tokens_saved
+        + tool_result_tokens_saved
+        + compression_tokens_saved
+        + reasoning_tokens_saved
     )
     if final_tokens <= limit:
-        # Calculate reduction percentage
-        reduction_pct = ((tokens - final_tokens) / tokens * 100) if tokens > 0 else 0.0
+        # Calculate reduction percentage against the original token count
+        reduction_pct = (
+            ((initial_tokens - final_tokens) / initial_tokens * 100)
+            if initial_tokens > 0
+            else 0.0
+        )
 
         # Build detailed breakdown message
         breakdown_parts = []
+        if phase0_tokens_saved > 0:
+            pct = (phase0_tokens_saved / total_saved * 100) if total_saved > 0 else 0
+            breakdown_parts.append(f"stale-prune: {phase0_tokens_saved:,} ({pct:.0f}%)")
         if reasoning_tokens_saved > 0:
             pct = (reasoning_tokens_saved / total_saved * 100) if total_saved > 0 else 0
             breakdown_parts.append(
@@ -301,7 +487,7 @@ def auto_compact_log(
 
         breakdown_str = ", ".join(breakdown_parts) if breakdown_parts else "no savings"
         logger.info(
-            f"Auto-compacting successful: {tokens:,} -> {final_tokens:,} tokens "
+            f"Auto-compacting successful: {initial_tokens:,} -> {final_tokens:,} tokens "
             f"({reduction_pct:.1f}% reduction, saved {total_saved:,} tokens) "
             f"[{breakdown_str}]"
         )

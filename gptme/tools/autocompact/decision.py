@@ -27,6 +27,7 @@ def estimate_compaction_savings(
     reasoning_strip_age_threshold: int = 5,
     assistant_compression_age_threshold: int = 3,
     assistant_compression_min_tokens: int = 1000,
+    keep_head: int = 0,
 ) -> tuple[int, int, int]:
     """
     Estimate potential savings from auto-compaction without actually compacting.
@@ -46,6 +47,7 @@ def estimate_compaction_savings(
     before actually triggering it.
 
     Note: Estimation matches actual compaction logic:
+    - Phase 0: Stale tool-output stubbing (only when over/close to limit)
     - Phase 1: Reasoning stripping (always applied to old messages)
     - Phase 2: Tool result removal (only when over/close to limit)
     - Phase 3: Assistant message compression (only when over/close to limit)
@@ -53,7 +55,6 @@ def estimate_compaction_savings(
 
     model = get_default_model() or get_model("gpt-4")
     total_tokens = len_tokens(log, model.model)
-    log_length = len(log)
 
     if limit is None:
         limit = get_context_budget(
@@ -66,11 +67,31 @@ def estimate_compaction_savings(
     # The configured budget is the sole compaction trigger.
     would_remove_tool_results = total_tokens >= limit
 
+    # Phase 0 runs first in auto_compact_log; estimate it on the original log
+    # and run later-phase estimates on the stubbed log so we don't double-count
+    # a 200–2000 token stale output as both a Phase 0 stub and a Phase 2 cut.
+    # Do not pass logdir: estimation must not write tool-output files.
+    # for_estimate=True uses the recovery-path template with a placeholder
+    # so savings match the persisted form (short stubs overestimate).
+    estimated_phase0_savings = 0
+    work_log = log
+    if would_remove_tool_results:
+        from .engine import prune_stale_tool_outputs
+
+        work_log, estimated_phase0_savings = prune_stale_tool_outputs(
+            log, model.model, keep_head=keep_head, for_estimate=True
+        )
+        # Engine rechecks the budget after Phase 0 and skips Phase 2/3 when
+        # stubbing already brought the log under limit. Match that here so we
+        # don't count Phase 2 savings the engine would never take.
+        would_remove_tool_results = len_tokens(work_log, model.model) >= limit
+
+    log_length = len(work_log)
     estimated_tool_result_savings = 0
     estimated_reasoning_savings = 0
     estimated_compression_savings = 0
 
-    for idx, msg in enumerate(log):
+    for idx, msg in enumerate(work_log):
         if msg.pinned:
             continue
 
@@ -105,14 +126,19 @@ def estimate_compaction_savings(
             estimated_compression_savings += int(msg_tokens * 0.3)
 
     total_estimated_savings = (
-        estimated_tool_result_savings
+        estimated_phase0_savings
+        + estimated_tool_result_savings
         + estimated_reasoning_savings
         + estimated_compression_savings
     )
     return total_tokens, total_estimated_savings, estimated_reasoning_savings
 
 
-def should_auto_compact(log: list[Message], limit: int | None = None) -> CompactAction:
+def should_auto_compact(
+    log: list[Message],
+    limit: int | None = None,
+    keep_head: int = 0,
+) -> CompactAction:
     """
     Check if a log should be auto-compacted.
 
@@ -146,7 +172,7 @@ def should_auto_compact(log: list[Message], limit: int | None = None) -> Compact
 
     # Second check: estimate if savings would be worth it
     total, estimated_savings, reasoning_savings = estimate_compaction_savings(
-        log, limit
+        log, limit, keep_head=keep_head
     )
     savings_ratio = estimated_savings / total if total > 0 else 0
 
