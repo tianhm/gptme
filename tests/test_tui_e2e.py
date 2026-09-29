@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
+import warnings
 from pathlib import Path
 
 import pytest
@@ -343,39 +344,55 @@ class TmuxTUI:
             f"env {env} {sys.executable} -m gptme.tui.main "
             f"-m mock/echo -w {tmp_path} {extra_args}"
         )
-        subprocess.run(
-            [
-                "tmux",
-                "new-session",
-                "-d",
-                "-s",
-                self.session,
-                "-x",
-                str(size[0]),
-                "-y",
-                str(size[1]),
-                cmd,
-            ],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "tmux",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    self.session,
+                    "-x",
+                    str(size[0]),
+                    "-y",
+                    str(size[1]),
+                    cmd,
+                ],
+                check=True,
+                timeout=15,
+            )
+        except BaseException:
+            # new-session can create the detached session before the client
+            # returns. If we raise here the fixture never records us, so
+            # kill best-effort before propagating.
+            self.kill()
+            raise
 
     def send(self, keys: str, literal: bool = True) -> None:
         args = ["tmux", "send-keys", "-t", self.session]
         if literal:
             args.append("-l")
         args.append(keys)
-        subprocess.run(args, check=True)
+        subprocess.run(args, check=True, timeout=10)
 
     def send_key(self, key: str) -> None:
         """Send a named key (Enter, Escape, Tab, …)."""
-        subprocess.run(["tmux", "send-keys", "-t", self.session, key], check=True)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", self.session, key], check=True, timeout=10
+        )
 
     def capture(self) -> str:
+        # pytest-timeout cannot interrupt a blocked tmux subprocess
+        # (gptme/gptme#4009 hung TestTmuxRealTerminal until the 6h job cap).
+        # Bound the call so a wedged tmux fails this test instead of hanging
+        # the job. Do not translate timeout into "" — negative assertions
+        # (assert_no_escape_garbage) would then pass on an unread pane.
         result = subprocess.run(
             ["tmux", "capture-pane", "-t", self.session, "-p"],
             check=True,
             capture_output=True,
             text=True,
+            timeout=5,
         )
         return result.stdout
 
@@ -386,6 +403,7 @@ class TmuxTUI:
             check=True,
             capture_output=True,
             text=True,
+            timeout=5,
         )
         return result.stdout
 
@@ -426,17 +444,96 @@ class TmuxTUI:
         )
 
     def alive(self) -> bool:
-        return (
-            subprocess.run(
-                ["tmux", "has-session", "-t", self.session],
-                capture_output=True,
-                check=False,
-            ).returncode
-            == 0
-        )
+        try:
+            return (
+                subprocess.run(
+                    ["tmux", "has-session", "-t", self.session],
+                    capture_output=True,
+                    check=False,
+                    timeout=5,
+                ).returncode
+                == 0
+            )
+        except subprocess.TimeoutExpired:
+            return False
 
     def kill(self) -> None:
-        subprocess.run(["tmux", "kill-session", "-t", self.session], check=False)
+        # timeout_func_only leaves teardown unguarded; a wedged kill-session
+        # previously held the xdist worker until GitHub cancelled the job.
+        try:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", self.session],
+                check=False,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            warnings.warn(
+                f"tmux kill-session timed out for {self.session}; session may leak",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+
+def test_tmux_kill_returns_when_tmux_blocks(monkeypatch):
+    """Regression: unbounded kill-session hung an xdist worker for 6h (#4009)."""
+
+    def fake_run(*args, **kwargs):
+        timeout = kwargs.get("timeout")
+        if timeout is None:
+            raise AssertionError("tmux kill-session must pass timeout=")
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    tui = TmuxTUI.__new__(TmuxTUI)
+    tui.session = "tuie2e_fake"
+    with pytest.warns(RuntimeWarning, match="kill-session timed out"):
+        tui.kill()
+
+
+def test_tmux_capture_timeout_is_not_empty_pane(monkeypatch):
+    """Timed-out capture must not look like an empty pane (false-pass)."""
+
+    def fake_run(*args, **kwargs):
+        timeout = kwargs.get("timeout")
+        if timeout is None:
+            raise AssertionError("tmux capture-pane must pass timeout=")
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    tui = TmuxTUI.__new__(TmuxTUI)
+    tui.session = "tuie2e_fake"
+    with pytest.raises(subprocess.TimeoutExpired):
+        tui.capture()
+
+
+def test_tmux_init_kills_session_if_startup_times_out(tmp_path, monkeypatch):
+    """If new-session times out after creating the session, kill it.
+
+    Distinguishes the cleanup-success path from kill() itself timing out
+    (covered by test_tmux_kill_returns_when_tmux_blocks). A fake that times
+    out on every tmux call would only prove we *attempted* kill-session.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        timeout = kwargs.get("timeout")
+        if timeout is None:
+            raise AssertionError("tmux calls must pass timeout=")
+        if list(args)[:2] == ["tmux", "new-session"]:
+            raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(subprocess.TimeoutExpired):
+            TmuxTUI(tmp_path)
+    assert not [w for w in caught if issubclass(w.category, RuntimeWarning)], (
+        "kill-session succeeded; kill() must not warn"
+    )
+    assert any(c[:2] == ["tmux", "new-session"] for c in calls)
+    assert any(c[:2] == ["tmux", "kill-session"] for c in calls)
 
 
 @pytest.fixture
