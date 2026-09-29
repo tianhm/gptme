@@ -7,7 +7,7 @@ import threading
 import time
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 from ..constants import INTERRUPT_CONTENT
 from ..message import Message
@@ -156,22 +156,264 @@ _warned_mcp_allowlists: set[tuple[str, ...]] = set()
 _warned_mcp_allowlists_lock = threading.Lock()
 
 
-def _init_single_tool(tool: ToolSpec) -> ToolSpec:
+def _unregister_tool_hooks(tool: ToolSpec) -> None:
+    """Best-effort unregister of a tool's session-local hooks.
+
+    Safe if some or none of the hooks were actually registered. Used by
+    ``unload_tool`` and by the file-plugin dependency cascade (a tool that
+    initialized successfully, then lost a required companion).
+    """
+    from ..hooks import unregister_hook
+
+    for hook_name in tool.hooks:
+        try:
+            unregister_hook(f"{tool.name}.{hook_name}")
+        except Exception:
+            logger.exception(
+                "Failed to unregister hook '%s.%s'",
+                tool.name,
+                hook_name,
+            )
+
+
+def _unregister_tool_commands(tool: ToolSpec) -> None:
+    """Best-effort unregister of a tool's slash commands.
+
+    Used by the file-plugin dependency cascade so a tool that initialized
+    successfully, then lost a required companion, cannot leave commands
+    registered after it is removed from the session.
+    """
+    from ..commands.base import unregister_command
+
+    for cmd_name in tool.commands:
+        try:
+            unregister_command(cmd_name)
+        except Exception:
+            logger.exception("Failed to unregister command '%s'", cmd_name)
+
+
+def _copy_hook_registry() -> dict:
+    """Return a shallow copy of the current hook registry contents."""
+    from ..hooks.registry import get_registry
+
+    registry = get_registry()
+    return {hook_type: list(hooks) for hook_type, hooks in registry.hooks.items()}
+
+
+def _restore_hook_registry(snapshot: dict) -> None:
+    """Replace the hook registry contents with a previous snapshot."""
+    from ..hooks.registry import get_registry
+
+    registry = get_registry()
+    with registry._lock:
+        registry.hooks.clear()
+        registry.hooks.update(
+            {hook_type: list(hooks) for hook_type, hooks in snapshot.items()}
+        )
+
+
+def _copy_command_registry() -> tuple[dict, dict, dict]:
+    """Return copies of the command registries."""
+    from ..commands.base import (
+        _command_completers,
+        _command_owners,
+        _command_registry,
+    )
+
+    return dict(_command_registry), dict(_command_completers), dict(_command_owners)
+
+
+def _restore_command_registry(snapshot: tuple[dict, dict, dict]) -> None:
+    """Replace command registries with a previous snapshot."""
+    from ..commands.base import (
+        _command_completers,
+        _command_owners,
+        _command_registry,
+    )
+
+    registry, completers, owners = snapshot
+    _command_registry.clear()
+    _command_registry.update(registry)
+    _command_completers.clear()
+    _command_completers.update(completers)
+    _command_owners.clear()
+    _command_owners.update(owners)
+
+
+@overload
+def _init_single_tool(
+    tool: ToolSpec, *, on_error: Literal["raise"] = ...
+) -> ToolSpec: ...
+
+
+@overload
+def _init_single_tool(
+    tool: ToolSpec, *, on_error: Literal["skip"]
+) -> ToolSpec | None: ...
+
+
+def _init_single_tool(
+    tool: ToolSpec, *, on_error: Literal["raise", "skip"] = "raise"
+) -> ToolSpec | None:
     """Initialize a single tool: run its init(), register hooks and commands.
 
     Caller is responsible for acquiring _tools_init_lock if needed.
+
+    on_error="raise": re-raise any exception from init() (default, for built-ins)
+    on_error="skip": log a warning and return None on failure (for plugins)
     """
-    if tool.init:
-        initialized = tool.init()
-        if not isinstance(initialized, ToolSpec):
-            raise ValueError(
-                f"Tool {tool.name!r} init() returned {type(initialized).__name__}; "
-                "it must return a ToolSpec"
+    active = tool
+    hook_snapshot = None
+    command_snapshot = None
+    try:
+        if tool.init:
+            initialized = tool.init()
+            if not isinstance(initialized, ToolSpec):
+                raise ValueError(
+                    f"Tool {tool.name!r} init() returned {type(initialized).__name__}; "
+                    "it must return a ToolSpec"
+                )
+            tool = initialized
+            active = tool
+        # Snapshot after init() so a failure there cannot delete pre-existing
+        # hooks/commands that share this tool's names. Restore on any later
+        # failure so a partial register_hooks() neither leaks new entries nor
+        # drops replacements of hooks this tool overwrote.
+        hook_snapshot = _copy_hook_registry()
+        command_snapshot = _copy_command_registry()
+        tool.register_hooks()
+        tool.register_commands()
+        return tool
+    except Exception:
+        if on_error == "raise":
+            raise
+        if hook_snapshot is not None:
+            _restore_hook_registry(hook_snapshot)
+        if command_snapshot is not None:
+            _restore_command_registry(command_snapshot)
+        logger.warning(
+            "Skipping plugin tool %r: init() failed", active.name, exc_info=True
+        )
+        return None
+
+
+def _in_pending_cycle(tool: ToolSpec, pending_by_name: dict[str, ToolSpec]) -> bool:
+    """True if ``tool`` can reach itself through pending requires (a real cycle)."""
+    pending_names = set(pending_by_name)
+    seen: set[str] = set()
+    stack = [req for req in tool.requires_tools if req in pending_names]
+    while stack:
+        name = stack.pop()
+        if name == tool.name:
+            return True
+        if name in seen or name not in pending_by_name:
+            continue
+        seen.add(name)
+        stack.extend(
+            req for req in pending_by_name[name].requires_tools if req in pending_names
+        )
+    return False
+
+
+def _init_file_plugin_tools(
+    file_tools: list[ToolSpec], loaded_tools: list[ToolSpec]
+) -> None:
+    """Initialize file-path plugin tools, skipping failures and unsatisfied deps.
+
+    File plugins initialize in dependency order so a skipped companion cannot
+    leave a dependent loaded. Mutually-required companions have no valid order:
+    try each cycle member until one initializes, then the rest follow. A
+    member whose ``init()`` needs its companion stays pending so it can retry
+    after a sibling loads. Afterward, any file plugin whose required tools
+    still failed to load is unregistered. Must not call ``unload_tool`` — the
+    caller holds ``_tools_init_lock``.
+    """
+    pending: list[ToolSpec] = []
+    seen: set[str] = set()
+    for tool in file_tools:
+        if tool.name in seen or has_tool(tool.name):
+            continue
+        seen.add(tool.name)
+        pending.append(tool)
+
+    loaded_names = {t.name for t in loaded_tools}
+    added_names: set[str] = set()
+
+    def _try_init(tool: ToolSpec) -> bool:
+        initialized = _init_single_tool(tool, on_error="skip")
+        if initialized is None:
+            return False
+        loaded_tools.append(initialized)
+        loaded_names.add(initialized.name)
+        added_names.add(initialized.name)
+        return True
+
+    while pending:
+        ready = [
+            t for t in pending if all(req in loaded_names for req in t.requires_tools)
+        ]
+        if ready:
+            for tool in ready:
+                pending.remove(tool)
+                _try_init(tool)
+            continue
+
+        pending_by_name = {t.name: t for t in pending}
+        pending_names = set(pending_by_name)
+        # Only break a real cycle. A dependent that merely requires a
+        # cycle member is cycle-ready (its unmet reqs are pending) but
+        # must wait until those members load.
+        cycle_ready = [
+            t
+            for t in pending
+            if all(
+                req in loaded_names or req in pending_names for req in t.requires_tools
             )
-        tool = initialized
-    tool.register_hooks()
-    tool.register_commands()
-    return tool
+            and _in_pending_cycle(t, pending_by_name)
+        ]
+        if not cycle_ready:
+            break
+        # Try each cycle member until one initializes. Leave failures
+        # pending so a later sibling can satisfy init()-time has_tool()
+        # checks. If every member fails, stop — retrying would loop.
+        initialized_any = False
+        for tool in cycle_ready:
+            if _try_init(tool):
+                pending.remove(tool)
+                initialized_any = True
+                break
+        if not initialized_any:
+            break
+
+    for tool in pending:
+        missing = [req for req in tool.requires_tools if req not in loaded_names]
+        logger.warning(
+            "Skipping plugin tool %r: required tool(s) %s failed to load",
+            tool.name,
+            ", ".join(missing),
+        )
+
+    # A cycle member may have initialized before its companion failed.
+    changed = True
+    while changed:
+        changed = False
+        for tool in list(loaded_tools):
+            if tool.name not in added_names:
+                continue
+            missing = [req for req in tool.requires_tools if req not in loaded_names]
+            if not missing:
+                continue
+            loaded_tools.remove(tool)
+            loaded_names.discard(tool.name)
+            added_names.discard(tool.name)
+            _unregister_tool_hooks(tool)
+            _unregister_tool_commands(tool)
+            logger.warning(
+                "Skipping plugin tool %r: required tool(s) %s failed to load",
+                tool.name,
+                ", ".join(missing),
+            )
+            changed = True
 
 
 def init_tools(
@@ -231,10 +473,10 @@ def init_tools(
             available = [*file_tools, *get_available_tools(include_mcp=include_mcp)]
             permitted = [*(tool.name for tool in file_tools), *tool_names]
             file_tools = _add_required_tools(file_tools, available, allowlist=permitted)
-            for tool in file_tools:
-                if not has_tool(tool.name):
-                    tool = _init_single_tool(tool)
-                    loaded_tools.append(tool)
+            # ``_add_required_tools`` appends companions after dependants, and
+            # file order is arbitrary — init in dependency order (with cycle
+            # breaking) so a skipped companion cannot leave a dependent loaded.
+            _init_file_plugin_tools(file_tools, loaded_tools)
 
         # Load built-in tools by name
         # When file paths are present, only load explicitly named built-in tools
@@ -681,21 +923,11 @@ def unload_tool(tool_name: str) -> ToolSpec:
         if tool is None:
             raise ValueError(f"Tool '{tool_name}' is not loaded")
 
-        from ..hooks import unregister_hook
-
         # Filter by identity: get_tool() matches name *or* block_types, so a
         # block-type argument would miss a name-only filter and leave a zombie
         # tool loaded after its hooks were unregistered.
         set_tools([loaded for loaded in get_tools() if loaded is not tool])
-        for hook_name in tool.hooks:
-            try:
-                unregister_hook(f"{tool.name}.{hook_name}")
-            except Exception:
-                logger.exception(
-                    "Failed to unregister hook '%s.%s' while unloading tool",
-                    tool.name,
-                    hook_name,
-                )
+        _unregister_tool_hooks(tool)
 
         logger.info("Unloaded tool '%s' mid-conversation", tool_name)
         return tool

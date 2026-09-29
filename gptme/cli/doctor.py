@@ -10,10 +10,10 @@ Usage:
 import importlib.util
 import logging
 import os
-import pkgutil
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -162,7 +162,7 @@ class CheckResult:
     name: str
     status: CheckStatus
     message: str
-    details: str | None = None
+    details: str | list[str] | None = None
     fix_hint: str | None = None
     provider: str | None = None
 
@@ -1438,237 +1438,414 @@ def _check_mcp_stdio_server(
     ]
 
 
-def _import_module_tree(
-    module_name: str,
-) -> tuple[list[str], list[tuple[str, Exception]]]:
-    """Import a module and recursively all its public submodules.
+def _discover_plugin_tools(mod_name: str) -> tuple[list, list[str]]:
+    """Discover a plugin module's tools, retaining siblings when one fails.
 
-    Returns ``(ok_module_names, errors)`` where errors are ``(module_name,
-    exception)`` pairs. Unlike :func:`gptme.tools._discover_tools`, no import
-    error is swallowed: every submodule that fails to import (missing
-    dependency or otherwise) is reported.
+    Unlike :func:`gptme.tools._discover_tools`, a submodule that raises during
+    import or spec collection is reported as a per-module verdict instead of
+    discarding every tool already found in healthy sibling submodules.
     """
-    ok: list[str] = []
-    errors: list[tuple[str, Exception]] = []
+    import importlib
+    import pkgutil
+    from types import ModuleType
+
+    from ..tools import _iter_tool_specs
+
+    errors: list[str] = []
+    tools: list[object] = []
+
     try:
-        module = importlib.import_module(module_name)
+        root = importlib.import_module(mod_name)
     except Exception as exc:
-        return [], [(module_name, exc)]
-    ok.append(module_name)
-    if hasattr(module, "__path__"):
-        for _, submodule_name, _ in pkgutil.iter_modules(module.__path__):
+        return [], [f"{mod_name}:error(import {type(exc).__name__}: {exc})"]
+
+    def _collect(module_name: str, module: ModuleType) -> None:
+        try:
+            tools.extend(_iter_tool_specs(module))
+        except Exception as exc:
+            errors.append(f"{module_name}:error(discover {type(exc).__name__}: {exc})")
+        path = getattr(module, "__path__", None)
+        if path is None:
+            return
+        try:
+            submodules = sorted(pkgutil.iter_modules(path))
+        except Exception as exc:
+            # Enumeration itself can raise for an unreadable package path; that
+            # must be this module's verdict, not an aborted doctor run.
+            errors.append(f"{module_name}:error(enumerate {type(exc).__name__}: {exc})")
+            return
+        for _, submodule_name, _ in submodules:
             if submodule_name.startswith("_"):
                 continue
             full_name = f"{module_name}.{submodule_name}"
-            sub_ok, sub_errors = _import_module_tree(full_name)
-            ok.extend(sub_ok)
-            errors.extend(sub_errors)
-    return ok, errors
+            try:
+                submodule = importlib.import_module(full_name)
+            except Exception as exc:
+                errors.append(f"{full_name}:error(import {type(exc).__name__}: {exc})")
+                continue
+            _collect(full_name, submodule)
+
+    _collect(mod_name, root)
+    return tools, errors
+
+
+def _iter_plugin_tools(plugin: object) -> tuple[list, list[str]]:
+    """Collect direct tools and tools discovered from ``tool_modules``.
+
+    Returns ``(tools, import_errors)``. Import errors are already formatted as
+    per-item verdict strings (``module:error(import ...)``).
+    """
+    from ..plugins.plugin import GptmePlugin
+    from ..tools.base import ToolSpec
+
+    if not isinstance(plugin, GptmePlugin):
+        raise TypeError(f"expected GptmePlugin, got {type(plugin).__name__}")
+
+    tools: list[ToolSpec] = []
+    seen_names: set[str] = set()
+    import_errors: list[str] = []
+
+    def _add(tool: object) -> None:
+        if not isinstance(tool, ToolSpec):
+            import_errors.append(f"{type(tool).__name__}:error(not a ToolSpec)")
+            return
+        if tool.name in seen_names:
+            return
+        seen_names.add(tool.name)
+        tools.append(tool)
+
+    for tool in plugin.tools:
+        _add(tool)
+
+    for mod_name in plugin.tool_modules:
+        discovered, errors = _discover_plugin_tools(mod_name)
+        import_errors.extend(errors)
+        for tool in discovered:
+            _add(tool)
+
+    return tools, import_errors
+
+
+def _check_plugin_registrar(
+    kind: Literal["hooks", "commands"], registrar: Callable[[], object]
+) -> tuple[str, bool]:
+    """Run a plugin registrar in isolation and validate its return contract."""
+    if kind == "hooks":
+        from ..hooks.registry import HookRegistry, get_registry, set_registry
+
+        original_registry = get_registry()
+        isolated_registry = HookRegistry()
+        set_registry(isolated_registry)
+        try:
+            returned = registrar()
+            registered = len(isolated_registry.get_hooks())
+        except Exception as exc:
+            return f"hooks:error({type(exc).__name__}: {exc})", True
+        finally:
+            set_registry(original_registry)
+    else:
+        from ..commands.base import (
+            _command_completers,
+            _command_owners,
+            _command_registry,
+        )
+
+        registry_before = dict(_command_registry)
+        completers_before = dict(_command_completers)
+        owners_before = dict(_command_owners)
+        try:
+            returned = registrar()
+            # Count commands the registrar newly added. Overriding an existing
+            # command with a different handler object is not a new registration,
+            # so comparing handler identity would overstate the count.
+            registered = sum(
+                1 for name in _command_registry if name not in registry_before
+            )
+        except Exception as exc:
+            return f"commands:error({type(exc).__name__}: {exc})", True
+        finally:
+            _command_registry.clear()
+            _command_registry.update(registry_before)
+            _command_completers.clear()
+            _command_completers.update(completers_before)
+            _command_owners.clear()
+            _command_owners.update(owners_before)
+
+    if returned is not None:
+        return (
+            (
+                f"{kind}:error(register_{kind}() returned "
+                f"{type(returned).__name__}, expected None)"
+            ),
+            True,
+        )
+    return f"{kind}:ok({registered} registered)", False
 
 
 def _check_plugins(verbose: bool = False) -> list[CheckResult]:
-    """Validate plugin tool contracts in isolation.
+    """Check installed gptme plugins via entry points.
 
-    Discovers plugins and, for each, checks that every provided tool's
-    ``init()`` returns a :class:`~gptme.tools.base.ToolSpec` (not ``None`` or
-    another type). A contract violation in one plugin is attributed to that
-    plugin/tool instead of surfacing as an unattributed crash during tool
-    init (the gptme#3828 failure mode).
-
-    Each tool is validated independently so one bad plugin does not mask the
-    health of the others.
+    Discovers plugins registered under the ``gptme.plugins`` entry-point group,
+    skips entry points disabled by ``plugins.enabled`` without importing them,
+    scans third-party distribution source before import, then validates each
+    plugin's init, tool, and registrar contracts. Tools come from both
+    ``plugin.tools`` and ``plugin.tool_modules``.
+    Returns one :class:`CheckResult` per plugin with a machine-readable
+    per-item verdict list in the ``details`` field.
     """
-    results: list[CheckResult] = []
+    from importlib.metadata import entry_points as _entry_points
 
-    from ..config import get_config
-    from ..plugins.registry import discover_all_plugins
+    from ..plugins.entrypoints import ENTRYPOINT_GROUP, _coerce_to_plugin, _normalize
+    from ..plugins.security import scan_plugin_entry_point
     from ..tools.base import ToolSpec
 
-    config = get_config()
-    paths, enabled = config.get_plugin_config()
+    results: list[CheckResult] = []
+    _, enabled = get_config().get_plugin_config()
+    enabled_normalized = (
+        {_normalize(name) for name in enabled} if enabled is not None else None
+    )
 
-    discovery_errors: list[tuple[str, Exception]] = []
     try:
-        plugins = discover_all_plugins(
-            folder_paths=paths,
-            enabled_plugins=enabled,
-            errors=discovery_errors,
-        )
+        eps = list(_entry_points(group=ENTRYPOINT_GROUP))
     except Exception as exc:
         results.append(
             CheckResult(
-                name="Plugins: discovery",
+                name="Plugin: discovery",
                 status=CheckStatus.ERROR,
-                message=f"Plugin discovery failed: {exc}",
+                message=f"Entry-point discovery failed: {exc}",
             )
         )
         return results
 
-    for plugin_name, discovery_exc in discovery_errors:
+    if not eps:
         results.append(
             CheckResult(
-                name=f"Plugins: {plugin_name}",
-                status=CheckStatus.ERROR,
-                message=(
-                    f"Discovery failed: {type(discovery_exc).__name__}: {discovery_exc}"
-                ),
-            )
-        )
-
-    if not plugins:
-        results.append(
-            CheckResult(
-                name="Plugins: status",
-                status=CheckStatus.SKIPPED,
-                message="No plugins configured",
+                name="Plugin: installed",
+                status=CheckStatus.OK,
+                message="No plugins registered (gptme.plugins entry-point group is empty)",
             )
         )
         return results
 
     results.append(
         CheckResult(
-            name="Plugins: status",
+            name="Plugin: installed",
             status=CheckStatus.OK,
-            message=f"{len(plugins)} plugin(s) discovered",
-            details=", ".join(p.name for p in plugins) if verbose else None,
+            message=f"{len(eps)} plugin(s) registered",
+            details=", ".join(ep.name for ep in eps) if verbose else None,
         )
     )
 
-    # Collect each plugin's tools (direct specs + tool_modules) and validate
-    # each tool's init() contract in isolation.
-    for plugin in plugins:
-        tools: list[ToolSpec] = list(plugin.tools)
-        if plugin.tool_modules:
-            # Validate each tool module imports successfully before collecting
-            # tools. _discover_tools() swallows ModuleNotFoundError per module,
-            # so a misspelled/missing-dependency module would otherwise be
-            # silently dropped and doctor would report a broken plugin as OK.
-            ok_modules: list[str] = []
-            for module_name in plugin.tool_modules:
-                imported, import_errors = _import_module_tree(module_name)
-                ok_modules.extend(imported)
-                for failed_name, import_exc in import_errors:
-                    # Flag the broken module (including submodules with
-                    # missing dependencies), but keep collecting tools from
-                    # modules that import successfully — a plugin with one bad
-                    # module still has validatable tools in the others.
-                    results.append(
-                        CheckResult(
-                            name=f"Plugins: {plugin.name}",
-                            status=CheckStatus.ERROR,
-                            message=(
-                                f"Tool module {failed_name!r} failed to import: "
-                                f"{type(import_exc).__name__}: {import_exc}"
-                            ),
-                        )
-                    )
-            if ok_modules:
-                from ..tools import _iter_tool_specs
+    for ep in eps:
+        ep_name = ep.name
 
-                # Collect specs from the modules that imported cleanly, using the
-                # already-imported module objects. Re-walking the package with
-                # _discover_tools() would re-import submodules whose import
-                # already failed (they are evicted from sys.modules when they
-                # raise), producing a second ERROR for the same defect and
-                # aborting discovery for the package itself — which drops a
-                # ToolSpec defined in the package's __init__.py.
-                # _import_module_tree() already returned the root module and
-                # every submodule that imported, so iterating them covers the
-                # same set without re-executing failures.
-                #
-                # Dedupe across modules: a package and its submodules can expose
-                # the same ToolSpec object, and validating it twice would run
-                # init() side effects twice. _discover_tools' dedup is per-call
-                # only, so track seen specs here.
-                seen_specs: set[int] = {id(t) for t in tools}
-                for ok_module in ok_modules:
-                    module = sys.modules.get(ok_module)
-                    if module is None:
-                        continue
-                    try:
-                        # _iter_tool_specs is a generator, so materialize it
-                        # here to keep attribute-access failures inside this
-                        # per-module isolation boundary.
-                        specs = list(_iter_tool_specs(module))
-                    except Exception as exc:
-                        results.append(
-                            CheckResult(
-                                name=f"Plugins: {plugin.name}",
-                                status=CheckStatus.ERROR,
-                                message=(
-                                    f"Tool collection failed for {ok_module!r}: "
-                                    f"{type(exc).__name__}: {exc}"
-                                ),
-                            )
-                        )
-                        continue
-                    for spec in specs:
-                        if id(spec) in seen_specs:
-                            continue
-                        seen_specs.add(id(spec))
-                        tools.append(spec)
-
-        if not tools:
-            # Plugin provides no tools (hooks/commands/providers only) — nothing
-            # to validate here.
+        # Match discover_entrypoint_plugins(): skip disabled entry points
+        # without importing them. Import executes package code.
+        module = (
+            getattr(ep, "module", None)
+            or str(getattr(ep, "value", "")).split(":")[0].strip()
+        )
+        ep_names = {_normalize(ep_name)}
+        if module:
+            ep_names.add(_normalize(module.split(".")[0]))
+        if enabled_normalized is not None and not (ep_names & enabled_normalized):
+            results.append(
+                CheckResult(
+                    name=f"Plugin: {ep_name}",
+                    status=CheckStatus.SKIPPED,
+                    message="disabled by plugins.enabled; not loaded",
+                )
+            )
             continue
 
-        for tool in tools:
-            if not isinstance(tool, ToolSpec):
-                # A malformed plugin manifest can put a non-ToolSpec entry in
-                # ``tools``; attribute it to the plugin instead of raising
-                # AttributeError and aborting the whole doctor run.
-                results.append(
-                    CheckResult(
-                        name=f"Plugins: {plugin.name}",
-                        status=CheckStatus.ERROR,
-                        message=f"Tool entry {tool!r} is not a ToolSpec",
-                    )
+        # 1 — scan third-party distribution source before importing it. Importing
+        # first would execute exactly the payload this check is meant to catch.
+        # A scan that itself raises must not abort the whole doctor run: report a
+        # verdict for this plugin and move on.
+        security_verdicts: list[str] = []
+        try:
+            security_scan = scan_plugin_entry_point(ep)
+        except Exception as exc:
+            results.append(
+                CheckResult(
+                    name=f"Plugin: {ep_name}",
+                    status=CheckStatus.ERROR,
+                    message=f"Security scan failed: {type(exc).__name__}",
+                    details=str(exc),
+                    fix_hint=(
+                        f"Check the distribution metadata for {ep_name!r}; "
+                        "a malformed install cannot be scanned before import"
+                    ),
                 )
-                continue
-            try:
-                is_available = tool.is_available
-            except Exception as exc:
+            )
+            continue
+        if security_scan is not None:
+            if security_scan.findings:
                 results.append(
                     CheckResult(
-                        name=f"Plugins: {plugin.name}",
+                        name=f"Plugin: {ep_name}",
                         status=CheckStatus.ERROR,
-                        message=f"Tool {tool.name!r} availability check raised: {exc}",
-                    )
-                )
-                continue
-            if not is_available or tool.disabled_by_default or not tool.init:
-                continue
-            try:
-                initialized = tool.init()
-            except Exception as exc:
-                results.append(
-                    CheckResult(
-                        name=f"Plugins: {plugin.name}",
-                        status=CheckStatus.ERROR,
-                        message=f"Tool {tool.name!r} init() raised: {exc}",
-                    )
-                )
-                continue
-            if not isinstance(initialized, ToolSpec):
-                results.append(
-                    CheckResult(
-                        name=f"Plugins: {plugin.name}",
-                        status=CheckStatus.ERROR,
-                        message=(
-                            f"Tool {tool.name!r} init() returned "
-                            f"{type(initialized).__name__}; must return a ToolSpec"
+                        message="Security scan blocked import",
+                        details=[
+                            finding.verdict() for finding in security_scan.findings
+                        ],
+                        fix_hint=(
+                            f"Remove or audit the package providing {ep_name!r} "
+                            "before loading it"
                         ),
                     )
                 )
                 continue
+            # Fail closed: a clean result only means something when the module
+            # that would be imported was actually scanned. Otherwise a plugin can
+            # place its executable source in an unreadable or oversized file and
+            # still be reported as verified.
+            if not security_scan.entry_point_scanned:
+                results.append(
+                    CheckResult(
+                        name=f"Plugin: {ep_name}",
+                        status=CheckStatus.ERROR,
+                        message="Security scan could not verify entry point",
+                        details=[
+                            (
+                                "security:error(unverified: entry-point module not "
+                                f"scanned; {security_scan.scanned_files} file(s) scanned)"
+                            )
+                        ],
+                        fix_hint=(
+                            f"Ensure {ep_name!r} ships its entry-point module as "
+                            "readable source under 1 MB"
+                        ),
+                    )
+                )
+                continue
+            security_verdicts.append(
+                f"security:ok({security_scan.scanned_files} files scanned)"
+            )
+
+        # 2 — try to import the entry point
+        try:
+            obj = ep.load()
+        except Exception as exc:
             results.append(
                 CheckResult(
-                    name=f"Plugins: {plugin.name}",
-                    status=CheckStatus.OK,
-                    message=f"Tool {tool.name!r} contract ok",
+                    name=f"Plugin: {ep_name}",
+                    status=CheckStatus.ERROR,
+                    message=f"Import failed: {type(exc).__name__}",
+                    details=str(exc),
+                    fix_hint=f"Check that the package providing {ep_name!r} is installed correctly",
                 )
             )
+            continue
+
+        # 3 — coerce to GptmePlugin
+        plugin = _coerce_to_plugin(ep_name, obj)
+        if plugin is None:
+            results.append(
+                CheckResult(
+                    name=f"Plugin: {ep_name}",
+                    status=CheckStatus.ERROR,
+                    message="Entry point did not export a GptmePlugin or ToolSpec",
+                    details=f"Got {type(obj).__name__!r}",
+                    fix_hint=(
+                        "Register a GptmePlugin instance or a ToolSpec at the entry point"
+                    ),
+                )
+            )
+            continue
+
+        # 4 — plugin-level init() runs before subsystem init at runtime.
+        contract_verdicts: list[str] = list(security_verdicts)
+        any_failed = False
+        if plugin.init is not None:
+            try:
+                plugin.init(get_config())
+                contract_verdicts.append("init:ok")
+            except Exception as exc:
+                contract_verdicts.append(f"init:error({type(exc).__name__}: {exc})")
+                any_failed = True
+
+        # 5 — validate each tool's init() contract (direct + module-provided)
+        try:
+            tools, import_errors = _iter_plugin_tools(plugin)
+        except Exception as exc:
+            results.append(
+                CheckResult(
+                    name=f"Plugin: {ep_name}",
+                    status=CheckStatus.ERROR,
+                    message=f"Tool discovery failed: {type(exc).__name__}",
+                    details=str(exc),
+                    fix_hint=(
+                        "Check the plugin's tools/tool_modules entries; "
+                        "a malformed manifest must not abort doctor"
+                    ),
+                )
+            )
+            continue
+        contract_verdicts.extend(import_errors)
+        any_failed = any_failed or bool(import_errors)
+        for tool in tools:
+            if tool.init is None:
+                contract_verdicts.append(f"{tool.name}:ok(no-init)")
+                continue
+            try:
+                initialized = tool.init()
+                if not isinstance(initialized, ToolSpec):
+                    contract_verdicts.append(
+                        f"{tool.name}:error(init() returned {type(initialized).__name__}, expected ToolSpec)"
+                    )
+                    any_failed = True
+                else:
+                    contract_verdicts.append(f"{tool.name}:ok")
+            except Exception as exc:
+                contract_verdicts.append(
+                    f"{tool.name}:error({type(exc).__name__}: {exc})"
+                )
+                any_failed = True
+
+        # 6 — validate hook and command registration contracts. Each callback
+        # runs against a temporary registry so doctor never mutates runtime state.
+        if plugin.register_hooks is not None:
+            verdict, failed = _check_plugin_registrar("hooks", plugin.register_hooks)
+            contract_verdicts.append(verdict)
+            any_failed |= failed
+        if plugin.register_commands is not None:
+            verdict, failed = _check_plugin_registrar(
+                "commands", plugin.register_commands
+            )
+            contract_verdicts.append(verdict)
+            any_failed |= failed
+
+        n_tools = len(tools)
+        n_failed = sum(1 for verdict in contract_verdicts if ":error(" in verdict)
+        if any_failed:
+            status = CheckStatus.ERROR
+            message = f"{n_failed}/{len(contract_verdicts)} plugin check(s) failed"
+        elif n_tools == 0:
+            status = CheckStatus.OK
+            message = f"{plugin.name}: loaded (no tools)"
+        else:
+            status = CheckStatus.OK
+            message = f"{plugin.name}: {n_tools} tool(s) ok"
+
+        # details is a list so --json consumers can parse per-item verdicts
+        # even when an error message contains the old " | " delimiter.
+        details = contract_verdicts or None
+
+        results.append(
+            CheckResult(
+                name=f"Plugin: {ep_name}",
+                status=status,
+                message=message,
+                details=details,
+                fix_hint=(
+                    "Check the plugin's tool init or registration implementation; "
+                    "run with --verbose to see per-capability verdicts"
+                )
+                if any_failed
+                else None,
+            )
+        )
 
     return results
 
@@ -1747,7 +1924,12 @@ def print_results(
             # Build message with optional details
             msg = result.message
             if verbose and result.details:
-                msg += f"\n  [dim]{result.details}[/dim]"
+                detail_text = (
+                    result.details
+                    if isinstance(result.details, str)
+                    else "\n  ".join(result.details)
+                )
+                msg += f"\n  [dim]{detail_text}[/dim]"
 
             table.add_row(emoji, name, msg)
 

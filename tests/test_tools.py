@@ -234,6 +234,258 @@ def test_init_tools_fails():
         init_tools(allowlist=["save", "missing_tool"])
 
 
+def test_plugin_init_failure_is_skipped(tmp_path):
+    """A plugin tool whose init() raises should be skipped, not abort init_tools()."""
+    bad_plugin = tmp_path / "bad_plugin.py"
+    bad_plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _init():\n"
+        "    raise RuntimeError('broken plugin')\n"
+        "\n"
+        "tool = ToolSpec(name='bad_tool', desc='broken', init=_init)\n"
+    )
+    good_plugin = tmp_path / "good_plugin.py"
+    good_plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _init():\n"
+        "    return ToolSpec(name='good_tool', desc='works')\n"
+        "\n"
+        "tool = ToolSpec(name='good_tool', desc='works', init=_init)\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(bad_plugin), str(good_plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "good_tool" in tool_names, "working plugin tool must be loaded"
+    assert "bad_tool" not in tool_names, "broken plugin tool must be skipped"
+
+
+def test_plugin_init_failure_unregisters_partial_hooks(tmp_path):
+    """A skipped plugin must not leave hooks registered from a partial init."""
+    from gptme.hooks import clear_hooks, get_hooks
+
+    leaky_plugin = tmp_path / "leaky_plugin.py"
+    leaky_plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _good_hook(**kwargs):\n"
+        "    return None\n"
+        "\n"
+        "tool = ToolSpec(\n"
+        "    name='leaky_tool',\n"
+        "    desc='partial hooks',\n"
+        "    hooks={\n"
+        "        'good': ('session.start', _good_hook, 0),\n"
+        "        'bad': None,\n"
+        "    },\n"
+        ")\n"
+    )
+    good_plugin = tmp_path / "good_hook_plugin.py"
+    good_plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _ok_hook(**kwargs):\n"
+        "    return None\n"
+        "\n"
+        "tool = ToolSpec(\n"
+        "    name='ok_tool',\n"
+        "    desc='healthy hooks',\n"
+        "    hooks={'ok': ('session.start', _ok_hook, 0)},\n"
+        ")\n"
+    )
+
+    clear_tools()
+    clear_hooks()
+    tools = init_tools(allowlist=[str(leaky_plugin), str(good_plugin)])
+    tool_names = [t.name for t in tools]
+    hook_names = [h.name for h in get_hooks()]
+
+    assert "leaky_tool" not in tool_names
+    assert "ok_tool" in tool_names
+    assert not any(name.startswith("leaky_tool.") for name in hook_names)
+    assert "ok_tool.ok" in hook_names
+
+
+def test_plugin_skipped_when_required_companion_init_fails(tmp_path):
+    """A plugin whose required companion fails init() must not stay loaded."""
+    plugin = tmp_path / "dependent_plugin.py"
+    plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _init():\n"
+        "    raise RuntimeError('companion broken')\n"
+        "\n"
+        "primary = ToolSpec(\n"
+        "    name='dependent_tool',\n"
+        "    desc='needs companion',\n"
+        "    requires_tools=['needed_tool'],\n"
+        ")\n"
+        "companion = ToolSpec(\n"
+        "    name='needed_tool',\n"
+        "    desc='fails',\n"
+        "    init=_init,\n"
+        ")\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "needed_tool" not in tool_names
+    assert "dependent_tool" not in tool_names
+
+
+def test_cascade_unload_unregisters_commands(tmp_path):
+    """A cycle member unloaded after its companion fails must drop its commands."""
+    from gptme.commands.base import get_registered_commands
+
+    plugin = tmp_path / "cycle_cmd_plugin.py"
+    plugin.write_text(
+        "from collections.abc import Generator\n"
+        "from gptme.commands.base import CommandContext\n"
+        "from gptme.message import Message\n"
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _cmd(_ctx: CommandContext) -> Generator[Message, None, None]:\n"
+        "    yield from ()\n"
+        "\n"
+        "def _boom():\n"
+        "    raise RuntimeError('companion broken')\n"
+        "\n"
+        "primary = ToolSpec(\n"
+        "    name='cycle_cmd_tool',\n"
+        "    desc='loads then unloads',\n"
+        "    requires_tools=['cycle_fail_tool'],\n"
+        "    commands={'cycle-cmd': _cmd},\n"
+        ")\n"
+        "companion = ToolSpec(\n"
+        "    name='cycle_fail_tool',\n"
+        "    desc='fails',\n"
+        "    requires_tools=['cycle_cmd_tool'],\n"
+        "    init=_boom,\n"
+        ")\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "cycle_cmd_tool" not in tool_names
+    assert "cycle_fail_tool" not in tool_names
+    assert "cycle-cmd" not in get_registered_commands()
+
+
+def test_cyclic_companion_plugins_both_load(tmp_path):
+    """Mutually required file-path plugins must still initialize together."""
+    plugin = tmp_path / "cycle_ok.py"
+    plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "a = ToolSpec(name='cycle_a', desc='a', requires_tools=['cycle_b'])\n"
+        "b = ToolSpec(name='cycle_b', desc='b', requires_tools=['cycle_a'])\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "cycle_a" in tool_names
+    assert "cycle_b" in tool_names
+
+
+def test_cyclic_companion_init_failure_unloads_pair(tmp_path):
+    """If one side of a companion cycle fails init(), neither stays loaded."""
+    plugin = tmp_path / "cycle_fail.py"
+    plugin.write_text(
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _init_b():\n"
+        "    raise RuntimeError('cycle b broken')\n"
+        "\n"
+        "a = ToolSpec(name='cycle_a', desc='a', requires_tools=['cycle_b'])\n"
+        "b = ToolSpec(\n"
+        "    name='cycle_b',\n"
+        "    desc='b',\n"
+        "    requires_tools=['cycle_a'],\n"
+        "    init=_init_b,\n"
+        ")\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "cycle_a" not in tool_names
+    assert "cycle_b" not in tool_names
+
+
+def test_cycle_member_init_retries_after_companion_loads(tmp_path):
+    """A cycle member whose init() needs its companion must still load.
+
+    File order puts the needy member first so picking pending[0] to break the
+    cycle would skip the whole pair.
+    """
+    plugin = tmp_path / "cycle_init_order.py"
+    plugin.write_text(
+        "from gptme.tools import has_tool\n"
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _init_a():\n"
+        "    if not has_tool('cycle_b'):\n"
+        "        raise RuntimeError('cycle_b not loaded yet')\n"
+        "    return ToolSpec(name='cycle_a', desc='a', requires_tools=['cycle_b'])\n"
+        "\n"
+        "a = ToolSpec(\n"
+        "    name='cycle_a',\n"
+        "    desc='a',\n"
+        "    requires_tools=['cycle_b'],\n"
+        "    init=_init_a,\n"
+        ")\n"
+        "b = ToolSpec(name='cycle_b', desc='b', requires_tools=['cycle_a'])\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "cycle_a" in tool_names
+    assert "cycle_b" in tool_names
+
+
+def test_cycle_dependent_waits_for_cycle_members(tmp_path):
+    """A tool that depends on a cycle must not be initialized to break it."""
+    plugin = tmp_path / "cycle_plus_dependent.py"
+    plugin.write_text(
+        "from gptme.tools import has_tool\n"
+        "from gptme.tools.base import ToolSpec\n"
+        "\n"
+        "def _init_c():\n"
+        "    if not has_tool('cycle_a'):\n"
+        "        raise RuntimeError('cycle_a not loaded yet')\n"
+        "    return ToolSpec(name='cycle_c', desc='c', requires_tools=['cycle_a'])\n"
+        "\n"
+        "c = ToolSpec(\n"
+        "    name='cycle_c',\n"
+        "    desc='c',\n"
+        "    requires_tools=['cycle_a'],\n"
+        "    init=_init_c,\n"
+        ")\n"
+        "a = ToolSpec(name='cycle_a', desc='a', requires_tools=['cycle_b'])\n"
+        "b = ToolSpec(name='cycle_b', desc='b', requires_tools=['cycle_a'])\n"
+    )
+
+    clear_tools()
+    tools = init_tools(allowlist=[str(plugin)])
+    tool_names = [t.name for t in tools]
+
+    assert "cycle_a" in tool_names
+    assert "cycle_b" in tool_names
+    assert "cycle_c" in tool_names
+
+
 def test_tool_loading_with_package():
     found = _discover_tools(["gptme.tools"])
 
