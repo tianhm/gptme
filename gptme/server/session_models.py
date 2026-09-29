@@ -451,15 +451,35 @@ class SessionManager:
 
     @classmethod
     def retry_deferred_watch_wakes(cls, conversation_id: str) -> None:
-        """Wake once if a completion arrived while this conversation was busy."""
+        """Wake once if a completion or watch event arrived while busy."""
         from ..dirs import get_logs_dir
         from ..tools.subagent.hooks import (
             _completion_message,
             take_queued_completions,
         )
         from ..tools.subagent.types import _completion_queue
+        from ..tools.watch import requeue_watch_event, take_queued_watch_events
 
         logdir = (get_logs_dir() / conversation_id).resolve()
+        # Watch events that fired while the conversation was generating or
+        # executing a tool were queued for STEP_PRE; retry a live wake now
+        # that it is idle, else they wait for a turn that may never start.
+        #
+        # Deliver the whole batch in a single wake: `request_watch_wake` sets
+        # `generating=True` before returning, so a second call in the same
+        # drain would see the conversation busy and requeue — delivering one
+        # event per idle turn and stranding the rest until the next command.
+        pending_watch = take_queued_watch_events(logdir)
+        if pending_watch:
+            body = "\n".join(
+                f"Watch {watch_id} fired: {text}" for watch_id, text in pending_watch
+            )
+            if not cls.request_watch_wake(conversation_id, Message("system", body)):
+                # Still busy (or wake disabled): put the whole batch back,
+                # preserving order. `take_*` already removed it, so dropping it
+                # here would lose events outright.
+                for watch_id, text in reversed(pending_watch):
+                    requeue_watch_event(logdir, watch_id, text)
         queued = take_queued_completions(logdir)
         if not queued:
             return
