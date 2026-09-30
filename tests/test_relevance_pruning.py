@@ -409,6 +409,277 @@ def test_phase0_recovery_survives_jsonl_rewrite(tmp_path):
     assert stale_content not in logfile.read_text()
 
 
+# ---------------------------------------------------------------------------
+# Tests for eval_phase0_pruning._count_false_drops (issue #3997 evaluation)
+# ---------------------------------------------------------------------------
+
+
+def _make_drop_decision(idx: int, content: str) -> PruneDecision:
+    """Helper: build a PruneDecision with decision='drop' for the given content."""
+    from gptme.message import len_tokens as _len_tokens
+
+    model = _model_name()
+    tokens = _len_tokens(content, model)
+    return PruneDecision(
+        idx=idx,
+        decision="drop",
+        score=0.1,
+        tokens=tokens,
+        stub_tokens=10,
+        tokens_saved=max(0, tokens - 10),
+        content_digest=PruneDecision._digest(content),
+    )
+
+
+def _make_keep_decision(idx: int, content: str) -> PruneDecision:
+    from gptme.message import len_tokens as _len_tokens
+
+    return PruneDecision(
+        idx=idx,
+        decision="keep",
+        score=5.0,
+        tokens=_len_tokens(content, _model_name()),
+        stub_tokens=0,
+        tokens_saved=0,
+        content_digest=PruneDecision._digest(content),
+    )
+
+
+def test_count_false_drops_no_drops():
+    """Zero dropped decisions → zero false drops."""
+    import sys
+
+    sys.path.insert(
+        0, str(__import__("pathlib").Path(__file__).parent.parent / "scripts")
+    )
+    from eval_phase0_pruning import _count_false_drops
+
+    messages = [_user("q"), _assistant("a")]
+    keep = _make_keep_decision(0, "tool out")
+    assert _count_false_drops([keep], messages) == 0
+
+
+def test_count_false_drops_no_reappearance():
+    """Dropped content never appears later → false-drop rate is zero."""
+    import sys
+
+    sys.path.insert(
+        0, str(__import__("pathlib").Path(__file__).parent.parent / "scripts")
+    )
+    from eval_phase0_pruning import _count_false_drops
+
+    dropped_content = "unique dropped content xyz987"
+    drop = _make_drop_decision(0, dropped_content)
+    messages = [_tool_out(dropped_content), _user("something else"), _assistant("done")]
+    assert _count_false_drops([drop], messages) == 0
+
+
+def test_count_false_drops_reappears():
+    """Dropped content reappears verbatim in a later message → false drop counted."""
+    import sys
+
+    sys.path.insert(
+        0, str(__import__("pathlib").Path(__file__).parent.parent / "scripts")
+    )
+    from eval_phase0_pruning import _count_false_drops
+
+    payload = "result: files.txt foo.py bar.txt (important content)"
+    drop = _make_drop_decision(0, payload)
+    messages = [
+        _tool_out(payload),
+        _user("what files did we have?"),
+        _tool_out(payload),  # same payload reappears in a later tool output
+        _assistant("those files"),
+    ]
+    assert _count_false_drops([drop], messages) == 1
+
+
+def test_count_false_drops_earlier_match_ignored():
+    """A matching message that appears BEFORE the drop index is not a false drop."""
+    import sys
+
+    sys.path.insert(
+        0, str(__import__("pathlib").Path(__file__).parent.parent / "scripts")
+    )
+    from eval_phase0_pruning import _count_false_drops
+
+    payload = "some tool output content here"
+    # messages[0] and messages[2] have the same content
+    messages = [
+        _system(payload),  # idx 0: earlier copy
+        _user("some question"),
+        _tool_out(payload),  # idx 2: the dropped one
+        _user("unrelated"),
+        _assistant("done"),
+    ]
+    drop = _make_drop_decision(2, payload)
+    # Nothing after idx=2 has this payload → no false drop
+    assert _count_false_drops([drop], messages) == 0
+
+
+def test_count_false_drops_multiple_drops_counted_once_each():
+    """Each dropped item is counted at most once even if it reappears multiple times."""
+    import sys
+
+    sys.path.insert(
+        0, str(__import__("pathlib").Path(__file__).parent.parent / "scripts")
+    )
+    from eval_phase0_pruning import _count_false_drops
+
+    p1 = "first dropped payload"
+    p2 = "second dropped payload"
+    messages = [
+        _tool_out(p1),
+        _tool_out(p2),
+        _user("q1"),
+        _tool_out(p1),  # reappears once
+        _tool_out(p1),  # reappears again — should NOT add to the count
+        _tool_out(p2),  # second drop reappears
+        _assistant("ok"),
+    ]
+    d1 = _make_drop_decision(0, p1)
+    d2 = _make_drop_decision(1, p2)
+    assert _count_false_drops([d1, d2], messages) == 2
+
+
+def _import_eval_phase0():
+    import sys
+
+    sys.path.insert(
+        0, str(__import__("pathlib").Path(__file__).parent.parent / "scripts")
+    )
+    import eval_phase0_pruning
+
+    return eval_phase0_pruning
+
+
+def test_trigger_at_first_turn_boundary_below_limit():
+    """A log that never reaches the limit reports no trigger."""
+    ev = _import_eval_phase0()
+    messages = [_user("hi"), _assistant("hello")]
+    assert ev._trigger_at_first_turn_boundary(
+        messages, _model_name(), 10_000_000, 0
+    ) == (
+        False,
+        False,
+    )
+
+
+def test_trigger_at_first_turn_boundary_pruning_delays_trigger():
+    """At the first crossing, pruning savings can pull the prefix under limit."""
+    ev = _import_eval_phase0()
+    stale = _tool_out("word " * 400)
+    padding = [_user(f"msg {i}") for i in range(_PRUNE_MIN_AGE + 2)]
+    messages = [stale] + padding
+    limit = ev.len_tokens(messages, _model_name())
+    # Full log is exactly at the limit; the stale output is old enough to prune,
+    # so the crossing prefix ends up under budget after Phase 0.
+    assert ev._trigger_at_first_turn_boundary(messages, _model_name(), limit, 0) == (
+        True,
+        False,
+    )
+
+
+def test_trigger_at_first_turn_boundary_unprunable_stays_triggered():
+    """With nothing to prune, the crossing prefix remains over budget."""
+    ev = _import_eval_phase0()
+    messages = [_user("word " * 400), _assistant("done")]
+    limit = ev.len_tokens(messages, _model_name())
+    assert ev._trigger_at_first_turn_boundary(messages, _model_name(), limit, 0) == (
+        True,
+        True,
+    )
+
+
+def test_json_output_stays_pure_with_verbose(monkeypatch, capsys):
+    """--json -v must emit a single parseable JSON document on stdout."""
+    import json
+    import sys
+
+    ev = _import_eval_phase0()
+
+    class _Conv:
+        name = "conv1"
+        path = "unused"
+        messages = 20
+        model = None
+
+    def fake_convs(*, detail=False):
+        yield _Conv()
+
+    def fake_analyze(conv, verbose=False, budget=None):
+        return ev.ConvStats(
+            name=conv.name,
+            total_tokens=10_000,
+            tool_output_tokens=8_000,
+            tokens_freed=4_000,
+            n_candidates=5,
+            n_dropped=3,
+            n_false_drop_candidates=0,
+            compaction_would_trigger_before=True,
+            compaction_would_trigger_after=False,
+        )
+
+    monkeypatch.setattr(ev, "get_user_conversations", fake_convs)
+    monkeypatch.setattr(ev, "analyze_conversation", fake_analyze)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "eval_phase0_pruning.py",
+            "--json",
+            "-v",
+            "--limit",
+            "5",
+            "--min-tokens",
+            "100",
+        ],
+    )
+
+    ev.main()
+    out = capsys.readouterr().out
+    parsed = json.loads(out)  # must not raise: stdout is a single JSON doc
+    assert parsed["summary"]["analyzed"] == 1
+
+
+def test_analysis_error_counted_separately(monkeypatch, capsys):
+    """A conversation that fails analysis is an error, not a "no tool outputs" skip.
+
+    Regression guard: model-resolution / token-count / shadow-pass failures must
+    surface under skipped_error rather than silently inflating
+    skipped_no_tool_outputs.
+    """
+    import json
+    import sys
+
+    ev = _import_eval_phase0()
+
+    class _Conv:
+        name = "conv1"
+        path = "unused"
+        messages = 20
+        model = None
+
+    def fake_convs(*, detail=False):
+        yield _Conv()
+
+    def fake_analyze(conv, verbose=False, budget=None):
+        return ev.AnalysisError(name=conv.name, error="boom")
+
+    monkeypatch.setattr(ev, "get_user_conversations", fake_convs)
+    monkeypatch.setattr(ev, "analyze_conversation", fake_analyze)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["eval_phase0_pruning.py", "--json", "--limit", "5", "--min-tokens", "100"],
+    )
+
+    ev.main()
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["summary"]["skipped_error"] == 1
+    assert parsed["summary"]["skipped_no_tool_outputs"] == 0
+
+
 def test_phase0_estimate_uses_recovery_stub_template():
     """Estimator must not use a one-line stub that overstates savings.
 
